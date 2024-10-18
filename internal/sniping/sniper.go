@@ -1,6 +1,9 @@
 package sniping
 
 import (
+	"context"
+	"time"
+
 	"github.com/rovshanmuradov/solana-bot/internal/config"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"github.com/rovshanmuradov/solana-bot/pkg/blockchain/solana"
@@ -15,7 +18,6 @@ type Sniper struct {
 }
 
 func NewSniper(client *solana.Client, wallets map[string]*wallet.Wallet, cfg *config.Config, logger *zap.Logger) *Sniper {
-	// Создаем новый экземпляр Sniper
 	return &Sniper{
 		client:  client,
 		wallets: wallets,
@@ -24,12 +26,36 @@ func NewSniper(client *solana.Client, wallets map[string]*wallet.Wallet, cfg *co
 	}
 }
 
-func (s *Sniper) Run(tasks []*Task) {
-	// Проходим по списку задач
+func (s *Sniper) Run(ctx context.Context, tasks []*Task) {
 	for _, task := range tasks {
-		// Запускаем каждую задачу в отдельной горутине или по количеству Workers
-		go s.ExecuteTask(task)
+		go s.executeTask(ctx, task)
 	}
 
-	// Ожидание завершения всех задач или обработка сигналов завершения
+	<-ctx.Done()
+	s.logger.Info("Sniper завершил работу")
+}
+
+func (s *Sniper) executeTask(ctx context.Context, task *Task) {
+	s.logger.Info("Начало выполнения задачи", zap.String("task", task.TaskName))
+
+	ticker := time.NewTicker(time.Duration(s.config.MonitorDelay) * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			s.logger.Info("Задача отменена", zap.String("task", task.TaskName))
+			return
+		case <-ticker.C:
+			if err := s.processTask(task); err != nil {
+				s.logger.Error("Ошибка при обработке задачи", zap.Error(err), zap.String("task", task.TaskName))
+			}
+		}
+	}
+}
+
+func (s *Sniper) processTask(task *Task) error {
+	// Здесь реализуйте логику обработки задачи
+	// Например, проверка условий, выполнение транзакций и т.д.
+	return nil
 }

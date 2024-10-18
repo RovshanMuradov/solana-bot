@@ -1,3 +1,4 @@
+// internal/eventlistener/listener.go
 package eventlistener
 
 import (
@@ -36,7 +37,7 @@ func (el *EventListener) Subscribe(handler func(event Event)) error {
 	go func() {
 		for {
 			// Читаем сообщение из WebSocket
-			msg, op, err := wsutil.ReadServerData(el.conn)
+			_, _, err := wsutil.ReadServerData(el.conn)
 			if err != nil {
 				// Логируем ошибку и продолжаем или завершаем цикл
 				el.logger.Error("Ошибка чтения из WebSocket", zap.Error(err))

@@ -1,0 +1,24 @@
+  run:
+    timeout: 5m
+
+  linters:
+    enable:
+      - errcheck
+      - staticcheck
+      - ineffassign
+      - revive
+      - gofmt
+      - govet
+      - gosec
+      - unused
+      - typecheck
+      - gosimple
+      - stylecheck
+      - unconvert
+      - gocritic
+
+  issues:
+    exclude-rules:
+      - linters:
+          - errcheck
+        text: "error return value not checked"

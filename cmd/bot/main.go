@@ -1,19 +1,27 @@
 package main
 
 import (
+	"context"
+	"os"
+	"os/signal"
+	"syscall"
+
 	"github.com/rovshanmuradov/solana-bot/internal/config"
 	"github.com/rovshanmuradov/solana-bot/internal/sniping"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
-	"github.com/rovshanmuradov/solana-bot/pkg/blockchain/solana"
+	solanaclient "github.com/rovshanmuradov/solana-bot/pkg/blockchain/solana"
 	"go.uber.org/zap"
 )
 
 func main() {
+	// Инициализация контекста с возможностью отмены
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// Инициализация логгера
 	logger, err := zap.NewProduction()
 	if err != nil {
-		// Обработка ошибки и завершение программы
-		panic(err)
+		panic("Не удалось инициализировать логгер: " + err.Error())
 	}
 	defer logger.Sync()
 
@@ -30,7 +38,10 @@ func main() {
 	}
 
 	// Инициализация клиента Solana
-	solanaClient := solana.NewClient(cfg.RPCList, logger)
+	solanaClient, err := solanaclient.NewClient(cfg.RPCList, logger)
+	if err != nil {
+		logger.Fatal("Ошибка инициализации клиента Solana", zap.Error(err))
+	}
 
 	// Загрузка задач
 	tasks, err := sniping.LoadTasks("configs/tasks.csv")
@@ -41,6 +52,25 @@ func main() {
 	// Создание экземпляра снайпера
 	sniper := sniping.NewSniper(solanaClient, wallets, cfg, logger)
 
-	// Запуск снайпера с загруженными задачами
-	sniper.Run(tasks)
+	// Запуск снайпера с загруженными задачами в отдельной горутине
+	go func() {
+		sniper.Run(ctx, tasks)
+	}()
+
+	// Ожидание сигнала завершения
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case <-sigCh:
+		logger.Info("Получен сигнал завершения")
+	case <-ctx.Done():
+		logger.Info("Контекст отменен")
+	}
+
+	// Graceful shutdown
+	logger.Info("Начало graceful shutdown")
+	cancel()
+	// Здесь можно добавить дополнительную логику завершения, если необходимо
+	logger.Info("Бот успешно завершил работу")
 }

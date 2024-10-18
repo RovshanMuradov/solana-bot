@@ -1,8 +1,11 @@
 package sniping
 
 import (
-	"github.com/rovshanmuradov/solana-bot/internal/wallet"
-	"go.uber.org/zap"
+	"encoding/csv"
+	"errors"
+	"fmt"
+	"os"
+	"strconv"
 )
 
 type Task struct {
@@ -25,37 +28,101 @@ type Task struct {
 }
 
 func LoadTasks(path string) ([]*Task, error) {
-	// Открытие файла tasks.csv
-	// Парсинг CSV и создание списка задач
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	records, err := reader.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
 	var tasks []*Task
-	// Заполнение списка задач из файла
+	for _, record := range records[1:] { // Пропускаем заголовок
+		task, err := parseTask(record)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, task)
+	}
+
 	return tasks, nil
 }
 
-func (s *Sniper) ExecuteTask(task *Task) {
-	// Получаем кошелек по имени
-	wallet := s.wallets[task.WalletName]
-
-	// В зависимости от модуля выбираем стратегию
-	switch task.Module {
-	case "RAYDIUM":
-		// Запуск стратегии для Raydium
-		s.executeRaydiumStrategy(task, wallet)
-	case "PUMP.FUN":
-		// Запуск стратегии для pump.fun
-		s.executePumpFunStrategy(task, wallet)
-	default:
-		s.logger.Warn("Неизвестный модуль", zap.String("module", task.Module))
+func parseTask(record []string) (*Task, error) {
+	if len(record) != 16 {
+		return nil, errors.New("invalid CSV format")
 	}
-}
 
-func (s *Sniper) executeRaydiumStrategy(task *Task, wallet *wallet.Wallet) {
-	// Реализация стратегии для Raydium
-	// - Подписываемся на новые пулы
-	// - При появлении подходящего пула готовим и отправляем транзакцию
-}
+	workers, err := strconv.Atoi(record[2])
+	if err != nil {
+		return nil, fmt.Errorf("invalid Workers value: %v", err)
+	}
 
-func (s *Sniper) executePumpFunStrategy(task *Task, wallet *wallet.Wallet) {
-	// Реализация стратегии для pump.fun
-	// - Аналогично Raydium, но с учетом особенностей pump.fun
+	delta, err := strconv.Atoi(record[4])
+	if err != nil {
+		return nil, fmt.Errorf("invalid Delta value: %v", err)
+	}
+
+	priorityFee, err := strconv.ParseFloat(record[5], 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid PriorityFee value: %v", err)
+	}
+
+	amountIn, err := strconv.ParseFloat(record[9], 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid AmountIn value: %v", err)
+	}
+
+	minAmountOut, err := strconv.ParseFloat(record[10], 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid MinAmountOut value: %v", err)
+	}
+
+	autosellPercent, err := strconv.ParseFloat(record[11], 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid AutosellPercent value: %v", err)
+	}
+
+	autosellDelay, err := strconv.Atoi(record[12])
+	if err != nil {
+		return nil, fmt.Errorf("invalid AutosellDelay value: %v", err)
+	}
+
+	autosellAmount, err := strconv.ParseFloat(record[13], 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid AutosellAmount value: %v", err)
+	}
+
+	transactionDelay, err := strconv.Atoi(record[14])
+	if err != nil {
+		return nil, fmt.Errorf("invalid TransactionDelay value: %v", err)
+	}
+
+	autosellPriorityFee, err := strconv.ParseFloat(record[15], 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid AutosellPriorityFee value: %v", err)
+	}
+
+	return &Task{
+		TaskName:            record[0],
+		Module:              record[1],
+		Workers:             workers,
+		WalletName:          record[3],
+		Delta:               delta,
+		PriorityFee:         priorityFee,
+		AMMID:               record[6],
+		SourceToken:         record[7],
+		TargetToken:         record[8],
+		AmountIn:            amountIn,
+		MinAmountOut:        minAmountOut,
+		AutosellPercent:     autosellPercent,
+		AutosellDelay:       autosellDelay,
+		AutosellAmount:      autosellAmount,
+		TransactionDelay:    transactionDelay,
+		AutosellPriorityFee: autosellPriorityFee,
+	}, nil
 }

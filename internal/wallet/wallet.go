@@ -1,7 +1,10 @@
 package wallet
 
 import (
-	"io/ioutil"
+	"encoding/csv"
+	"errors"
+	"fmt"
+	"os"
 
 	"github.com/gagliardetto/solana-go"
 )
@@ -14,27 +17,50 @@ type Wallet struct {
 }
 
 func LoadWallets(path string) (map[string]*Wallet, error) {
-	// Открытие файла wallets.csv
-	data, err := ioutil.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
-		// Возвращаем ошибку чтения файла
+		return nil, err
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	records, err := reader.ReadAll()
+	if err != nil {
 		return nil, err
 	}
 
-	// Парсинг CSV данных
-	// Создание map[string]*Wallet
-	wallets := make(map[string]*Wallet)
+	if len(records) < 2 {
+		return nil, errors.New("CSV file is empty or contains only header")
+	}
 
-	// Для каждой строки в CSV:
-	// - Извлекаем имя кошелька и приватный ключ
-	// - Декодируем приватный ключ из строки
-	// - Создаем объект Wallet и добавляем в map
+	wallets := make(map[string]*Wallet)
+	for _, record := range records[1:] { // Пропускаем заголовок
+		if len(record) != 2 {
+			return nil, errors.New("invalid CSV format")
+		}
+
+		name := record[0]
+		privateKeyStr := record[1]
+
+		privateKey, err := solana.PrivateKeyFromBase58(privateKeyStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid private key for wallet %s: %v", name, err)
+		}
+
+		publicKey := privateKey.PublicKey()
+		address := publicKey.String()
+
+		wallets[name] = &Wallet{
+			Name:       name,
+			PrivateKey: privateKey,
+			PublicKey:  publicKey,
+			Address:    address,
+		}
+	}
+
+	if len(wallets) == 0 {
+		return nil, errors.New("no valid wallets found in CSV file")
+	}
 
 	return wallets, nil
-}
-
-func (w *Wallet) SignTransaction(tx *solana.Transaction) error {
-	// Используем приватный ключ для подписания транзакции
-	// Добавляем подпись в транзакцию
-	return nil
 }
