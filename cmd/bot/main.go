@@ -1,10 +1,10 @@
 package main
 
 import (
-	"github.com/your_project/internal/config"
-	"github.com/your_project/internal/sniping"
-	"github.com/your_project/internal/wallet"
-	"github.com/your_project/pkg/blockchain/solana"
+	"github.com/rovshanmuradov/solana-bot/internal/config"
+	"github.com/rovshanmuradov/solana-bot/internal/sniping"
+	"github.com/rovshanmuradov/solana-bot/internal/wallet"
+	"github.com/rovshanmuradov/solana-bot/pkg/blockchain/solana"
 	"go.uber.org/zap"
 )
 
