@@ -1,8 +1,11 @@
+// internal/transaction/transaction.go
 package transaction
 
 import (
+	"bytes"
 	"context"
-	"fmt"
+	"encoding/binary"
+	"math"
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/rovshanmuradov/solana-bot/internal/sniping"
@@ -11,52 +14,219 @@ import (
 	"go.uber.org/zap"
 )
 
-func PrepareTransaction(ctx context.Context, task *sniping.Task, wallet *wallet.Wallet, client *solanaclient.Client) (*solana.Transaction, error) {
-	// Получаем последний blockhash
-	blockhash, err := client.GetRecentBlockhash(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get recent blockhash: %w", err)
-	}
-
-	// Создаем новую транзакцию с полученным blockhash
-	tx, err := solana.NewTransaction(
-		[]solana.Instruction{},
-		blockhash,
-		solana.TransactionPayer(wallet.PublicKey),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create new transaction: %w", err)
-	}
-
-	// Здесь нужно добавить инструкции для обмена SOL на целевые токены
-	// Учитываем параметры из задачи (AmountIn, MinAmountOut и т.д.)
-	// Например, создаем инструкцию для обмена
-	// instr := ... // реализация инструкции обмена
-	// tx.Add(instr)
-
-	// Подписываем транзакцию приватным ключом кошелька
-	_, err = tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
-		if wallet.PublicKey.Equals(key) {
-			return &wallet.PrivateKey
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to sign transaction: %w", err)
-	}
-
-	return tx, nil
+// SwapInstructionData представляет данные инструкции свапа
+type SwapInstructionData struct {
+	Instruction  uint64 // Код инструкции
+	AmountIn     uint64 // Сумма входа
+	MinAmountOut uint64 // Минимальная сумма выхода
 }
 
-func SendTransaction(ctx context.Context, tx *solana.Transaction, client *solanaclient.Client, logger *zap.Logger) (solana.Signature, error) {
-	// Отправляем транзакцию в сеть Solana
-	txHash, err := client.SendTransaction(ctx, tx)
+type RaydiumPoolInfo struct {
+	AmmProgramID          string
+	AmmID                 string
+	AmmAuthority          string
+	AmmOpenOrders         string
+	AmmTargetOrders       string
+	PoolCoinTokenAccount  string
+	PoolPcTokenAccount    string
+	SerumProgramID        string
+	SerumMarket           string
+	SerumBids             string
+	SerumAsks             string
+	SerumEventQueue       string
+	SerumCoinVaultAccount string
+	SerumPcVaultAccount   string
+	SerumVaultSigner      string
+}
+
+const (
+	RaydiumAmmProgramID  = "AMMProgramID"   // Замените на реальный Program ID AMM Raydium
+	RaydiumAmmID         = "AMM ID"         // Замените на конкретный AMM ID пула
+	RaydiumAmmAuthority  = "AMM Authority"  // Замените на AMM Authority
+	RaydiumOpenOrders    = "Open Orders"    // Замените на Open Orders Address
+	RaydiumTargetOrders  = "Target Orders"  // Замените на Target Orders Address
+	RaydiumPoolCoinToken = "Pool Coin"      // Замените на Pool Coin Address
+	RaydiumPoolPcToken   = "Pool PC"        // Замените на Pool PC Address
+	SerumProgramID       = "SerumProgramID" // Замените на Program ID Serum DEX
+)
+
+func PrepareAndSendTransaction(
+	ctx context.Context,
+	task *sniping.Task,
+	wallet *wallet.Wallet,
+	client *solanaclient.Client,
+	logger *zap.Logger,
+	poolInfo *RaydiumPoolInfo,
+) error {
+	// Получение последнего blockhash
+	recentBlockhash, err := client.GetRecentBlockhash(ctx)
 	if err != nil {
-		// Логируем и возвращаем ошибку отправки
-		logger.Error("Ошибка отправки транзакции", zap.Error(err))
-		return solana.Signature{}, err
+		logger.Error("Failed to get recent blockhash", zap.Error(err))
+		return err
 	}
 
-	// Возвращаем хеш транзакции
-	return txHash, nil
+	// Преобразование AmountIn и MinAmountOut в uint64 с учетом десятичных знаков токена
+	amountIn := uint64(task.AmountIn * math.Pow10(task.SourceTokenDecimals))
+	minAmountOut := uint64(task.MinAmountOut * math.Pow10(task.TargetTokenDecimals))
+
+	// Создание инструкции ComputeBudget для установки приоритетной комиссии
+	priorityFee := uint64(task.PriorityFee * 1e9) // Конвертация SOL в лампорты
+	computeBudgetInstruction := computebudget.NewSetComputeUnitPrice(
+		priorityFee, // Устанавливает цену за единицу вычислений
+	).Build()
+
+	// Создание инструкции свапа
+	swapInstruction, err := CreateRaydiumSwapInstruction(
+		wallet.PublicKey,
+		task.UserSourceTokenAccount,
+		task.UserDestinationTokenAccount,
+		amountIn,
+		minAmountOut,
+		logger,
+		poolInfo,
+	)
+	if err != nil {
+		logger.Error("Failed to create swap instruction", zap.Error(err))
+		return err
+	}
+
+	// Создание транзакции
+	tx, err := solana.NewTransaction(
+		[]solana.Instruction{computeBudgetInstruction, swapInstruction},
+		recentBlockhash,
+	)
+	if err != nil {
+		logger.Error("Failed to create transaction", zap.Error(err))
+		return err
+	}
+
+	// Подписание транзакции
+	_, err = tx.Sign(
+		func(key solana.PublicKey) *solana.PrivateKey {
+			if key.Equals(wallet.PublicKey) {
+				return &wallet.PrivateKey
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		logger.Error("Failed to sign transaction", zap.Error(err))
+		return err
+	}
+
+	// Отправка транзакции
+	signature, err := client.SendTransaction(ctx, tx)
+	if err != nil {
+		logger.Error("Failed to send transaction", zap.Error(err))
+		return err
+	}
+
+	logger.Info("Transaction sent successfully", zap.String("signature", signature.String()))
+	return nil
+}
+
+// Метод Serialize для SwapInstructionData
+func (s *SwapInstructionData) Serialize() ([]byte, error) {
+	// Создаем буфер для данных
+	buf := new(bytes.Buffer)
+
+	// Пишем код инструкции
+	err := binary.Write(buf, binary.LittleEndian, s.Instruction)
+	if err != nil {
+		return nil, err
+	}
+
+	// Пишем AmountIn
+	err = binary.Write(buf, binary.LittleEndian, s.AmountIn)
+	if err != nil {
+		return nil, err
+	}
+
+	// Пишем MinAmountOut
+	err = binary.Write(buf, binary.LittleEndian, s.MinAmountOut)
+	if err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func CreateRaydiumSwapInstruction(
+	userWallet solana.PublicKey,
+	userSourceTokenAccount solana.PublicKey,
+	userDestinationTokenAccount solana.PublicKey,
+	amountIn uint64,
+	minAmountOut uint64,
+	logger *zap.Logger,
+	poolInfo *RaydiumPoolInfo, // Структура с информацией о пуле
+) (*solana.Instruction, error) {
+	// Установка Program ID Raydium
+	ammProgramID := solana.MustPublicKeyFromBase58(poolInfo.AmmProgramID)
+
+	// Определение AccountMeta
+	accounts := []*solana.AccountMeta{
+		// User Source Token Account
+		{PublicKey: userSourceTokenAccount, IsSigner: false, IsWritable: true},
+		// User Destination Token Account
+		{PublicKey: userDestinationTokenAccount, IsSigner: false, IsWritable: true},
+		// AMM ID
+		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.AmmID), IsSigner: false, IsWritable: true},
+		// AMM Authority
+		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.AmmAuthority), IsSigner: false, IsWritable: false},
+		// AMM Open Orders
+		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.AmmOpenOrders), IsSigner: false, IsWritable: true},
+		// AMM Target Orders
+		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.AmmTargetOrders), IsSigner: false, IsWritable: true},
+		// Pool Coin Token Account
+		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.PoolCoinTokenAccount), IsSigner: false, IsWritable: true},
+		// Pool PC Token Account
+		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.PoolPcTokenAccount), IsSigner: false, IsWritable: true},
+		// Serum Program ID
+		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.SerumProgramID), IsSigner: false, IsWritable: false},
+		// Serum Market
+		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.SerumMarket), IsSigner: false, IsWritable: true},
+		// Serum Bids
+		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.SerumBids), IsSigner: false, IsWritable: true},
+		// Serum Asks
+		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.SerumAsks), IsSigner: false, IsWritable: true},
+		// Serum Event Queue
+		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.SerumEventQueue), IsSigner: false, IsWritable: true},
+		// Serum Coin Vault Account
+		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.SerumCoinVaultAccount), IsSigner: false, IsWritable: true},
+		// Serum PC Vault Account
+		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.SerumPcVaultAccount), IsSigner: false, IsWritable: true},
+		// Serum Vault Signer
+		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.SerumVaultSigner), IsSigner: false, IsWritable: false},
+		// User Wallet (плательщик комиссии)
+		{PublicKey: userWallet, IsSigner: true, IsWritable: false},
+		// Token Program ID
+		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
+		// Sysvar Rent
+		{PublicKey: solana.SysVarRentPubkey, IsSigner: false, IsWritable: false},
+		// Sysvar Clock
+		{PublicKey: solana.SysVarClockPubkey, IsSigner: false, IsWritable: false},
+	}
+
+	// Создание данных инструкции
+	instructionData := SwapInstructionData{
+		Instruction:  9, // Код инструкции для свапа (проверьте актуальность)
+		AmountIn:     amountIn,
+		MinAmountOut: minAmountOut,
+	}
+
+	// Сериализация данных инструкции
+	data, err := instructionData.Serialize()
+	if err != nil {
+		logger.Error("Failed to serialize instruction data", zap.Error(err))
+		return nil, err
+	}
+
+	// Создание инструкции
+	instruction := &solana.Instruction{
+		ProgramID: ammProgramID,
+		Accounts:  accounts,
+		Data:      data,
+	}
+
+	return instruction, nil
 }

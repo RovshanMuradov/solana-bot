@@ -2,6 +2,7 @@
 package eventlistener
 
 import (
+	"context"
 	"net"
 
 	"github.com/gobwas/ws"
@@ -18,11 +19,10 @@ type Event struct {
 	// Определите поля события
 }
 
-func NewEventListener(wsURL string, logger *zap.Logger) (*EventListener, error) {
-	// Устанавливаем WebSocket-соединение
-	conn, _, _, err := ws.Dial(nil, wsURL)
+func NewEventListener(ctx context.Context, wsURL string, logger *zap.Logger) (*EventListener, error) {
+	// Устанавливаем WebSocket-соединение с использованием контекста
+	conn, _, _, err := ws.Dial(ctx, wsURL)
 	if err != nil {
-		// Возвращаем ошибку подключения
 		return nil, err
 	}
 
