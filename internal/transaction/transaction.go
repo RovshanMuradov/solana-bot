@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/programs/computebudget"
@@ -24,21 +25,22 @@ type SwapInstructionData struct {
 }
 
 type RaydiumPoolInfo struct {
-	AmmProgramID          string
-	AmmID                 string
-	AmmAuthority          string
-	AmmOpenOrders         string
-	AmmTargetOrders       string
-	PoolCoinTokenAccount  string
-	PoolPcTokenAccount    string
-	SerumProgramID        string
-	SerumMarket           string
-	SerumBids             string
-	SerumAsks             string
-	SerumEventQueue       string
-	SerumCoinVaultAccount string
-	SerumPcVaultAccount   string
-	SerumVaultSigner      string
+	AmmProgramID               string // Program ID AMM Raydium
+	AmmID                      string // AMM ID пула
+	AmmAuthority               string // Авторитет AMM
+	AmmOpenOrders              string // Открытые ордера AMM
+	AmmTargetOrders            string // Целевые ордера AMM
+	PoolCoinTokenAccount       string // Аккаунт токена пула
+	PoolPcTokenAccount         string // Аккаунт токена PC пула
+	SerumProgramID             string // Program ID Serum DEX
+	SerumMarket                string // Рынок Serum
+	SerumBids                  string // Заявки на покупку Serum
+	SerumAsks                  string // Заявки на продажу Serum
+	SerumEventQueue            string // Очередь событий Serum
+	SerumCoinVaultAccount      string // Аккаунт хранилища монет
+	SerumPcVaultAccount        string // Аккаунт хранилища PC
+	SerumVaultSigner           string // Подписант хранилища Serum
+	RaydiumSwapInstructionCode uint64 // Код инструкции свапа Raydium
 }
 
 const (
@@ -51,6 +53,19 @@ const (
 	RaydiumPoolPcToken   = "Pool PC"        // Замените на Pool PC Address
 	SerumProgramID       = "SerumProgramID" // Замените на Program ID Serum DEX
 )
+
+func RetryOperation(attempts int, sleep time.Duration, operation func() error) error {
+	var err error
+	for i := 0; i < attempts; i++ {
+		err = operation()
+		if err == nil {
+			return nil
+		}
+		time.Sleep(sleep)
+		sleep *= 2 // Экспоненциальное увеличение задержки
+	}
+	return fmt.Errorf("после %d попыток: %w", attempts, err)
+}
 
 func PrepareAndSendTransaction(
 	ctx context.Context,
@@ -116,14 +131,20 @@ func PrepareAndSendTransaction(
 		return err
 	}
 
-	// Отправка транзакции
-	signature, err := client.SendTransaction(ctx, tx)
+	// Использование в PrepareAndSendTransaction:
+	err = RetryOperation(3, time.Second, func() error {
+		signature, err := client.SendTransaction(ctx, tx)
+		if err != nil {
+			logger.Warn("Failed to send transaction, retrying", zap.Error(err))
+			return err
+		}
+		logger.Info("Transaction sent successfully", zap.String("signature", signature.String()))
+		return nil
+	})
 	if err != nil {
-		logger.Error("Failed to send transaction", zap.Error(err))
+		logger.Error("All attempts to send transaction failed", zap.Error(err))
 		return err
 	}
-
-	logger.Info("Transaction sent successfully", zap.String("signature", signature.String()))
 	return nil
 }
 
@@ -211,7 +232,7 @@ func CreateRaydiumSwapInstruction(
 
 	// Создание данных инструкции
 	instructionData := SwapInstructionData{
-		Instruction:  9, // Код инструкции для свапа (проверьте актуальность)
+		Instruction:  poolInfo.RaydiumSwapInstructionCode, // Предполагается, что это поле добавлено в RaydiumPoolInfo
 		AmountIn:     amountIn,
 		MinAmountOut: minAmountOut,
 	}
