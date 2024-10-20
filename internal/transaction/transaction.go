@@ -160,8 +160,8 @@ func CreateRaydiumSwapInstruction(
 	amountIn uint64,
 	minAmountOut uint64,
 	logger *zap.Logger,
-	poolInfo *RaydiumPoolInfo, // Структура с информацией о пуле
-) (*solana.Instruction, error) {
+	poolInfo *RaydiumPoolInfo,
+) (solana.Instruction, error) {
 	// Установка Program ID Raydium
 	ammProgramID := solana.MustPublicKeyFromBase58(poolInfo.AmmProgramID)
 
@@ -224,11 +224,11 @@ func CreateRaydiumSwapInstruction(
 	}
 
 	// Создание инструкции
-	instruction := &solana.Instruction{
-		ProgramID: ammProgramID,
-		Accounts:  accounts,
-		Data:      data,
-	}
+	instruction := solana.NewInstruction(
+		ammProgramID,
+		accounts,
+		data,
+	)
 
 	return instruction, nil
 }

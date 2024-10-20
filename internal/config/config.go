@@ -1,41 +1,40 @@
 package config
 
 import (
-	"encoding/json"
 	"errors"
-	"os"
+
+	"github.com/spf13/viper"
 )
 
 type Config struct {
-	License      string   `json:"license"`
-	RPCList      []string `json:"rpc_list"`
-	WebSocketURL string   `json:"websocket_url"`
-	MonitorDelay int      `json:"monitor_delay"`
-	RPCDelay     int      `json:"rpc_delay"`
-	PriceDelay   int      `json:"price_delay"`
-	DebugLogging bool     `json:"debug_logging"`
-	TPSLogging   bool     `json:"tps_logging"`
-	Retries      int      `json:"retries"`
-	WebhookURL   string   `json:"webhook_url"`
+	License      string   `mapstructure:"license"`
+	RPCList      []string `mapstructure:"rpc_list"`
+	WebSocketURL string   `mapstructure:"websocket_url"`
+	MonitorDelay int      `mapstructure:"monitor_delay"`
+	RPCDelay     int      `mapstructure:"rpc_delay"`
+	PriceDelay   int      `mapstructure:"price_delay"`
+	DebugLogging bool     `mapstructure:"debug_logging"`
+	TPSLogging   bool     `mapstructure:"tps_logging"`
+	Retries      int      `mapstructure:"retries"`
+	WebhookURL   string   `mapstructure:"webhook_url"`
+	Workers      int      `mapstructure:"workers"`
 }
 
 // LoadConfig читает JSON-файл конфигурации и возвращает заполненную структуру Config.
 func LoadConfig(path string) (*Config, error) {
-	// Открытие файла конфигурации
-	file, err := os.Open(path)
-	if err != nil {
+	viper.SetConfigFile(path)
+	viper.AutomaticEnv() // Чтение переменных окружения
+
+	if err := viper.ReadInConfig(); err != nil {
 		return nil, err
 	}
-	defer file.Close()
 
-	// Декодирование JSON в структуру Config
 	var cfg Config
-	decoder := json.NewDecoder(file)
-	if err := decoder.Decode(&cfg); err != nil {
+	if err := viper.Unmarshal(&cfg); err != nil {
 		return nil, err
 	}
 
-	// Валидация обязательных полей
+	// Валидация конфигурации
 	if err := validateConfig(&cfg); err != nil {
 		return nil, err
 	}
