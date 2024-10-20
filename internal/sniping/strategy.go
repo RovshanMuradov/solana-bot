@@ -6,25 +6,31 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+
+	"github.com/gagliardetto/solana-go"
 )
 
 type Task struct {
-	TaskName            string
-	Module              string
-	Workers             int
-	WalletName          string
-	Delta               int
-	PriorityFee         float64
-	AMMID               string
-	SourceToken         string
-	TargetToken         string
-	AmountIn            float64
-	MinAmountOut        float64
-	AutosellPercent     float64
-	AutosellDelay       int
-	AutosellAmount      float64
-	TransactionDelay    int
-	AutosellPriorityFee float64
+	TaskName                    string
+	Module                      string
+	Workers                     int
+	WalletName                  string
+	Delta                       int
+	PriorityFee                 float64
+	AMMID                       string
+	SourceToken                 string
+	TargetToken                 string
+	AmountIn                    float64
+	MinAmountOut                float64
+	AutosellPercent             float64
+	AutosellDelay               int
+	AutosellAmount              float64
+	TransactionDelay            int
+	AutosellPriorityFee         float64
+	UserSourceTokenAccount      solana.PublicKey
+	UserDestinationTokenAccount solana.PublicKey
+	SourceTokenDecimals         int
+	TargetTokenDecimals         int
 }
 
 func LoadTasks(path string) ([]*Task, error) {
