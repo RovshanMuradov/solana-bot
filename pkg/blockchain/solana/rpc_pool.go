@@ -2,7 +2,10 @@
 package solana
 
 import (
+	"context"
+	"log"
 	"sync"
+	"time"
 
 	"github.com/gagliardetto/solana-go/rpc"
 )
@@ -35,4 +38,24 @@ func (p *RPCPool) GetClient() *rpc.Client {
 	client := p.clients[p.index]
 	p.index = (p.index + 1) % len(p.clients)
 	return client
+}
+
+func (p *RPCPool) CheckClientHealth(client *rpc.Client) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := client.GetRecentBlockhash(ctx, rpc.CommitmentFinalized)
+	return err == nil
+}
+
+func (p *RPCPool) PerformHealthChecks() {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
+	for i, client := range p.clients {
+		if !p.CheckClientHealth(client) {
+			log.Printf("RPC клиент %d недоступен, удаляем из пула", i)
+			p.clients = append(p.clients[:i], p.clients[i+1:]...)
+		}
+	}
 }

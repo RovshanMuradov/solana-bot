@@ -64,3 +64,13 @@ func LoadWallets(path string) (map[string]*Wallet, error) {
 
 	return wallets, nil
 }
+
+func (w *Wallet) SignTransaction(tx *solana.Transaction) error {
+	_, err := tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+		if key.Equals(w.PublicKey) {
+			return &w.PrivateKey
+		}
+		return nil
+	})
+	return err
+}
