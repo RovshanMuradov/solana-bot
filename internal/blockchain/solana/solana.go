@@ -1,4 +1,3 @@
-// internal/blockchain/solana/solana.go
 package solana
 
 import (
@@ -10,15 +9,15 @@ import (
 )
 
 type SolanaBlockchain struct {
-	client *Client // Изменили тип на *Client
+	client *Client
 	logger *zap.Logger
 }
 
-func NewSolanaBlockchain(client *Client, logger *zap.Logger) *SolanaBlockchain {
+func NewSolanaBlockchain(client *Client, logger *zap.Logger) (*SolanaBlockchain, error) {
 	return &SolanaBlockchain{
 		client: client,
 		logger: logger,
-	}
+	}, nil
 }
 
 func (s *SolanaBlockchain) Name() string {
@@ -26,7 +25,6 @@ func (s *SolanaBlockchain) Name() string {
 }
 
 func (s *SolanaBlockchain) SendTransaction(ctx context.Context, tx interface{}) (string, error) {
-	// Приводим tx к нужному типу и отправляем транзакцию через клиент Solana
 	solTx, ok := tx.(*solana.Transaction)
 	if !ok {
 		return "", fmt.Errorf("invalid transaction type for Solana")
@@ -37,4 +35,8 @@ func (s *SolanaBlockchain) SendTransaction(ctx context.Context, tx interface{}) 
 		return "", err
 	}
 	return signature.String(), nil
+}
+
+func (s *SolanaBlockchain) GetRecentBlockhash(ctx context.Context) (solana.Hash, error) {
+	return s.client.GetRecentBlockhash(ctx)
 }

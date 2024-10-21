@@ -11,8 +11,8 @@ import (
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/programs/computebudget"
-	solanaclient "github.com/rovshanmuradov/solana-bot/blockchain/solana"
-	"github.com/rovshanmuradov/solana-bot/internal/sniping"
+	solanaClient "github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
+	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
 )
@@ -69,9 +69,9 @@ func RetryOperation(attempts int, sleep time.Duration, operation func() error) e
 
 func PrepareAndSendTransaction(
 	ctx context.Context,
-	task *sniping.Task,
+	task *types.Task,
 	wallet *wallet.Wallet,
-	client *solanaclient.Client,
+	client *solanaClient.Client,
 	logger *zap.Logger,
 	poolInfo *RaydiumPoolInfo,
 ) error {

@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/gagliardetto/solana-go"
+	solanaBlockchain "github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
 	"github.com/rovshanmuradov/solana-bot/internal/config"
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
 	"github.com/rovshanmuradov/solana-bot/internal/types"
@@ -89,16 +90,26 @@ func (s *Sniper) executeTask(ctx context.Context, task *types.Task) {
 	}
 
 	// Теперь используем instruction для создания и отправки транзакции
+	solanaBC, ok := s.blockchains["Solana"].(*solanaBlockchain.SolanaBlockchain)
+	if !ok {
+		s.logger.Error("Неверный тип блокчейна Solana")
+		return
+	}
+
+	recentBlockhash, err := solanaBC.GetRecentBlockhash(ctx)
+	if err != nil {
+		s.logger.Error("Ошибка при получении recent blockhash", zap.Error(err))
+		return
+	}
+
 	tx, err := solana.NewTransaction(
 		[]solana.Instruction{instruction},
-		// Получаем recent blockhash
-		s.blockchains["Solana"].(*solana.SolanaBlockchain).client.GetRecentBlockhash(ctx),
+		recentBlockhash,
 	)
 	if err != nil {
 		s.logger.Error("Ошибка при создании транзакции", zap.Error(err))
 		return
 	}
-
 	// Подписываем транзакцию
 	err = s.wallets[task.WalletName].SignTransaction(tx)
 	if err != nil {

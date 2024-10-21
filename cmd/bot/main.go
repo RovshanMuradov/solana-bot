@@ -6,7 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
+	solanaClient "github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
 	"github.com/rovshanmuradov/solana-bot/internal/config"
 	"github.com/rovshanmuradov/solana-bot/internal/sniping"
 	"github.com/rovshanmuradov/solana-bot/internal/types"
@@ -38,9 +38,15 @@ func main() {
 		logger.Fatal("Ошибка загрузки кошельков", zap.Error(err))
 	}
 
+	// Инициализация клиента Solana
+	client, err := solanaClient.NewClient(cfg.RPCList, logger)
+	if err != nil {
+		logger.Fatal("Ошибка инициализации клиента Solana", zap.Error(err))
+	}
+
 	// Инициализация блокчейнов
 	blockchains := make(map[string]types.Blockchain)
-	solanaBlockchain, err := solana.NewSolanaBlockchain(solanaClient, logger)
+	solanaBlockchain, err := solanaClient.NewSolanaBlockchain(client, logger)
 	if err != nil {
 		logger.Fatal("Ошибка инициализации Solana blockchain", zap.Error(err))
 	}
