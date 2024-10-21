@@ -6,10 +6,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
 	"github.com/rovshanmuradov/solana-bot/internal/config"
 	"github.com/rovshanmuradov/solana-bot/internal/sniping"
+	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
-	solanaclient "github.com/rovshanmuradov/solana-bot/pkg/blockchain/solana"
 	"go.uber.org/zap"
 )
 
@@ -37,11 +38,13 @@ func main() {
 		logger.Fatal("Ошибка загрузки кошельков", zap.Error(err))
 	}
 
-	// Инициализация клиента Solana
-	solanaClient, err := solanaclient.NewClient(cfg.RPCList, logger)
+	// Инициализация блокчейнов
+	blockchains := make(map[string]types.Blockchain)
+	solanaBlockchain, err := solana.NewSolanaBlockchain(solanaClient, logger)
 	if err != nil {
-		logger.Fatal("Ошибка инициализации клиента Solana", zap.Error(err))
+		logger.Fatal("Ошибка инициализации Solana blockchain", zap.Error(err))
 	}
+	blockchains["Solana"] = solanaBlockchain
 
 	// Загрузка задач
 	tasks, err := sniping.LoadTasks("configs/tasks.csv")
@@ -50,7 +53,7 @@ func main() {
 	}
 
 	// Создание экземпляра снайпера
-	sniper := sniping.NewSniper(solanaClient, wallets, cfg, logger)
+	sniper := sniping.NewSniper(blockchains, wallets, cfg, logger)
 
 	// Запуск снайпера с загруженными задачами в отдельной горутине
 	go func() {

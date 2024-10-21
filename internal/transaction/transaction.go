@@ -11,9 +11,9 @@ import (
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/programs/computebudget"
+	solanaclient "github.com/rovshanmuradov/solana-bot/blockchain/solana"
 	"github.com/rovshanmuradov/solana-bot/internal/sniping"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
-	solanaclient "github.com/rovshanmuradov/solana-bot/pkg/blockchain/solana"
 	"go.uber.org/zap"
 )
 

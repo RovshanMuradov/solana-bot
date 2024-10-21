@@ -7,33 +7,10 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/gagliardetto/solana-go"
+	"github.com/rovshanmuradov/solana-bot/internal/types"
 )
 
-type Task struct {
-	TaskName                    string
-	Module                      string
-	Workers                     int
-	WalletName                  string
-	Delta                       int
-	PriorityFee                 float64
-	AMMID                       string
-	SourceToken                 string
-	TargetToken                 string
-	AmountIn                    float64
-	MinAmountOut                float64
-	AutosellPercent             float64
-	AutosellDelay               int
-	AutosellAmount              float64
-	TransactionDelay            int
-	AutosellPriorityFee         float64
-	UserSourceTokenAccount      solana.PublicKey
-	UserDestinationTokenAccount solana.PublicKey
-	SourceTokenDecimals         int
-	TargetTokenDecimals         int
-}
-
-func LoadTasks(path string) ([]*Task, error) {
+func LoadTasks(path string) ([]*types.Task, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -46,7 +23,7 @@ func LoadTasks(path string) ([]*Task, error) {
 		return nil, err
 	}
 
-	var tasks []*Task
+	var tasks []*types.Task
 	for _, record := range records[1:] { // Пропускаем заголовок
 		task, err := parseTask(record)
 		if err != nil {
@@ -58,7 +35,7 @@ func LoadTasks(path string) ([]*Task, error) {
 	return tasks, nil
 }
 
-func parseTask(record []string) (*Task, error) {
+func parseTask(record []string) (*types.Task, error) {
 	if len(record) != 16 {
 		return nil, errors.New("invalid CSV format")
 	}
@@ -113,7 +90,7 @@ func parseTask(record []string) (*Task, error) {
 		return nil, fmt.Errorf("invalid AutosellPriorityFee value: %v", err)
 	}
 
-	return &Task{
+	return &types.Task{
 		TaskName:            record[0],
 		Module:              record[1],
 		Workers:             workers,

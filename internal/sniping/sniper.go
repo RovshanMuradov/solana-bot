@@ -3,33 +3,34 @@ package sniping
 import (
 	"context"
 	"sync"
-	"time"
 
+	"github.com/gagliardetto/solana-go"
 	"github.com/rovshanmuradov/solana-bot/internal/config"
+	"github.com/rovshanmuradov/solana-bot/internal/dex"
+	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
-	"github.com/rovshanmuradov/solana-bot/pkg/blockchain/solana"
 	"go.uber.org/zap"
 )
 
 type Sniper struct {
-	client  *solana.Client
-	wallets map[string]*wallet.Wallet
-	config  *config.Config
-	logger  *zap.Logger
+	blockchains map[string]types.Blockchain
+	wallets     map[string]*wallet.Wallet
+	config      *config.Config
+	logger      *zap.Logger
 }
 
-func NewSniper(client *solana.Client, wallets map[string]*wallet.Wallet, cfg *config.Config, logger *zap.Logger) *Sniper {
+func NewSniper(blockchains map[string]types.Blockchain, wallets map[string]*wallet.Wallet, cfg *config.Config, logger *zap.Logger) *Sniper {
 	return &Sniper{
-		client:  client,
-		wallets: wallets,
-		config:  cfg,
-		logger:  logger,
+		blockchains: blockchains,
+		wallets:     wallets,
+		config:      cfg,
+		logger:      logger,
 	}
 }
 
-func (s *Sniper) Run(ctx context.Context, tasks []*Task) {
+func (s *Sniper) Run(ctx context.Context, tasks []*types.Task) {
 	var wg sync.WaitGroup
-	taskChan := make(chan *Task, len(tasks))
+	taskChan := make(chan *types.Task, len(tasks))
 
 	workers := s.config.Workers
 	if workers <= 0 {
@@ -54,7 +55,7 @@ func (s *Sniper) Run(ctx context.Context, tasks []*Task) {
 	s.logger.Info("Sniper завершил работу")
 }
 
-func (s *Sniper) worker(ctx context.Context, wg *sync.WaitGroup, taskChan <-chan *Task) {
+func (s *Sniper) worker(ctx context.Context, wg *sync.WaitGroup, taskChan <-chan *types.Task) {
 	defer wg.Done()
 
 	for task := range taskChan {
@@ -62,27 +63,60 @@ func (s *Sniper) worker(ctx context.Context, wg *sync.WaitGroup, taskChan <-chan
 	}
 }
 
-func (s *Sniper) executeTask(ctx context.Context, task *Task) {
+func (s *Sniper) executeTask(ctx context.Context, task *types.Task) {
 	s.logger.Info("Начало выполнения задачи", zap.String("task", task.TaskName))
 
-	ticker := time.NewTicker(time.Duration(s.config.MonitorDelay) * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			s.logger.Info("Задача отменена", zap.String("task", task.TaskName))
-			return
-		case <-ticker.C:
-			if err := s.processTask(task); err != nil {
-				s.logger.Error("Ошибка при обработке задачи", zap.Error(err), zap.String("task", task.TaskName))
-				// Здесь можно добавить логику повторных попыток или другой обработки ошибок
-			}
-		}
+	// Получаем DEX-модуль на основе имени
+	dexModule, err := dex.GetDEXByName(task.DEXName)
+	if err != nil {
+		s.logger.Error("Не удалось получить DEX-модуль", zap.Error(err))
+		return
 	}
+
+	// Используем DEX-модуль для подготовки инструкции свапа
+	instruction, err := dexModule.PrepareSwapInstruction(
+		ctx,
+		s.wallets[task.WalletName].PublicKey,
+		solana.MustPublicKeyFromBase58(task.SourceToken),
+		solana.MustPublicKeyFromBase58(task.TargetToken),
+		uint64(task.AmountIn),
+		uint64(task.MinAmountOut),
+		s.logger,
+	)
+	if err != nil {
+		s.logger.Error("Ошибка при подготовке инструкции свапа", zap.Error(err))
+		return
+	}
+
+	// Теперь используем instruction для создания и отправки транзакции
+	tx, err := solana.NewTransaction(
+		[]solana.Instruction{instruction},
+		// Получаем recent blockhash
+		s.blockchains["Solana"].(*solana.SolanaBlockchain).client.GetRecentBlockhash(ctx),
+	)
+	if err != nil {
+		s.logger.Error("Ошибка при создании транзакции", zap.Error(err))
+		return
+	}
+
+	// Подписываем транзакцию
+	err = s.wallets[task.WalletName].SignTransaction(tx)
+	if err != nil {
+		s.logger.Error("Ошибка при подписании транзакции", zap.Error(err))
+		return
+	}
+
+	// Отправляем транзакцию
+	signature, err := s.blockchains["Solana"].SendTransaction(ctx, tx)
+	if err != nil {
+		s.logger.Error("Ошибка при отправке транзакции", zap.Error(err))
+		return
+	}
+
+	s.logger.Info("Транзакция успешно отправлена", zap.String("signature", signature))
 }
 
-func (s *Sniper) processTask(task *Task) error {
+func (s *Sniper) processTask(task *types.Task) error {
 	// Реализация логики обработки задачи
 	// TODO: Добавить конкретную логику в зависимости от типа задачи
 	return nil
