@@ -5,16 +5,23 @@ import (
 	"context"
 
 	"github.com/gagliardetto/solana-go"
+	solanaClient "github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
+	"github.com/rovshanmuradov/solana-bot/internal/types"
+	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
 )
 
 type RaydiumDEX struct {
-	// Дополнительные поля, если необходимо
+	client   *solanaClient.Client
+	logger   *zap.Logger
+	poolInfo *RaydiumPoolInfo
 }
 
-func NewRaydiumDEX() *RaydiumDEX {
+func NewRaydiumDEX(client *solanaClient.Client, logger *zap.Logger, poolInfo *RaydiumPoolInfo) *RaydiumDEX {
 	return &RaydiumDEX{
-		// Инициализация
+		client:   client,
+		logger:   logger,
+		poolInfo: poolInfo,
 	}
 }
 
@@ -31,7 +38,27 @@ func (r *RaydiumDEX) PrepareSwapInstruction(
 	minAmountOut uint64,
 	logger *zap.Logger,
 ) (solana.Instruction, error) {
-	// Реализация подготовки инструкции свапа для Raydium
-	// ...
-	return nil, nil
+	// Здесь вы можете использовать CreateSwapInstruction или другую логику
+	instruction, err := r.CreateSwapInstruction(
+		wallet,
+		sourceToken,
+		destinationToken,
+		amountIn,
+		minAmountOut,
+		logger,
+		r.poolInfo,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return instruction, nil
+}
+
+// Добавляем метод для выполнения транзакции
+func (r *RaydiumDEX) ExecuteSwap(
+	ctx context.Context,
+	task *types.Task,
+	wallet *wallet.Wallet,
+) error {
+	return r.PrepareAndSendTransaction(ctx, task, wallet, r.logger)
 }

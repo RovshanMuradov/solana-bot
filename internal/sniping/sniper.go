@@ -4,10 +4,10 @@ import (
 	"context"
 	"sync"
 
-	"github.com/gagliardetto/solana-go"
 	solanaBlockchain "github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
 	"github.com/rovshanmuradov/solana-bot/internal/config"
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
+	"github.com/rovshanmuradov/solana-bot/internal/dex/raydium"
 	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
@@ -18,14 +18,16 @@ type Sniper struct {
 	wallets     map[string]*wallet.Wallet
 	config      *config.Config
 	logger      *zap.Logger
+	client      *solanaBlockchain.Client // Добавляем клиент Solana
 }
 
-func NewSniper(blockchains map[string]types.Blockchain, wallets map[string]*wallet.Wallet, cfg *config.Config, logger *zap.Logger) *Sniper {
+func NewSniper(blockchains map[string]types.Blockchain, wallets map[string]*wallet.Wallet, cfg *config.Config, logger *zap.Logger, client *solanaBlockchain.Client) *Sniper {
 	return &Sniper{
 		blockchains: blockchains,
 		wallets:     wallets,
 		config:      cfg,
 		logger:      logger,
+		client:      client,
 	}
 }
 
@@ -68,63 +70,34 @@ func (s *Sniper) executeTask(ctx context.Context, task *types.Task) {
 	s.logger.Info("Начало выполнения задачи", zap.String("task", task.TaskName))
 
 	// Получаем DEX-модуль на основе имени
-	dexModule, err := dex.GetDEXByName(task.DEXName)
+	dexModule, err := dex.GetDEXByName(task.DEXName, s.client, s.logger)
 	if err != nil {
 		s.logger.Error("Не удалось получить DEX-модуль", zap.Error(err))
 		return
 	}
 
-	// Используем DEX-модуль для подготовки инструкции свапа
-	instruction, err := dexModule.PrepareSwapInstruction(
-		ctx,
-		s.wallets[task.WalletName].PublicKey,
-		solana.MustPublicKeyFromBase58(task.SourceToken),
-		solana.MustPublicKeyFromBase58(task.TargetToken),
-		uint64(task.AmountIn),
-		uint64(task.MinAmountOut),
-		s.logger,
-	)
-	if err != nil {
-		s.logger.Error("Ошибка при подготовке инструкции свапа", zap.Error(err))
-		return
-	}
-
-	// Теперь используем instruction для создания и отправки транзакции
-	solanaBC, ok := s.blockchains["Solana"].(*solanaBlockchain.SolanaBlockchain)
+	// Приводим к конкретному типу, если необходимо
+	raydiumDEX, ok := dexModule.(*raydium.RaydiumDEX)
 	if !ok {
-		s.logger.Error("Неверный тип блокчейна Solana")
+		s.logger.Error("Неверный тип DEX-модуля")
 		return
 	}
 
-	recentBlockhash, err := solanaBC.GetRecentBlockhash(ctx)
-	if err != nil {
-		s.logger.Error("Ошибка при получении recent blockhash", zap.Error(err))
+	// Получаем кошелек
+	wallet, ok := s.wallets[task.WalletName]
+	if !ok {
+		s.logger.Error("Кошелек не найден", zap.String("wallet", task.WalletName))
 		return
 	}
 
-	tx, err := solana.NewTransaction(
-		[]solana.Instruction{instruction},
-		recentBlockhash,
-	)
+	// Выполняем свап
+	err = raydiumDEX.ExecuteSwap(ctx, task, wallet)
 	if err != nil {
-		s.logger.Error("Ошибка при создании транзакции", zap.Error(err))
-		return
-	}
-	// Подписываем транзакцию
-	err = s.wallets[task.WalletName].SignTransaction(tx)
-	if err != nil {
-		s.logger.Error("Ошибка при подписании транзакции", zap.Error(err))
+		s.logger.Error("Ошибка при выполнении свапа", zap.Error(err))
 		return
 	}
 
-	// Отправляем транзакцию
-	signature, err := s.blockchains["Solana"].SendTransaction(ctx, tx)
-	if err != nil {
-		s.logger.Error("Ошибка при отправке транзакции", zap.Error(err))
-		return
-	}
-
-	s.logger.Info("Транзакция успешно отправлена", zap.String("signature", signature))
+	s.logger.Info("Свап успешно выполнен")
 }
 
 func (s *Sniper) processTask(task *types.Task) error {
