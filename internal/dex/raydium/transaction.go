@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"math"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
@@ -15,13 +14,6 @@ import (
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
 )
-
-// SwapInstructionData представляет данные инструкции свапа
-type SwapInstructionData struct {
-	Instruction  uint64 // Код инструкции
-	AmountIn     uint64 // Сумма входа
-	MinAmountOut uint64 // Минимальная сумма выхода
-}
 
 // Serialize сериализует данные инструкции свапа
 func (s *SwapInstructionData) Serialize() ([]byte, error) {
@@ -42,14 +34,14 @@ func (s *SwapInstructionData) Serialize() ([]byte, error) {
 }
 
 // CreateSwapInstruction создает инструкцию свапа для Raydium
-func (r *RaydiumDEX) CreateSwapInstruction(
+func (r *DEX) CreateSwapInstruction(
 	userWallet solana.PublicKey,
 	userSourceTokenAccount solana.PublicKey,
 	userDestinationTokenAccount solana.PublicKey,
 	amountIn uint64,
 	minAmountOut uint64,
 	logger *zap.Logger,
-	poolInfo *RaydiumPoolInfo,
+	poolInfo *Pool,
 ) (solana.Instruction, error) {
 	ammProgramID := solana.MustPublicKeyFromBase58(poolInfo.AmmProgramID)
 
@@ -101,11 +93,12 @@ func (r *RaydiumDEX) CreateSwapInstruction(
 }
 
 // PrepareAndSendTransaction готовит и отправляет транзакцию свапа
-func (r *RaydiumDEX) PrepareAndSendTransaction(
+func (r *DEX) PrepareAndSendTransaction(
 	ctx context.Context,
 	task *types.Task,
 	userWallet *wallet.Wallet,
 	logger *zap.Logger,
+	swapInstruction solana.Instruction, // переименовал для ясности
 ) error {
 	// Получение последнего blockhash
 	recentBlockhash, err := r.client.GetRecentBlockhash(ctx)
@@ -113,10 +106,6 @@ func (r *RaydiumDEX) PrepareAndSendTransaction(
 		logger.Error("Failed to get recent blockhash", zap.Error(err))
 		return err
 	}
-
-	// Преобразование AmountIn и MinAmountOut в uint64 с учетом десятичных знаков токена
-	amountIn := uint64(task.AmountIn * math.Pow10(task.SourceTokenDecimals))
-	minAmountOut := uint64(task.MinAmountOut * math.Pow10(task.TargetTokenDecimals))
 
 	// Создание инструкции ComputeBudget для установки приоритетной комиссии
 	priorityFeeLamports := uint64(task.PriorityFee * 1e9) // Конвертация SOL в лампорты
@@ -129,26 +118,11 @@ func (r *RaydiumDEX) PrepareAndSendTransaction(
 		return err
 	}
 
-	// Создание инструкции свапа
-	swapInstruction, err := r.CreateSwapInstruction(
-		userWallet.PublicKey,
-		task.UserSourceTokenAccount,
-		task.UserDestinationTokenAccount,
-		amountIn,
-		minAmountOut,
-		logger,
-		r.poolInfo,
-	)
-	if err != nil {
-		logger.Error("Failed to create swap instruction", zap.Error(err))
-		return err
-	}
-
-	// Создание транзакции
+	// Создание транзакции с переданной инструкцией свапа
 	tx, err := solana.NewTransaction(
 		[]solana.Instruction{
 			computeBudgetInstruction,
-			swapInstruction,
+			swapInstruction, // используем переданную инструкцию
 		},
 		recentBlockhash,
 		solana.TransactionPayer(userWallet.PublicKey),

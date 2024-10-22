@@ -3,6 +3,7 @@ package pumpfun
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/rovshanmuradov/solana-bot/internal/types"
@@ -10,41 +11,35 @@ import (
 	"go.uber.org/zap"
 )
 
-type PumpFunDEX struct {
-	// Поля для Pump.fun
+// DEX представляет реализацию Pump.fun DEX (временная заглушка)
+type DEX struct {
+	// Будет реализовано позже
 }
 
-func NewPumpFunDEX() *PumpFunDEX {
-	return &PumpFunDEX{
-		// Инициализация
-	}
+func NewDEX() *DEX {
+	return &DEX{}
 }
 
-func (p *PumpFunDEX) Name() string {
+func (p *DEX) Name() string {
 	return "Pump.fun"
 }
 
-func (p *PumpFunDEX) PrepareSwapInstruction(
-	ctx context.Context,
-	wallet solana.PublicKey,
-	sourceToken solana.PublicKey,
-	destinationToken solana.PublicKey,
-	amountIn uint64,
-	minAmountOut uint64,
-	logger *zap.Logger,
+func (p *DEX) PrepareSwapInstruction(
+	_ context.Context,
+	_ solana.PublicKey,
+	_ solana.PublicKey,
+	_ solana.PublicKey,
+	_ uint64,
+	_ uint64,
+	_ *zap.Logger,
 ) (solana.Instruction, error) {
-	// Реализация подготовки инструкции свапа для Pump.fun
-	// ...
-	return nil, nil
+	return nil, fmt.Errorf("pump.fun DEX implementation not ready")
 }
 
-// Добавляем метод ExecuteSwap
-func (p *PumpFunDEX) ExecuteSwap(
-	ctx context.Context,
-	task *types.Task,
-	wallet *wallet.Wallet,
+func (p *DEX) ExecuteSwap(
+	_ context.Context,
+	_ *types.Task,
+	_ *wallet.Wallet,
 ) error {
-	// Реализация выполнения свапа для Pump.fun
-	// ...
-	return nil
+	return fmt.Errorf("pump.fun DEX implementation not ready")
 }

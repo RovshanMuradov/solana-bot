@@ -3,6 +3,10 @@ package raydium
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"math"
+	"time"
 
 	"github.com/gagliardetto/solana-go"
 	solanaClient "github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
@@ -11,25 +15,19 @@ import (
 	"go.uber.org/zap"
 )
 
-type RaydiumDEX struct {
-	client   *solanaClient.Client
-	logger   *zap.Logger
-	poolInfo *RaydiumPoolInfo
-}
-
-func NewRaydiumDEX(client *solanaClient.Client, logger *zap.Logger, poolInfo *RaydiumPoolInfo) *RaydiumDEX {
-	return &RaydiumDEX{
+func NewDEX(client *solanaClient.Client, logger *zap.Logger, poolInfo *Pool) *DEX {
+	return &DEX{
 		client:   client,
 		logger:   logger,
 		poolInfo: poolInfo,
 	}
 }
 
-func (r *RaydiumDEX) Name() string {
+func (r *DEX) Name() string {
 	return "Raydium"
 }
 
-func (r *RaydiumDEX) PrepareSwapInstruction(
+func (r *DEX) PrepareSwapInstruction(
 	ctx context.Context,
 	wallet solana.PublicKey,
 	sourceToken solana.PublicKey,
@@ -38,26 +36,70 @@ func (r *RaydiumDEX) PrepareSwapInstruction(
 	minAmountOut uint64,
 	logger *zap.Logger,
 ) (solana.Instruction, error) {
-	instruction, err := r.CreateSwapInstruction(
-		wallet,
-		sourceToken,
-		destinationToken,
-		amountIn,
-		minAmountOut,
-		logger,
-		r.poolInfo,
-	)
-	if err != nil {
-		return nil, err // Изменено на возврат nil вместо solana.Instruction{}
+	// Создаем канал для получения результата
+	type result struct {
+		instruction solana.Instruction
+		err         error
 	}
-	return instruction, nil
+	resCh := make(chan result, 1)
+
+	// Запускаем подготовку инструкции в отдельной горутине
+	go func() {
+		instruction, err := r.CreateSwapInstruction(
+			wallet,
+			sourceToken,
+			destinationToken,
+			amountIn,
+			minAmountOut,
+			logger,
+			r.poolInfo,
+		)
+		resCh <- result{instruction, err}
+	}()
+
+	// Ожидаем либо завершения операции, либо отмены контекста
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("preparation cancelled: %w", ctx.Err())
+	case res := <-resCh:
+		if res.err != nil {
+			return nil, fmt.Errorf("failed to create swap instruction: %w", res.err)
+		}
+		return res.instruction, nil
+	}
 }
 
 // ExecuteSwap выполняет свап токенов на Raydium
-func (r *RaydiumDEX) ExecuteSwap(
+func (r *DEX) ExecuteSwap(
 	ctx context.Context,
 	task *types.Task,
 	wallet *wallet.Wallet,
 ) error {
-	return r.PrepareAndSendTransaction(ctx, task, wallet, r.logger)
+	// Создаем контекст с таймаутом для подготовки инструкции
+	prepareCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	// Конвертируем float64 в uint64 с учетом десятичных знаков
+	amountIn := uint64(task.AmountIn * math.Pow10(task.SourceTokenDecimals))
+	minAmountOut := uint64(task.MinAmountOut * math.Pow10(task.TargetTokenDecimals))
+
+	// Подготавливаем инструкцию свапа
+	swapInstruction, err := r.PrepareSwapInstruction(
+		prepareCtx,
+		wallet.PublicKey,
+		task.UserSourceTokenAccount,
+		task.UserDestinationTokenAccount,
+		amountIn,
+		minAmountOut,
+		r.logger,
+	)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("swap instruction preparation timed out: %w", err)
+		}
+		return fmt.Errorf("failed to prepare swap instruction: %w", err)
+	}
+
+	// Используем подготовленную инструкцию в транзакции
+	return r.PrepareAndSendTransaction(ctx, task, wallet, r.logger, swapInstruction)
 }

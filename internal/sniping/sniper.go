@@ -7,7 +7,6 @@ import (
 	solanaBlockchain "github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
 	"github.com/rovshanmuradov/solana-bot/internal/config"
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
-	"github.com/rovshanmuradov/solana-bot/internal/dex/raydium"
 	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
@@ -76,13 +75,6 @@ func (s *Sniper) executeTask(ctx context.Context, task *types.Task) {
 		return
 	}
 
-	// Приводим к конкретному типу, если необходимо
-	raydiumDEX, ok := dexModule.(*raydium.RaydiumDEX)
-	if !ok {
-		s.logger.Error("Неверный тип DEX-модуля")
-		return
-	}
-
 	// Получаем кошелек
 	wallet, ok := s.wallets[task.WalletName]
 	if !ok {
@@ -90,18 +82,12 @@ func (s *Sniper) executeTask(ctx context.Context, task *types.Task) {
 		return
 	}
 
-	// Выполняем свап
-	err = raydiumDEX.ExecuteSwap(ctx, task, wallet)
+	// Выполняем свап через интерфейс
+	err = dexModule.ExecuteSwap(ctx, task, wallet)
 	if err != nil {
 		s.logger.Error("Ошибка при выполнении свапа", zap.Error(err))
 		return
 	}
 
 	s.logger.Info("Свап успешно выполнен")
-}
-
-func (s *Sniper) processTask(task *types.Task) error {
-	// Реализация логики обработки задачи
-	// TODO: Добавить конкретную логику в зависимости от типа задачи
-	return nil
 }

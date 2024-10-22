@@ -8,23 +8,23 @@ import (
 	"go.uber.org/zap"
 )
 
-type SolanaBlockchain struct {
+type Blockchain struct {
 	client *Client
 	logger *zap.Logger
 }
 
-func NewSolanaBlockchain(client *Client, logger *zap.Logger) (*SolanaBlockchain, error) {
-	return &SolanaBlockchain{
+func NewBlockchain(client *Client, logger *zap.Logger) (*Blockchain, error) {
+	return &Blockchain{
 		client: client,
 		logger: logger,
 	}, nil
 }
 
-func (s *SolanaBlockchain) Name() string {
+func (s *Blockchain) Name() string {
 	return "Solana"
 }
 
-func (s *SolanaBlockchain) SendTransaction(ctx context.Context, tx interface{}) (string, error) {
+func (s *Blockchain) SendTransaction(ctx context.Context, tx interface{}) (string, error) {
 	solTx, ok := tx.(*solana.Transaction)
 	if !ok {
 		return "", fmt.Errorf("invalid transaction type for Solana")
@@ -37,6 +37,6 @@ func (s *SolanaBlockchain) SendTransaction(ctx context.Context, tx interface{}) 
 	return signature.String(), nil
 }
 
-func (s *SolanaBlockchain) GetRecentBlockhash(ctx context.Context) (solana.Hash, error) {
+func (s *Blockchain) GetRecentBlockhash(ctx context.Context) (solana.Hash, error) {
 	return s.client.GetRecentBlockhash(ctx)
 }

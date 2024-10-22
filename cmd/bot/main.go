@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -23,7 +24,11 @@ func main() {
 	if err != nil {
 		panic("Не удалось инициализировать логгер: " + err.Error())
 	}
-	defer logger.Sync()
+	defer func() {
+		if err := logger.Sync(); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to sync logger: %v\n", err)
+		}
+	}()
 
 	cfg, err := config.LoadConfig("configs/config.json")
 	if err != nil {
@@ -41,11 +46,11 @@ func main() {
 	}
 
 	blockchains := make(map[string]types.Blockchain)
-	solanaBlockchain, err := solanaClient.NewSolanaBlockchain(client, logger)
+	solanaBC, err := solanaClient.NewBlockchain(client, logger)
 	if err != nil {
 		logger.Fatal("Ошибка инициализации Solana blockchain", zap.Error(err))
 	}
-	blockchains["Solana"] = solanaBlockchain
+	blockchains["Solana"] = solanaBC
 
 	tasks, err := sniping.LoadTasks("configs/tasks.csv")
 	if err != nil {

@@ -1,34 +1,51 @@
 // internal/dex/raydium/types.go
 package raydium
 
+import (
+	solanaClient "github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
+	"go.uber.org/zap"
+)
+
 // RaydiumPoolInfo содержит информацию о пуле Raydium
-type RaydiumPoolInfo struct {
-	AmmProgramID               string // Program ID AMM Raydium
-	AmmID                      string // AMM ID пула
-	AmmAuthority               string // Авторитет AMM
-	AmmOpenOrders              string // Открытые ордера AMM
-	AmmTargetOrders            string // Целевые ордера AMM
-	PoolCoinTokenAccount       string // Аккаунт токена пула
-	PoolPcTokenAccount         string // Аккаунт токена PC пула
-	SerumProgramID             string // Program ID Serum DEX
-	SerumMarket                string // Рынок Serum
-	SerumBids                  string // Заявки на покупку Serum
-	SerumAsks                  string // Заявки на продажу Serum
-	SerumEventQueue            string // Очередь событий Serum
-	SerumCoinVaultAccount      string // Аккаунт хранилища монет
-	SerumPcVaultAccount        string // Аккаунт хранилища PC
-	SerumVaultSigner           string // Подписант хранилища Serum
-	RaydiumSwapInstructionCode uint64 // Код инструкции свапа Raydium
+type Pool struct {
+	AmmProgramID               string
+	AmmID                      string
+	AmmAuthority               string
+	AmmOpenOrders              string
+	AmmTargetOrders            string
+	PoolCoinTokenAccount       string
+	PoolPcTokenAccount         string
+	SerumProgramID             string
+	SerumMarket                string
+	SerumBids                  string
+	SerumAsks                  string
+	SerumEventQueue            string
+	SerumCoinVaultAccount      string
+	SerumPcVaultAccount        string
+	SerumVaultSigner           string
+	RaydiumSwapInstructionCode uint64
 }
 
-func (r *RaydiumPoolInfo) GetProgramID() string {
+// SwapInstructionData представляет данные инструкции свапа
+type SwapInstructionData struct {
+	Instruction  uint64 // Код инструкции
+	AmountIn     uint64 // Сумма входа
+	MinAmountOut uint64 // Минимальная сумма выхода
+}
+type DEX struct {
+	client   *solanaClient.Client
+	logger   *zap.Logger
+	poolInfo *Pool
+}
+
+func (r *Pool) GetProgramID() string {
 	return r.AmmProgramID
 }
 
-func (r *RaydiumPoolInfo) GetPoolID() string {
+func (r *Pool) GetPoolID() string {
 	return r.AmmID
 }
 
-func (r *RaydiumPoolInfo) GetTokenAccounts() (string, string) {
+func (r *Pool) GetTokenAccounts() (string, string) {
 	return r.PoolCoinTokenAccount, r.PoolPcTokenAccount
 }
