@@ -23,25 +23,6 @@ type SwapInstructionData struct {
 	MinAmountOut uint64 // Минимальная сумма выхода
 }
 
-// SwapInstruction представляет инструкцию свапа и реализует solana.Instruction
-type SwapInstruction struct {
-	programID solana.PublicKey
-	accounts  []*solana.AccountMeta
-	data      []byte
-}
-
-func (s *SwapInstruction) ProgramID() solana.PublicKey {
-	return s.programID
-}
-
-func (s *SwapInstruction) Accounts() []*solana.AccountMeta {
-	return s.accounts
-}
-
-func (s *SwapInstruction) Data() ([]byte, error) {
-	return s.data, nil
-}
-
 // Serialize сериализует данные инструкции свапа
 func (s *SwapInstructionData) Serialize() ([]byte, error) {
 	buf := new(bytes.Buffer)
@@ -109,12 +90,12 @@ func (r *RaydiumDEX) CreateSwapInstruction(
 		return nil, err
 	}
 
-	// Создание инструкции
-	instruction := &SwapInstruction{
-		programID: ammProgramID,
-		accounts:  accounts,
-		data:      data,
-	}
+	// Создание инструкции с использованием solana.NewInstruction
+	instruction := solana.NewInstruction(
+		ammProgramID,
+		accounts,
+		data,
+	)
 
 	return instruction, nil
 }
@@ -140,8 +121,12 @@ func (r *RaydiumDEX) PrepareAndSendTransaction(
 	// Создание инструкции ComputeBudget для установки приоритетной комиссии
 	priorityFeeLamports := uint64(task.PriorityFee * 1e9) // Конвертация SOL в лампорты
 
-	computeBudgetInstruction := &computebudget.SetComputeUnitPrice{
+	computeBudgetInstruction, err := (&computebudget.SetComputeUnitPriceInstruction{
 		ComputeUnitPrice: priorityFeeLamports,
+	}).Build()
+	if err != nil {
+		logger.Error("Failed to build compute budget instruction", zap.Error(err))
+		return err
 	}
 
 	// Создание инструкции свапа
@@ -160,13 +145,11 @@ func (r *RaydiumDEX) PrepareAndSendTransaction(
 	}
 
 	// Создание транзакции
-	instructions := []solana.Instruction{
-		computeBudgetInstruction,
-		swapInstruction,
-	}
-
 	tx, err := solana.NewTransaction(
-		instructions,
+		[]solana.Instruction{
+			computeBudgetInstruction,
+			swapInstruction,
+		},
 		recentBlockhash,
 		solana.TransactionPayer(userWallet.PublicKey),
 	)

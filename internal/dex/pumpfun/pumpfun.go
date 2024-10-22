@@ -1,12 +1,12 @@
-package pumpfun
-
-// // Реализация интерфейса DEX для Pump.fun
 // internal/dex/pumpfun/pumpfun.go
+package pumpfun
 
 import (
 	"context"
 
 	"github.com/gagliardetto/solana-go"
+	"github.com/rovshanmuradov/solana-bot/internal/types"
+	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
 )
 
@@ -36,4 +36,15 @@ func (p *PumpFunDEX) PrepareSwapInstruction(
 	// Реализация подготовки инструкции свапа для Pump.fun
 	// ...
 	return nil, nil
+}
+
+// Добавляем метод ExecuteSwap
+func (p *PumpFunDEX) ExecuteSwap(
+	ctx context.Context,
+	task *types.Task,
+	wallet *wallet.Wallet,
+) error {
+	// Реализация выполнения свапа для Pump.fun
+	// ...
+	return nil
 }

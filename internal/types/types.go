@@ -5,6 +5,7 @@ import (
 	"context"
 
 	"github.com/gagliardetto/solana-go"
+	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
 )
 
@@ -43,6 +44,11 @@ type DEX interface {
 		minAmountOut uint64,
 		logger *zap.Logger,
 	) (solana.Instruction, error)
+	ExecuteSwap(
+		ctx context.Context,
+		task *Task,
+		wallet *wallet.Wallet,
+	) error
 }
 
 type Blockchain interface {

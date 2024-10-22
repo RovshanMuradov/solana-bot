@@ -48,12 +48,12 @@ func (r *RaydiumDEX) PrepareSwapInstruction(
 		r.poolInfo,
 	)
 	if err != nil {
-		return nil, err
+		return nil, err // Изменено на возврат nil вместо solana.Instruction{}
 	}
 	return instruction, nil
 }
 
-// Добавляем метод для выполнения транзакции
+// ExecuteSwap выполняет свап токенов на Raydium
 func (r *RaydiumDEX) ExecuteSwap(
 	ctx context.Context,
 	task *types.Task,
