@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/programs/computebudget"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solana/programs/computebudget"
 	"github.com/rovshanmuradov/solana-bot/internal/transaction"
 	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
@@ -23,31 +23,30 @@ type SwapInstructionData struct {
 	MinAmountOut uint64 // Минимальная сумма выхода
 }
 
-// RaydiumPoolInfo содержит информацию о пуле Raydium
-type RaydiumPoolInfo struct {
-	AmmProgramID               string // Program ID AMM Raydium
-	AmmID                      string // AMM ID пула
-	AmmAuthority               string // Авторитет AMM
-	AmmOpenOrders              string // Открытые ордера AMM
-	AmmTargetOrders            string // Целевые ордера AMM
-	PoolCoinTokenAccount       string // Аккаунт токена пула
-	PoolPcTokenAccount         string // Аккаунт токена PC пула
-	SerumProgramID             string // Program ID Serum DEX
-	SerumMarket                string // Рынок Serum
-	SerumBids                  string // Заявки на покупку Serum
-	SerumAsks                  string // Заявки на продажу Serum
-	SerumEventQueue            string // Очередь событий Serum
-	SerumCoinVaultAccount      string // Аккаунт хранилища монет
-	SerumPcVaultAccount        string // Аккаунт хранилища PC
-	SerumVaultSigner           string // Подписант хранилища Serum
-	RaydiumSwapInstructionCode uint64 // Код инструкции свапа Raydium
+// SwapInstruction представляет инструкцию свапа и реализует solana.Instruction
+type SwapInstruction struct {
+	programID solana.PublicKey
+	accounts  []*solana.AccountMeta
+	data      []byte
 }
 
-// Метод Serialize для SwapInstructionData
+func (s *SwapInstruction) ProgramID() solana.PublicKey {
+	return s.programID
+}
+
+func (s *SwapInstruction) Accounts() []*solana.AccountMeta {
+	return s.accounts
+}
+
+func (s *SwapInstruction) Data() ([]byte, error) {
+	return s.data, nil
+}
+
+// Serialize сериализует данные инструкции свапа
 func (s *SwapInstructionData) Serialize() ([]byte, error) {
 	buf := new(bytes.Buffer)
 
-	// Пишем поля структуры в буфер
+	// Пишем поля структуры в буфер в Little Endian формате
 	if err := binary.Write(buf, binary.LittleEndian, s.Instruction); err != nil {
 		return nil, err
 	}
@@ -111,11 +110,11 @@ func (r *RaydiumDEX) CreateSwapInstruction(
 	}
 
 	// Создание инструкции
-	instruction := solana.NewInstruction(
-		ammProgramID,
-		accounts,
-		data,
-	)
+	instruction := &SwapInstruction{
+		programID: ammProgramID,
+		accounts:  accounts,
+		data:      data,
+	}
 
 	return instruction, nil
 }
@@ -124,7 +123,7 @@ func (r *RaydiumDEX) CreateSwapInstruction(
 func (r *RaydiumDEX) PrepareAndSendTransaction(
 	ctx context.Context,
 	task *types.Task,
-	wallet *wallet.Wallet,
+	userWallet *wallet.Wallet,
 	logger *zap.Logger,
 ) error {
 	// Получение последнего blockhash
@@ -139,14 +138,15 @@ func (r *RaydiumDEX) PrepareAndSendTransaction(
 	minAmountOut := uint64(task.MinAmountOut * math.Pow10(task.TargetTokenDecimals))
 
 	// Создание инструкции ComputeBudget для установки приоритетной комиссии
-	priorityFee := uint64(task.PriorityFee * 1e9) // Конвертация SOL в лампорты
-	computeBudgetInstruction := computebudget.NewSetComputeUnitPrice(
-		priorityFee, // Устанавливает цену за единицу вычислений
-	).Build()
+	priorityFeeLamports := uint64(task.PriorityFee * 1e9) // Конвертация SOL в лампорты
+
+	computeBudgetInstruction := &computebudget.SetComputeUnitPrice{
+		ComputeUnitPrice: priorityFeeLamports,
+	}
 
 	// Создание инструкции свапа
 	swapInstruction, err := r.CreateSwapInstruction(
-		wallet.PublicKey,
+		userWallet.PublicKey,
 		task.UserSourceTokenAccount,
 		task.UserDestinationTokenAccount,
 		amountIn,
@@ -160,9 +160,15 @@ func (r *RaydiumDEX) PrepareAndSendTransaction(
 	}
 
 	// Создание транзакции
+	instructions := []solana.Instruction{
+		computeBudgetInstruction,
+		swapInstruction,
+	}
+
 	tx, err := solana.NewTransaction(
-		[]solana.Instruction{computeBudgetInstruction, swapInstruction},
+		instructions,
 		recentBlockhash,
+		solana.TransactionPayer(userWallet.PublicKey),
 	)
 	if err != nil {
 		logger.Error("Failed to create transaction", zap.Error(err))
@@ -172,8 +178,8 @@ func (r *RaydiumDEX) PrepareAndSendTransaction(
 	// Подписание транзакции
 	_, err = tx.Sign(
 		func(key solana.PublicKey) *solana.PrivateKey {
-			if key.Equals(wallet.PublicKey) {
-				return &wallet.PrivateKey
+			if key.Equals(userWallet.PublicKey) {
+				return &userWallet.PrivateKey
 			}
 			return nil
 		},

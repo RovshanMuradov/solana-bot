@@ -1,3 +1,4 @@
+// internal/types/types.go
 package types
 
 import (

@@ -38,7 +38,6 @@ func (r *RaydiumDEX) PrepareSwapInstruction(
 	minAmountOut uint64,
 	logger *zap.Logger,
 ) (solana.Instruction, error) {
-	// Здесь вы можете использовать CreateSwapInstruction или другую логику
 	instruction, err := r.CreateSwapInstruction(
 		wallet,
 		sourceToken,
