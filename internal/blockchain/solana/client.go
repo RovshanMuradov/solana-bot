@@ -11,11 +11,6 @@ import (
 	"go.uber.org/zap"
 )
 
-type Client struct {
-	rpcPool *RPCPool
-	logger  *zap.Logger
-}
-
 // NewClient создает новый экземпляр клиента Solana
 func NewClient(rpcList []string, logger *zap.Logger) (*Client, error) {
 	if len(rpcList) == 0 {

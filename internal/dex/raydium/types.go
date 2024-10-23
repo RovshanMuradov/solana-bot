@@ -2,7 +2,7 @@
 package raydium
 
 import (
-	solanaClient "github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
 	"go.uber.org/zap"
 )
 
@@ -32,8 +32,10 @@ type SwapInstructionData struct {
 	AmountIn     uint64 // Сумма входа
 	MinAmountOut uint64 // Минимальная сумма выхода
 }
+
+// internal/dex/raydium/types.go
 type DEX struct {
-	client   *solanaClient.Client
+	client   solana.SolanaClientInterface // изменяем тип на интерфейс
 	logger   *zap.Logger
 	poolInfo *Pool
 }
