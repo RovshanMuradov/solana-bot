@@ -98,7 +98,7 @@ func (r *DEX) PrepareAndSendTransaction(
 	task *types.Task,
 	userWallet *wallet.Wallet,
 	logger *zap.Logger,
-	swapInstruction solana.Instruction, // переименовал для ясности
+	swapInstruction solana.Instruction,
 ) error {
 	// Получение последнего blockhash
 	recentBlockhash, err := r.client.GetRecentBlockhash(ctx)
@@ -107,23 +107,23 @@ func (r *DEX) PrepareAndSendTransaction(
 		return err
 	}
 
-	// Создание инструкции ComputeBudget для установки приоритетной комиссии
-	priorityFeeLamports := uint64(task.PriorityFee * 1e9) // Конвертация SOL в лампорты
-
-	computeBudgetInstruction, err := (&computebudget.SetComputeUnitPriceInstruction{
-		ComputeUnitPrice: priorityFeeLamports,
-	}).Build()
+	// Создаем compute budget инструкции
+	budgetInstructions, err := createComputeBudgetInstructions(
+		task.PriorityFee,
+		computebudget.SnipingUnits, // или другое значение в зависимости от типа операции
+		logger,
+	)
 	if err != nil {
-		logger.Error("Failed to build compute budget instruction", zap.Error(err))
+		logger.Error("Failed to create compute budget instructions", zap.Error(err))
 		return err
 	}
 
-	// Создание транзакции с переданной инструкцией свапа
+	// Объединяем все инструкции
+	allInstructions := append(budgetInstructions, swapInstruction)
+
+	// Создание транзакции
 	tx, err := solana.NewTransaction(
-		[]solana.Instruction{
-			computeBudgetInstruction,
-			swapInstruction, // используем переданную инструкцию
-		},
+		allInstructions,
 		recentBlockhash,
 		solana.TransactionPayer(userWallet.PublicKey),
 	)
