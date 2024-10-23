@@ -1,0 +1,81 @@
+{
+    // Базовые настройки
+    "license": "your-license-key",
+    
+    // RPC настройки
+    "rpc_list": [
+        "https://api.mainnet-beta.solana.com",
+        "https://solana-api.projectserum.com",
+        "https://your-backup-rpc.com"
+    ],
+    "websocket_url": "wss://api.mainnet-beta.solana.com",
+    
+    // Задержки и тайминги
+    "monitor_delay": 1000,     // Задержка мониторинга в миллисекундах
+    "rpc_delay": 100,         // Задержка между RPC запросами
+    "price_delay": 500,       // Задержка обновления цен
+    "transaction_timeout": 60, // Таймаут транзакции в секундах
+    
+    // Настройки логирования
+    "debug_logging": true,     // Включение детального логирования
+    "tps_logging": true,      // Логирование транзакций в секунду
+    "log_file": "bot.log",    // Путь к файлу логов
+    
+    // Настройки исполнения
+    "retries": 3,             // Количество попыток при ошибках
+    "workers": 5,             // Количество параллельных воркеров
+    
+    // Настройки уведомлений
+    "webhook_url": "https://your-webhook.com",
+    "telegram_notifications": {
+        "enabled": true,
+        "bot_token": "your-bot-token",
+        "chat_id": "your-chat-id"
+    },
+
+    // DEX настройки
+    "raydium": {
+        "amm_program_id": "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+        "serum_program_id": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+        // Предустановленные настройки комиссий
+        "default_priority_configs": {
+            "normal": {
+                "priority_fee": 0.000001,
+                "compute_units": 200000
+            },
+            "high": {
+                "priority_fee": 0.00001,
+                "compute_units": 400000
+            },
+            "extreme": {
+                "priority_fee": 0.00005,
+                "compute_units": 1000000,
+                "heap_size": 32768
+            }
+        }
+    },
+
+    // Настройки безопасности и лимитов
+    "safety": {
+        "max_priority_fee": 0.0001,      // Максимальная разрешенная комиссия
+        "min_priority_fee": 0.000001,    // Минимальная разрешенная комиссия
+        "max_slippage": 1.0,             // Максимальный допустимый проскальзываж в %
+        "max_compute_units": 1400000,    // Максимум compute units
+        "emergency_stop_loss": 10        // Аварийный стоп-лосс в %
+    },
+
+    // Настройки кэширования и производительности
+    "cache": {
+        "pool_cache_time": 5,            // Время кэширования пулов в секундах
+        "price_cache_time": 1,           // Время кэширования цен в секундах
+        "max_cache_size": 1000           // Максимальный размер кэша
+    },
+
+    // Настройки автопродажи по умолчанию
+    "autosell_defaults": {
+        "priority_fee": 0.000005,        // Комиссия для автопродажи
+        "compute_units": 400000,         // Compute units для автопродажи
+        "min_profit": 5,                 // Минимальный профит для активации в %
+        "trailing_stop": 2               // Trailing stop в %
+    }
+}

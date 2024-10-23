@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/gagliardetto/solana-go"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solana/programs/computebudget"
 	"go.uber.org/zap"
 )
 
@@ -18,12 +19,11 @@ const (
 	PriorityExtreme PriorityLevel = "extreme" // Для снайпинга при высокой конкуренции
 )
 
-// PriorityProfile содержит настройки для разных сценариев использования
-type PriorityProfile struct {
-	Name        string        // Название профиля
-	Description string        // Описание использования
-	Priority    PriorityLevel // Уровень приоритета
-	Units       uint32        // Количество compute units
+// PriorityConfig содержит настройки для приоритета транзакции
+type PriorityConfig struct {
+	ComputeUnits uint32  // Количество compute units
+	PriorityFee  float64 // Приоритетная комиссия в SOL
+	HeapSize     uint32  // Дополнительная heap память (опционально)
 }
 
 // PriorityManager управляет приоритетами транзакций
@@ -32,21 +32,16 @@ type PriorityManager struct {
 	logger   *zap.Logger
 }
 
-type PriorityConfig struct {
-	ComputeUnits uint32
-	PriorityFee  float64
-}
-
 // NewPriorityManager создает менеджер с предустановленными профилями
 func NewPriorityManager(logger *zap.Logger) *PriorityManager {
 	return &PriorityManager{
 		profiles: map[PriorityLevel]*PriorityConfig{
 			PriorityLow: {
-				ComputeUnits: 200_000,
+				ComputeUnits: computebudget.DefaultUnits,
 				PriorityFee:  0.000001, // 1 микро SOL
 			},
 			PriorityMedium: {
-				ComputeUnits: 400_000,
+				ComputeUnits: computebudget.StandardUnits,
 				PriorityFee:  0.000005, // 5 микро SOL
 			},
 			PriorityHigh: {
@@ -54,8 +49,9 @@ func NewPriorityManager(logger *zap.Logger) *PriorityManager {
 				PriorityFee:  0.00001, // 10 микро SOL
 			},
 			PriorityExtreme: {
-				ComputeUnits: 1_000_000,
-				PriorityFee:  0.00005, // 50 микро SOL
+				ComputeUnits: computebudget.SnipingUnits,
+				PriorityFee:  0.00005,   // 50 микро SOL
+				HeapSize:     32 * 1024, // 32KB для сложных операций
 			},
 		},
 		logger: logger,
@@ -69,10 +65,48 @@ func (pm *PriorityManager) GetPriorityInstructions(level PriorityLevel) ([]solan
 		return nil, fmt.Errorf("unknown priority level: %s", level)
 	}
 
-	return createPriorityInstructions(config.ComputeUnits, config.PriorityFee)
+	budgetConfig := computebudget.Config{
+		Units:         config.ComputeUnits,
+		PriorityFee:   config.PriorityFee,
+		HeapFrameSize: config.HeapSize,
+	}
+
+	return computebudget.BuildInstructions(budgetConfig)
 }
 
-// Вспомогательные функции
-func createPriorityInstructions(units uint32, priorityFee float64) ([]solana.Instruction, error) {
-	// ... реализация создания инструкций ...
+// GetPriorityLevel определяет уровень приоритета на основе комиссии
+func GetPriorityLevel(priorityFee float64) PriorityLevel {
+	switch {
+	case priorityFee >= 0.00005:
+		return PriorityExtreme
+	case priorityFee >= 0.00001:
+		return PriorityHigh
+	case priorityFee >= 0.000005:
+		return PriorityMedium
+	default:
+		return PriorityLow
+	}
+}
+
+// CreateCustomPriorityInstructions создает инструкции с пользовательскими настройками
+func (pm *PriorityManager) CreateCustomPriorityInstructions(priorityFee float64, units uint32) ([]solana.Instruction, error) {
+	if priorityFee < 0 {
+		return nil, fmt.Errorf("priority fee cannot be negative: %f", priorityFee)
+	}
+
+	budgetConfig := computebudget.Config{
+		Units:       units,
+		PriorityFee: priorityFee,
+	}
+
+	return computebudget.BuildInstructions(budgetConfig)
+}
+
+// GetProfile возвращает конфигурацию профиля по уровню приоритета
+func (pm *PriorityManager) GetProfile(level PriorityLevel) (*PriorityConfig, error) {
+	config, ok := pm.profiles[level]
+	if !ok {
+		return nil, fmt.Errorf("unknown priority level: %s", level)
+	}
+	return config, nil
 }

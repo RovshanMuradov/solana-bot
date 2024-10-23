@@ -18,119 +18,107 @@ const (
 	SetComputeUnitPrice    uint8 = 3
 )
 
-// Структуры инструкций
-type SetComputeUnitLimitInstruction struct {
-	Units uint32
-}
-
-type SetComputeUnitPriceInstruction struct {
-	MicroLamports uint64
-}
-
-// Предопределенные профили
+// Предопределенные размеры compute units
 const (
 	DefaultUnits  uint32 = 200_000
 	SnipingUnits  uint32 = 1_000_000
 	StandardUnits uint32 = 400_000
 )
 
-// PriorityLevel определяет уровень приоритета транзакции
-type PriorityLevel string
-
-const (
-	PriorityLow     PriorityLevel = "low"
-	PriorityMedium  PriorityLevel = "medium"
-	PriorityHigh    PriorityLevel = "high"
-	PriorityExtreme PriorityLevel = "extreme"
-)
-
-// ComputeBudgetConfig содержит конфигурацию для транзакции
-type ComputeBudgetConfig struct {
-	Units     uint32
-	UnitPrice uint64
-	Priority  PriorityLevel
+// ComputeBudgetConfig содержит настройки для транзакции
+// Переименовываем ComputeBudgetConfig -> Config
+type Config struct {
+	Units         uint32  // Количество compute units
+	PriorityFee   float64 // Приоритетная комиссия в SOL
+	HeapFrameSize uint32  // Дополнительная heap память (опционально)
 }
 
 // NewDefaultConfig создает конфигурацию по умолчанию
-func NewDefaultConfig() ComputeBudgetConfig {
-	return ComputeBudgetConfig{
-		Units:     DefaultUnits,
-		UnitPrice: ConvertSolToMicrolamports(0.000001),
-		Priority:  PriorityLow,
+func NewDefaultConfig() Config {
+	return Config{
+		Units:       DefaultUnits,
+		PriorityFee: 0.000001, // 1 микро SOL
 	}
 }
 
 // NewSnipingConfig создает конфигурацию для снайпинга
-func NewSnipingConfig() ComputeBudgetConfig {
-	return ComputeBudgetConfig{
-		Units:     SnipingUnits,
-		UnitPrice: ConvertSolToMicrolamports(0.00005),
-		Priority:  PriorityExtreme,
+func NewSnipingConfig() Config {
+	return Config{
+		Units:         SnipingUnits,
+		PriorityFee:   0.00005,   // 50 микро SOL
+		HeapFrameSize: 32 * 1024, // 32KB для сложных операций
 	}
 }
 
 // ConvertSolToMicrolamports конвертирует SOL в микроламппорты
 func ConvertSolToMicrolamports(sol float64) uint64 {
-	return uint64(sol * 1e15)
+	return uint64(sol * 1e9)
 }
 
-// BuildComputeBudgetInstructions создает инструкции для настройки бюджета
-func BuildComputeBudgetInstructions(config ComputeBudgetConfig) ([]solana.Instruction, error) {
-	if config.Units == 0 {
-		config = NewDefaultConfig()
-	}
-
+// BuildInstructions создает все необходимые инструкции для настройки compute budget
+func BuildInstructions(config Config) ([]solana.Instruction, error) {
 	var instructions []solana.Instruction
 
-	limitInstruction, err := (&SetComputeUnitLimitInstruction{
-		Units: config.Units,
-	}).Build()
-	if err != nil {
-		return nil, fmt.Errorf("failed to build compute unit limit instruction: %w", err)
-	}
-	instructions = append(instructions, limitInstruction)
-
-	if config.UnitPrice > 0 {
-		priceInstruction, err := (&SetComputeUnitPriceInstruction{
-			MicroLamports: config.UnitPrice,
-		}).Build()
+	// 1. Инструкция для установки лимита compute units
+	if config.Units > 0 {
+		limitInstr, err := createSetComputeUnitLimitInstruction(config.Units)
 		if err != nil {
-			return nil, fmt.Errorf("failed to build compute unit price instruction: %w", err)
+			return nil, fmt.Errorf("failed to create unit limit instruction: %w", err)
 		}
-		instructions = append(instructions, priceInstruction)
+		instructions = append(instructions, limitInstr)
+	}
+
+	// 2. Инструкция для установки приоритетной комиссии
+	if config.PriorityFee > 0 {
+		priceInstr, err := createSetComputeUnitPriceInstruction(config.PriorityFee)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create unit price instruction: %w", err)
+		}
+		instructions = append(instructions, priceInstr)
+	}
+
+	// 3. Инструкция для выделения дополнительной heap памяти
+	if config.HeapFrameSize > 0 {
+		heapInstr, err := createRequestHeapFrameInstruction(config.HeapFrameSize)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create heap frame instruction: %w", err)
+		}
+		instructions = append(instructions, heapInstr)
 	}
 
 	return instructions, nil
 }
 
-// Build создает инструкцию для установки лимита compute units
-func (instr *SetComputeUnitLimitInstruction) Build() (solana.Instruction, error) {
+func createSetComputeUnitLimitInstruction(units uint32) (solana.Instruction, error) {
 	buf := new(bytes.Buffer)
 	if err := binary.Write(buf, binary.LittleEndian, SetComputeUnitLimit); err != nil {
 		return nil, err
 	}
-	if err := binary.Write(buf, binary.LittleEndian, instr.Units); err != nil {
+	if err := binary.Write(buf, binary.LittleEndian, units); err != nil {
 		return nil, err
 	}
-	return solana.NewInstruction(
-		ProgramID,
-		[]*solana.AccountMeta{},
-		buf.Bytes(),
-	), nil
+	return solana.NewInstruction(ProgramID, []*solana.AccountMeta{}, buf.Bytes()), nil
 }
 
-// Build создает инструкцию для установки цены compute units
-func (instr *SetComputeUnitPriceInstruction) Build() (solana.Instruction, error) {
+func createSetComputeUnitPriceInstruction(priorityFee float64) (solana.Instruction, error) {
 	buf := new(bytes.Buffer)
 	if err := binary.Write(buf, binary.LittleEndian, SetComputeUnitPrice); err != nil {
 		return nil, err
 	}
-	if err := binary.Write(buf, binary.LittleEndian, instr.MicroLamports); err != nil {
+	microLamports := ConvertSolToMicrolamports(priorityFee)
+	if err := binary.Write(buf, binary.LittleEndian, microLamports); err != nil {
 		return nil, err
 	}
-	return solana.NewInstruction(
-		ProgramID,
-		[]*solana.AccountMeta{},
-		buf.Bytes(),
-	), nil
+	return solana.NewInstruction(ProgramID, []*solana.AccountMeta{}, buf.Bytes()), nil
+}
+
+func createRequestHeapFrameInstruction(heapSize uint32) (solana.Instruction, error) {
+	buf := new(bytes.Buffer)
+	if err := binary.Write(buf, binary.LittleEndian, RequestHeapFrame); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(buf, binary.LittleEndian, heapSize); err != nil {
+		return nil, err
+	}
+	return solana.NewInstruction(ProgramID, []*solana.AccountMeta{}, buf.Bytes()), nil
 }

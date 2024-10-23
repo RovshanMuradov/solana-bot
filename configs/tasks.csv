@@ -1,0 +1,9 @@
+task_name,module,workers,wallet_name,delta,priority_fee,amm_id,source_token,target_token,amount_in,min_amount_out,autosell_percent,autosell_delay,autosell_amount,transaction_delay,autosell_priority_fee
+# Обычный свап с низкой комиссией
+NormalSwap,Raydium,1,wallet1,100,0.000001,amm-id-1,SOL,USDC,1.0,0.9,0,0,0,1000,0
+
+# Снайпинг с высокой комиссией для быстрого исполнения
+Sniping,Raydium,2,wallet1,100,0.00005,amm-id-2,SOL,NEW_TOKEN,0.5,0.4,150,5,0.3,100,0.00001
+
+# Автопродажа с разными комиссиями для покупки и продажи
+AutosellTask,Raydium,1,wallet1,100,0.00001,amm-id-3,SOL,TOKEN,1.0,0.9,150,10,0.5,500,0.000005

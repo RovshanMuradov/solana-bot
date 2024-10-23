@@ -14,38 +14,43 @@ type SolanaClient interface {
 	GetRecentBlockhash(ctx context.Context) (solana.Hash, error)
 }
 
-type TransactionBuilder struct {
+// TransactionBuilder помогает конструировать транзакции
+type Builder struct {
 	instructions []solana.Instruction
 	signers      []solana.PrivateKey
-	config       computebudget.ComputeBudgetConfig
+	config       computebudget.Config
 }
 
-func NewTransactionBuilder() *TransactionBuilder {
-	return &TransactionBuilder{
+// NewTransactionBuilder создает новый билдер транзакций
+func NewTransactionBuilder() *Builder {
+	return &Builder{
 		config: computebudget.NewDefaultConfig(),
 	}
 }
 
-func (b *TransactionBuilder) SetComputeBudget(units uint32, priceInSol float64) *TransactionBuilder {
-	microLamports := computebudget.ConvertSolToMicrolamports(priceInSol)
-	b.config = computebudget.ComputeBudgetConfig{
-		Units:     units,
-		UnitPrice: microLamports,
+// SetComputeBudget устанавливает параметры compute budget
+func (b *Builder) SetComputeBudget(units uint32, priceInSol float64) *Builder {
+	b.config = computebudget.Config{
+		Units:       units,
+		PriorityFee: priceInSol,
 	}
 	return b
 }
 
-func (b *TransactionBuilder) AddInstruction(instruction solana.Instruction) *TransactionBuilder {
+// AddInstruction добавляет инструкцию в транзакцию
+func (b *Builder) AddInstruction(instruction solana.Instruction) *Builder {
 	b.instructions = append(b.instructions, instruction)
 	return b
 }
 
-func (b *TransactionBuilder) AddSigner(signer solana.PrivateKey) *TransactionBuilder {
+// AddSigner добавляет подписанта транзакции
+func (b *Builder) AddSigner(signer solana.PrivateKey) *Builder {
 	b.signers = append(b.signers, signer)
 	return b
 }
 
-func (b *TransactionBuilder) Build(ctx context.Context, client SolanaClient) (*solana.Transaction, error) {
+// Build создает и подписывает транзакцию
+func (b *Builder) Build(ctx context.Context, client SolanaClient) (*solana.Transaction, error) {
 	if len(b.signers) == 0 {
 		return nil, fmt.Errorf("no signers provided")
 	}
@@ -55,15 +60,19 @@ func (b *TransactionBuilder) Build(ctx context.Context, client SolanaClient) (*s
 		return nil, fmt.Errorf("failed to get recent blockhash: %w", err)
 	}
 
-	budgetInstructions, err := computebudget.BuildComputeBudgetInstructions(b.config)
+	// Получаем инструкции для compute budget
+	budgetInstructions, err := computebudget.BuildInstructions(b.config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build compute budget instructions: %w", err)
 	}
 
-	allInstructions := append(budgetInstructions, b.instructions...)
+	// Правильная работа со slice
+	instructions := make([]solana.Instruction, 0, len(budgetInstructions)+len(b.instructions))
+	instructions = append(instructions, budgetInstructions...)
+	instructions = append(instructions, b.instructions...)
 
 	tx, err := solana.NewTransaction(
-		allInstructions,
+		instructions,
 		blockhash,
 		solana.TransactionPayer(b.signers[0].PublicKey()),
 	)
@@ -71,6 +80,7 @@ func (b *TransactionBuilder) Build(ctx context.Context, client SolanaClient) (*s
 		return nil, fmt.Errorf("failed to create transaction: %w", err)
 	}
 
+	// Подписываем транзакцию
 	_, err = tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
 		for _, signer := range b.signers {
 			if signer.PublicKey().Equals(key) {

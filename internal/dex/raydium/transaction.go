@@ -108,22 +108,23 @@ func (r *DEX) PrepareAndSendTransaction(
 	}
 
 	// Создаем compute budget инструкции
-	budgetInstructions, err := createComputeBudgetInstructions(
+	priorityManager := types.NewPriorityManager(logger)
+	budgetInstructions, err := priorityManager.CreateCustomPriorityInstructions(
 		task.PriorityFee,
-		computebudget.SnipingUnits, // или другое значение в зависимости от типа операции
-		logger,
+		computebudget.SnipingUnits,
 	)
 	if err != nil {
 		logger.Error("Failed to create compute budget instructions", zap.Error(err))
 		return err
 	}
 
-	// Объединяем все инструкции
-	allInstructions := append(budgetInstructions, swapInstruction)
+	// Исправляем appendAssign
+	instructions := make([]solana.Instruction, 0, len(budgetInstructions)+1)
+	instructions = append(instructions, budgetInstructions...)
+	instructions = append(instructions, swapInstruction)
 
-	// Создание транзакции
 	tx, err := solana.NewTransaction(
-		allInstructions,
+		instructions,
 		recentBlockhash,
 		solana.TransactionPayer(userWallet.PublicKey),
 	)
