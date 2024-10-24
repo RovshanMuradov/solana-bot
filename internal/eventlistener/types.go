@@ -1,26 +1,38 @@
-// internal/eventlistener/types.go
-
-// Этот файл содержит определение типов для пакета eventlistener
 package eventlistener
 
 import (
 	"net"
+	"sync"
+	"time"
 
 	"go.uber.org/zap"
 )
 
-// EventListener представляет слушатель событий WebSocket
-type EventListener struct {
-	conn   net.Conn    // WebSocket соединение
-	logger *zap.Logger // Логгер для записи событий и ошибок
-	wsURL  string      // URL WebSocket сервера
+type Event struct {
+	Type   string `json:"type"`
+	PoolID string `json:"pool_id,omitempty"`
+	TokenA string `json:"token_a,omitempty"`
+	TokenB string `json:"token_b,omitempty"`
 }
 
-// Event представляет собой структуру события, полученного от WebSocket
-type Event struct {
-	Type   string `json:"type"`              // Тип события
-	PoolID string `json:"pool_id,omitempty"` // ID пула (если применимо)
-	TokenA string `json:"token_a,omitempty"` // Первый токен в паре (если применимо)
-	TokenB string `json:"token_b,omitempty"` // Второй токен в паре (если применимо)
-	// Добавьте другие необходимые поля здесь
+type eventValidator struct {
+	validTypes map[string]bool
 }
+
+type EventListener struct {
+	conn      net.Conn
+	logger    *zap.Logger
+	wsURL     string
+	mu        sync.Mutex
+	closeOnce sync.Once
+	done      chan struct{}
+	validator *eventValidator
+}
+
+const (
+	initialBackoff = 200 * time.Millisecond
+	maxBackoff     = 2 * time.Second
+	maxAttempts    = 5
+	readTimeout    = 5 * time.Second
+	writeTimeout   = 5 * time.Second
+)
