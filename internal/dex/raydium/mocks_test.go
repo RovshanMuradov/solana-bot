@@ -28,7 +28,7 @@ func (m *MockSolanaClient) SendTransaction(ctx context.Context, tx *solanaGo.Tra
 }
 
 // NewTestDEX создает DEX с моком клиента для тестирования
-func NewTestDEX(t *testing.T, mockClient internalSolana.SolanaClientInterface) *DEX {
+func NewTestDEX(_ *testing.T, mockClient internalSolana.SolanaClientInterface) *DEX {
 	logger := zap.NewNop()
 
 	if mockClient == nil {
