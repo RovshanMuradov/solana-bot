@@ -90,6 +90,12 @@ func parseTask(record []string) (*types.Task, error) {
 		return nil, fmt.Errorf("invalid AutosellPriorityFee value: %v", err)
 	}
 
+	// Устанавливаем DEXName
+	dexName := "Raydium" // По умолчанию используем Raydium
+	if record[1] == "pump.fun" {
+		dexName = "Pump.fun"
+	}
+
 	return &types.Task{
 		TaskName:            record[0],
 		Module:              record[1],
@@ -107,5 +113,6 @@ func parseTask(record []string) (*types.Task, error) {
 		AutosellAmount:      autosellAmount,
 		TransactionDelay:    transactionDelay,
 		AutosellPriorityFee: autosellPriorityFee,
+		DEXName:             dexName, // Устанавливаем имя DEX
 	}, nil
 }

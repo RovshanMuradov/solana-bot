@@ -2,6 +2,7 @@
 package dex
 
 import (
+	"errors"
 	"fmt"
 
 	solanaClient "github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
@@ -12,6 +13,14 @@ import (
 )
 
 func GetDEXByName(name string, client *solanaClient.Client, logger *zap.Logger) (types.DEX, error) {
+	logger.Debug("Getting DEX module",
+		zap.String("dex_name", name),
+		zap.Bool("has_client", client != nil))
+
+	if name == "" {
+		return nil, errors.New("DEX name cannot be empty")
+	}
+
 	switch name {
 	case "Raydium":
 		return raydium.NewDEX(client, logger, raydium.DefaultPoolConfig), nil

@@ -30,7 +30,7 @@ type Task struct {
 	UserDestinationTokenAccount solana.PublicKey
 	SourceTokenDecimals         int
 	TargetTokenDecimals         int
-	DEXName                     string
+	DEXName                     string `default:"Raydium"` // Добавляем значение по умолчанию
 }
 
 type DEX interface {
