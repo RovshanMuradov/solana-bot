@@ -15,9 +15,13 @@ type SolanaClientInterface interface {
 	SendTransaction(ctx context.Context, tx *solana.Transaction) (solana.Signature, error)
 }
 
-// Client реализует SolanaClientInterface
+type RPCClient struct {
+	Client *rpc.Client
+	RPCURL string
+}
+
 type Client struct {
-	rpcPool *RPCPool
+	rpcPool []*RPCClient
 	logger  *zap.Logger
 }
 

@@ -22,6 +22,7 @@ type Config struct {
 	Retries      int      `mapstructure:"retries"`
 	WebhookURL   string   `mapstructure:"webhook_url"`
 	Workers      int      `mapstructure:"workers"`
+	PostgresURL  string   `mapstructure:"postgres_url"`
 }
 
 // Значения по умолчанию

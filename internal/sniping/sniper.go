@@ -1,12 +1,16 @@
+// internal/sniping/sniper.go
 package sniping
 
 import (
 	"context"
 	"sync"
+	"time"
 
 	solanaBlockchain "github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
 	"github.com/rovshanmuradov/solana-bot/internal/config"
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
+	"github.com/rovshanmuradov/solana-bot/internal/storage"
+	"github.com/rovshanmuradov/solana-bot/internal/storage/models"
 	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
@@ -17,16 +21,25 @@ type Sniper struct {
 	wallets     map[string]*wallet.Wallet
 	config      *config.Config
 	logger      *zap.Logger
-	client      *solanaBlockchain.Client // Добавляем клиент Solana
+	client      *solanaBlockchain.Client
+	storage     storage.Storage // Добавляем поле storage
 }
 
-func NewSniper(blockchains map[string]types.Blockchain, wallets map[string]*wallet.Wallet, cfg *config.Config, logger *zap.Logger, client *solanaBlockchain.Client) *Sniper {
+func NewSniper(
+	blockchains map[string]types.Blockchain,
+	wallets map[string]*wallet.Wallet,
+	cfg *config.Config,
+	logger *zap.Logger,
+	client *solanaBlockchain.Client,
+	storage storage.Storage, // Добавляем параметр storage
+) *Sniper {
 	return &Sniper{
 		blockchains: blockchains,
 		wallets:     wallets,
 		config:      cfg,
 		logger:      logger,
 		client:      client,
+		storage:     storage,
 	}
 }
 
@@ -66,6 +79,18 @@ func (s *Sniper) worker(ctx context.Context, wg *sync.WaitGroup, taskChan <-chan
 }
 
 func (s *Sniper) executeTask(ctx context.Context, task *types.Task) {
+	tx := &models.Transaction{
+		TaskName:      task.TaskName,
+		WalletAddress: task.WalletName,
+		Status:        "pending",
+		// ... остальные поля ...
+	}
+	if err := s.storage.SaveTransaction(ctx, tx); err != nil {
+		s.logger.Error("Failed to save transaction", zap.Error(err))
+	}
+
+	startTime := time.Now()
+
 	s.logger.Info("Начало выполнения задачи", zap.String("task", task.TaskName))
 
 	// Получаем DEX-модуль на основе имени
@@ -90,4 +115,9 @@ func (s *Sniper) executeTask(ctx context.Context, task *types.Task) {
 	}
 
 	s.logger.Info("Свап успешно выполнен")
+
+	tx.ExecutionTime = time.Since(startTime).Seconds()
+	if err := s.storage.UpdateTransactionStatus(ctx, tx.Signature, "completed", ""); err != nil {
+		s.logger.Error("Failed to update transaction status", zap.Error(err))
+	}
 }
