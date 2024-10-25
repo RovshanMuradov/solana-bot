@@ -1,4 +1,3 @@
-// pkg/blockchain/solana/client.go
 package solana
 
 import (
@@ -6,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
@@ -13,103 +13,180 @@ import (
 	"go.uber.org/zap"
 )
 
-// NewClient создает новый экземпляр клиента Solana с пулом RPC узлов
-func NewClient(rpcList []string, logger *zap.Logger) (*Client, error) {
-	if len(rpcList) == 0 {
-		return nil, errors.New("empty RPC list")
+// NewClient создает новый экземпляр клиента Solana
+func NewClient(rpcURLs []string, logger *zap.Logger) (*Client, error) {
+	if len(rpcURLs) == 0 {
+		return nil, errors.New("empty RPC URL list")
 	}
 
-	var rpcPool []*RPCClient
-
-	for _, rpcURL := range rpcList {
-		if _, err := url.Parse(rpcURL); err != nil {
-			return nil, errors.New("invalid RPC URL: " + rpcURL)
+	var clients []*RPCClient
+	for _, urlStr := range rpcURLs {
+		if _, err := url.Parse(urlStr); err != nil {
+			logger.Warn("Invalid RPC URL", zap.String("url", urlStr), zap.Error(err))
+			continue
 		}
 
-		rpcPool = append(rpcPool, &RPCClient{
-			Client: rpc.New(rpcURL),
-			RPCURL: rpcURL,
-		})
-	}
-
-	logger.Debug("Initializing Solana client", zap.Strings("rpc_urls", rpcList))
-
-	// Попробуем подключиться к каждому узлу с таймаутом
-	var lastErr error
-	for _, rpcClient := range rpcPool {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		if err := testConnection(ctx, rpcClient.Client, rpcClient.RPCURL, logger); err != nil {
-			logger.Warn("Failed to connect to RPC node",
-				zap.Error(err),
-				zap.String("rpc_url", rpcClient.RPCURL))
-			lastErr = err
-		} else {
-			// Успешное подключение
-			logger.Info("Successfully connected to RPC node", zap.String("rpc_url", rpcClient.RPCURL))
-			return &Client{
-				rpcPool: rpcPool,
-				logger:  logger,
-			}, nil
+		client := &RPCClient{
+			Client:  rpc.New(urlStr),
+			URL:     urlStr,
+			active:  true,
+			metrics: &RPCMetrics{},
 		}
+		clients = append(clients, client)
 	}
 
-	// Если все узлы недоступны, возвращаем последнюю ошибку
-	return nil, fmt.Errorf("all RPC nodes failed: %w", lastErr)
+	if len(clients) == 0 {
+		return nil, errors.New("no valid RPC URLs provided")
+	}
+
+	c := &Client{
+		rpcClients: clients,
+		logger:     logger,
+	}
+
+	if err := c.validateConnections(context.Background()); err != nil {
+		return nil, fmt.Errorf("failed to validate connections: %w", err)
+	}
+
+	return c, nil
 }
 
-func testConnection(ctx context.Context, client *rpc.Client, rpcURL string, logger *zap.Logger) error {
-	logger.Debug("Testing RPC connection", zap.String("rpc_url", rpcURL))
-
-	res, err := client.GetRecentBlockhash(ctx, rpc.CommitmentFinalized)
+// testConnection проверяет подключение к RPC узлу
+func (c *Client) testConnection(ctx context.Context, rpcClient *RPCClient) error {
+	// Пробуем получить версию узла как более легкий запрос
+	version, err := rpcClient.Client.GetVersion(ctx)
 	if err != nil {
-		logger.Error("RPC connection test failed",
-			zap.Error(err),
-			zap.String("method", "GetRecentBlockhash"))
-		return fmt.Errorf("failed to get recent blockhash: %w", err)
+		return fmt.Errorf("failed to get version: %w", err)
 	}
 
-	if res.Value.Blockhash.IsZero() {
-		logger.Error("Invalid blockhash received",
-			zap.String("blockhash", res.Value.Blockhash.String()))
-		return errors.New("received zero blockhash")
+	// Если версия получена успешно, пробуем получить последний блокхеш
+	_, err = rpcClient.Client.GetLatestBlockhash(ctx, rpc.CommitmentFinalized)
+	if err != nil {
+		return fmt.Errorf("failed to get latest blockhash: %w", err)
 	}
 
-	logger.Debug("RPC connection successful",
-		zap.String("rpc_url", rpcURL),
-		zap.String("blockhash", res.Value.Blockhash.String()),
-		zap.Uint64("fee_calculator.lamports_per_signature", res.Value.FeeCalculator.LamportsPerSignature))
+	c.logger.Debug("Successfully connected to RPC",
+		zap.String("url", rpcClient.URL),
+		zap.String("solana_core", version.SolanaCore))
+
 	return nil
 }
 
-// Остальной код остается без изменений
+func (c *Client) validateConnections(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
 
-func (c *Client) SendTransaction(ctx context.Context, tx *solana.Transaction) (solana.Signature, error) {
-	rpcClient := c.getClient()
-	txHash, err := rpcClient.Client.SendTransactionWithOpts(ctx, tx, rpc.TransactionOpts{
-		SkipPreflight:       true,
-		PreflightCommitment: rpc.CommitmentFinalized,
-	})
-	if err != nil {
-		c.logger.Error("Ошибка отправки транзакции", zap.Error(err))
-		return solana.Signature{}, err
+	var wg sync.WaitGroup
+	errChan := make(chan error, len(c.rpcClients))
+
+	for _, client := range c.rpcClients {
+		wg.Add(1)
+		go func(rpcClient *RPCClient) {
+			defer wg.Done()
+
+			var lastErr error
+			for attempt := 0; attempt < maxRetries; attempt++ {
+				start := time.Now()
+				if err := c.testConnection(ctx, rpcClient); err != nil {
+					lastErr = err
+					rpcClient.updateMetrics(false, time.Since(start))
+					time.Sleep(retryDelay)
+					continue
+				}
+				rpcClient.updateMetrics(true, time.Since(start))
+				return
+			}
+			if lastErr != nil {
+				errChan <- fmt.Errorf("failed to connect to %s: %w", rpcClient.URL, lastErr)
+				rpcClient.setActive(false)
+			}
+		}(client)
 	}
-	return txHash, nil
+
+	wg.Wait()
+	close(errChan)
+
+	// Проверяем наличие активных клиентов
+	if !c.hasActiveClients() {
+		return errors.New("no active RPC connections available")
+	}
+
+	return nil
 }
 
 func (c *Client) GetRecentBlockhash(ctx context.Context) (solana.Hash, error) {
-	rpcClient := c.getClient()
-	result, err := rpcClient.Client.GetRecentBlockhash(ctx, rpc.CommitmentFinalized)
-	if err != nil {
-		c.logger.Error("Ошибка получения blockhash", zap.Error(err))
-		return solana.Hash{}, err
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		client := c.getNextClient()
+		if client == nil {
+			return solana.Hash{}, errors.New("no active RPC clients available")
+		}
+
+		start := time.Now()
+		result, err := client.Client.GetLatestBlockhash(ctx, rpc.CommitmentFinalized)
+		client.updateMetrics(err == nil, time.Since(start))
+
+		if err != nil {
+			lastErr = err
+			client.setActive(false)
+			continue
+		}
+
+		return result.Value.Blockhash, nil
 	}
-	return result.Value.Blockhash, nil
+
+	return solana.Hash{}, fmt.Errorf("failed to get recent blockhash after %d attempts: %w", maxRetries, lastErr)
 }
 
-// Метод для получения клиента из пула
-func (c *Client) getClient() *RPCClient {
-	// Логика для выбора клиента, например, по круговому алгоритму или случайному выбору
-	return c.rpcPool[0] // Здесь возвращается первый клиент, но это можно улучшить
+func (c *Client) SendTransaction(ctx context.Context, tx *solana.Transaction) (solana.Signature, error) {
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		client := c.getNextClient()
+		if client == nil {
+			return solana.Signature{}, errors.New("no active RPC clients available")
+		}
+
+		start := time.Now()
+		sig, err := client.Client.SendTransactionWithOpts(ctx, tx, rpc.TransactionOpts{
+			SkipPreflight:       true,
+			PreflightCommitment: rpc.CommitmentFinalized,
+		})
+		client.updateMetrics(err == nil, time.Since(start))
+
+		if err != nil {
+			lastErr = err
+			client.setActive(false)
+			continue
+		}
+
+		return sig, nil
+	}
+
+	return solana.Signature{}, fmt.Errorf("failed to send transaction after %d attempts: %w", maxRetries, lastErr)
+}
+
+// Вспомогательные методы для Client
+func (c *Client) hasActiveClients() bool {
+	for _, client := range c.rpcClients {
+		if client.isActive() {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) getNextClient() *RPCClient {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	initialIndex := c.currIndex
+	for {
+		c.currIndex = (c.currIndex + 1) % len(c.rpcClients)
+		if c.rpcClients[c.currIndex].isActive() {
+			return c.rpcClients[c.currIndex]
+		}
+		if c.currIndex == initialIndex {
+			return nil
+		}
+	}
 }

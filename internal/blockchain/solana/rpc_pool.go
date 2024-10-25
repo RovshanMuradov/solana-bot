@@ -2,60 +2,48 @@
 package solana
 
 import (
-	"context"
-	"log"
-	"sync"
+	"sync/atomic"
 	"time"
-
-	"github.com/gagliardetto/solana-go/rpc"
 )
 
-type RPCPool struct {
-	clients []*rpc.Client
-	mutex   sync.Mutex
-	index   int
+// Методы для RPCClient
+func (c *RPCClient) setActive(state bool) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.active = state
 }
 
-func NewRPCPool(rpcList []string) *RPCPool {
-	// Создаем список RPC-клиентов из rpcList
-	var clients []*rpc.Client
-	for _, url := range rpcList {
-		client := rpc.New(url)
-		clients = append(clients, client)
+func (c *RPCClient) isActive() bool {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	return c.active
+}
+
+func (c *RPCClient) updateMetrics(success bool, latency time.Duration) {
+	c.metrics.mutex.Lock()
+	defer c.metrics.mutex.Unlock()
+
+	if success {
+		atomic.AddUint64(&c.metrics.successCount, 1)
+	} else {
+		atomic.AddUint64(&c.metrics.errorCount, 1)
 	}
 
-	return &RPCPool{
-		clients: clients,
-		index:   0,
-	}
+	c.metrics.latency = (c.metrics.latency + latency) / 2 // Скользящее среднее
 }
 
-func (p *RPCPool) GetClient() *rpc.Client {
-	p.mutex.Lock()
-	defer p.mutex.Unlock()
-
-	// Возвращаем следующий доступный RPC-клиент (круговой цикл)
-	client := p.clients[p.index]
-	p.index = (p.index + 1) % len(p.clients)
-	return client
+func (c *RPCClient) getMetrics() (uint64, uint64, time.Duration) {
+	c.metrics.mutex.RLock()
+	defer c.metrics.mutex.RUnlock()
+	return c.metrics.successCount, c.metrics.errorCount, c.metrics.latency
 }
 
-func (p *RPCPool) CheckClientHealth(client *rpc.Client) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+// Методы для RPCMetrics
+func (m *RPCMetrics) reset() {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
 
-	_, err := client.GetRecentBlockhash(ctx, rpc.CommitmentFinalized)
-	return err == nil
-}
-
-func (p *RPCPool) PerformHealthChecks() {
-	p.mutex.Lock()
-	defer p.mutex.Unlock()
-
-	for i, client := range p.clients {
-		if !p.CheckClientHealth(client) {
-			log.Printf("RPC клиент %d недоступен, удаляем из пула", i)
-			p.clients = append(p.clients[:i], p.clients[i+1:]...)
-		}
-	}
+	atomic.StoreUint64(&m.successCount, 0)
+	atomic.StoreUint64(&m.errorCount, 0)
+	m.latency = 0
 }
