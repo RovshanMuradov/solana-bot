@@ -9,7 +9,15 @@ import (
 	"github.com/gagliardetto/solana-go"
 )
 
-var ProgramID = solana.MustPublicKeyFromBase58("ComputeBudget111111111111111111111111111111")
+var ProgramID solana.PublicKey
+
+func init() {
+	programID, err := solana.PublicKeyFromBase58("ComputeBudget111111111111111111111111111111")
+	if err != nil {
+		panic(fmt.Sprintf("failed to create compute budget program ID: %v", err))
+	}
+	ProgramID = programID
+}
 
 const (
 	RequestUnitsDeprecated uint8 = 0
@@ -25,8 +33,6 @@ const (
 	StandardUnits uint32 = 400_000
 )
 
-// ComputeBudgetConfig содержит настройки для транзакции
-// Переименовываем ComputeBudgetConfig -> Config
 type Config struct {
 	Units         uint32  // Количество compute units
 	PriorityFee   float64 // Приоритетная комиссия в SOL

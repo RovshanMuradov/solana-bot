@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
@@ -33,6 +34,20 @@ func (s *SwapInstructionData) Serialize() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// validatePublicKey проверяет корректность публичного ключа
+func validatePublicKey(key string) (solana.PublicKey, error) {
+	if key == "" {
+		return solana.PublicKey{}, fmt.Errorf("empty public key")
+	}
+
+	pubKey, err := solana.PublicKeyFromBase58(key)
+	if err != nil {
+		return solana.PublicKey{}, fmt.Errorf("invalid public key %s: %w", key, err)
+	}
+
+	return pubKey, nil
+}
+
 // CreateSwapInstruction создает инструкцию свапа для Raydium
 func (r *DEX) CreateSwapInstruction(
 	userWallet solana.PublicKey,
@@ -43,31 +58,93 @@ func (r *DEX) CreateSwapInstruction(
 	logger *zap.Logger,
 	poolInfo *Pool,
 ) (solana.Instruction, error) {
-	ammProgramID := solana.MustPublicKeyFromBase58(poolInfo.AmmProgramID)
+	logger.Debug("Creating swap instruction",
+		zap.String("user_wallet", userWallet.String()),
+		zap.String("source_account", userSourceTokenAccount.String()),
+		zap.String("destination_account", userDestinationTokenAccount.String()),
+		zap.Uint64("amount_in", amountIn),
+		zap.Uint64("min_amount_out", minAmountOut))
 
-	// Определение AccountMeta
-	accounts := []*solana.AccountMeta{
+	if poolInfo == nil {
+		return nil, fmt.Errorf("pool info is nil")
+	}
+
+	// Проверяем и конвертируем все необходимые публичные ключи
+	ammProgramID, err := validatePublicKey(poolInfo.AmmProgramID)
+	if err != nil {
+		logger.Error("Invalid AmmProgramID", zap.Error(err))
+		return nil, fmt.Errorf("invalid AmmProgramID: %w", err)
+	}
+
+	ammID, err := validatePublicKey(poolInfo.AmmID)
+	if err != nil {
+		logger.Error("Invalid AmmID", zap.Error(err))
+		return nil, fmt.Errorf("invalid AmmID: %w", err)
+	}
+
+	// Создаем массив для всех аккаунтов, которые нужно проверить
+	accountChecks := []struct {
+		name    string
+		address string
+	}{
+		{"AmmAuthority", poolInfo.AmmAuthority},
+		{"AmmOpenOrders", poolInfo.AmmOpenOrders},
+		{"AmmTargetOrders", poolInfo.AmmTargetOrders},
+		{"PoolCoinTokenAccount", poolInfo.PoolCoinTokenAccount},
+		{"PoolPcTokenAccount", poolInfo.PoolPcTokenAccount},
+		{"SerumProgramID", poolInfo.SerumProgramID},
+		{"SerumMarket", poolInfo.SerumMarket},
+		{"SerumBids", poolInfo.SerumBids},
+		{"SerumAsks", poolInfo.SerumAsks},
+		{"SerumEventQueue", poolInfo.SerumEventQueue},
+		{"SerumCoinVaultAccount", poolInfo.SerumCoinVaultAccount},
+		{"SerumPcVaultAccount", poolInfo.SerumPcVaultAccount},
+		{"SerumVaultSigner", poolInfo.SerumVaultSigner},
+	}
+
+	// Создаем слайс для аккаунтов с предварительно выделенной памятью
+	accounts := make([]*solana.AccountMeta, 0, len(accountChecks)+7) // +7 для базовых аккаунтов
+
+	// Добавляем базовые аккаунты
+	accounts = append(accounts, []*solana.AccountMeta{
 		{PublicKey: userSourceTokenAccount, IsSigner: false, IsWritable: true},
 		{PublicKey: userDestinationTokenAccount, IsSigner: false, IsWritable: true},
-		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.AmmID), IsSigner: false, IsWritable: true},
-		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.AmmAuthority), IsSigner: false, IsWritable: false},
-		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.AmmOpenOrders), IsSigner: false, IsWritable: true},
-		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.AmmTargetOrders), IsSigner: false, IsWritable: true},
-		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.PoolCoinTokenAccount), IsSigner: false, IsWritable: true},
-		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.PoolPcTokenAccount), IsSigner: false, IsWritable: true},
-		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.SerumProgramID), IsSigner: false, IsWritable: false},
-		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.SerumMarket), IsSigner: false, IsWritable: true},
-		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.SerumBids), IsSigner: false, IsWritable: true},
-		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.SerumAsks), IsSigner: false, IsWritable: true},
-		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.SerumEventQueue), IsSigner: false, IsWritable: true},
-		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.SerumCoinVaultAccount), IsSigner: false, IsWritable: true},
-		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.SerumPcVaultAccount), IsSigner: false, IsWritable: true},
-		{PublicKey: solana.MustPublicKeyFromBase58(poolInfo.SerumVaultSigner), IsSigner: false, IsWritable: false},
+		{PublicKey: ammID, IsSigner: false, IsWritable: true},
+	}...)
+
+	// Проверяем и добавляем остальные аккаунты
+	for _, check := range accountChecks {
+		pubKey, err := validatePublicKey(check.address)
+		if err != nil {
+			logger.Error(fmt.Sprintf("Invalid %s", check.name),
+				zap.String("address", check.address),
+				zap.Error(err))
+			return nil, fmt.Errorf("invalid %s: %w", check.name, err)
+		}
+
+		isWritable := false
+		// Определяем, какие аккаунты должны быть записываемыми
+		switch check.name {
+		case "AmmOpenOrders", "AmmTargetOrders", "PoolCoinTokenAccount",
+			"PoolPcTokenAccount", "SerumMarket", "SerumBids", "SerumAsks",
+			"SerumEventQueue", "SerumCoinVaultAccount", "SerumPcVaultAccount":
+			isWritable = true
+		}
+
+		accounts = append(accounts, &solana.AccountMeta{
+			PublicKey:  pubKey,
+			IsSigner:   false,
+			IsWritable: isWritable,
+		})
+	}
+
+	// Добавляем системные аккаунты
+	accounts = append(accounts, []*solana.AccountMeta{
 		{PublicKey: userWallet, IsSigner: true, IsWritable: false},
 		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
 		{PublicKey: solana.SysVarRentPubkey, IsSigner: false, IsWritable: false},
 		{PublicKey: solana.SysVarClockPubkey, IsSigner: false, IsWritable: false},
-	}
+	}...)
 
 	// Создание данных инструкции
 	instructionData := SwapInstructionData{
@@ -79,16 +156,12 @@ func (r *DEX) CreateSwapInstruction(
 	data, err := instructionData.Serialize()
 	if err != nil {
 		logger.Error("Failed to serialize instruction data", zap.Error(err))
-		return nil, err
+		return nil, fmt.Errorf("failed to serialize instruction data: %w", err)
 	}
 
-	// Создание инструкции с использованием solana.NewInstruction
-	instruction := solana.NewInstruction(
-		ammProgramID,
-		accounts,
-		data,
-	)
+	instruction := solana.NewInstruction(ammProgramID, accounts, data)
 
+	logger.Debug("Swap instruction created successfully")
 	return instruction, nil
 }
 

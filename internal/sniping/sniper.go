@@ -3,14 +3,13 @@ package sniping
 
 import (
 	"context"
+	"fmt"
 	"sync"
-	"time"
 
 	solanaBlockchain "github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
 	"github.com/rovshanmuradov/solana-bot/internal/config"
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
 	"github.com/rovshanmuradov/solana-bot/internal/storage"
-	"github.com/rovshanmuradov/solana-bot/internal/storage/models"
 	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
@@ -79,45 +78,96 @@ func (s *Sniper) worker(ctx context.Context, wg *sync.WaitGroup, taskChan <-chan
 }
 
 func (s *Sniper) executeTask(ctx context.Context, task *types.Task) {
-	tx := &models.Transaction{
-		TaskName:      task.TaskName,
-		WalletAddress: task.WalletName,
-		Status:        "pending",
-		// ... остальные поля ...
+	fmt.Printf("\nDEBUG: Starting executeTask\n")
+	fmt.Printf("DEBUG: Task: %+v\n", task)
+	fmt.Printf("DEBUG: Client nil? %v\n", s.client == nil)
+	fmt.Printf("DEBUG: Logger nil? %v\n", s.logger == nil)
+
+	s.logger.Info("Starting task execution",
+		zap.String("task_name", task.TaskName),
+		zap.String("dex_name", task.DEXName),
+		zap.String("wallet", task.WalletName))
+
+	// Проверяем наличие и соответствие DEX имени и модуля
+	if task.DEXName == "" {
+		task.DEXName = task.Module // Используем модуль как DEX имя если DEXName пустой
+		fmt.Printf("DEBUG: Using module as DEX name: %s\n", task.DEXName)
 	}
-	if err := s.storage.SaveTransaction(ctx, tx); err != nil {
-		s.logger.Error("Failed to save transaction", zap.Error(err))
-	}
 
-	startTime := time.Now()
-
-	s.logger.Info("Начало выполнения задачи", zap.String("task", task.TaskName))
-
-	// Получаем DEX-модуль на основе имени
+	// Получаем DEX-модуль
+	fmt.Printf("DEBUG: Getting DEX module for: %s\n", task.DEXName)
 	dexModule, err := dex.GetDEXByName(task.DEXName, s.client, s.logger)
 	if err != nil {
-		s.logger.Error("Не удалось получить DEX-модуль", zap.Error(err))
+		s.logger.Error("Failed to get DEX module",
+			zap.String("dex_name", task.DEXName),
+			zap.Error(err))
+		fmt.Printf("DEBUG: Failed to get DEX module: %v\n", err)
 		return
 	}
 
-	// Получаем кошелек
+	if dexModule == nil {
+		s.logger.Error("DEX module is nil after initialization")
+		fmt.Printf("DEBUG: DEX module is nil after initialization\n")
+		return
+	}
+
+	fmt.Printf("DEBUG: Got DEX module of type: %T\n", dexModule)
+
+	s.logger.Info("Got DEX module",
+		zap.String("dex_name", task.DEXName),
+		zap.String("dex_type", fmt.Sprintf("%T", dexModule)))
+
+	// Получаем и проверяем кошелек
 	wallet, ok := s.wallets[task.WalletName]
 	if !ok {
-		s.logger.Error("Кошелек не найден", zap.String("wallet", task.WalletName))
+		s.logger.Error("Wallet not found",
+			zap.String("wallet_name", task.WalletName),
+			zap.Strings("available_wallets", getWalletNames(s.wallets)))
 		return
 	}
 
-	// Выполняем свап через интерфейс
-	err = dexModule.ExecuteSwap(ctx, task, wallet)
-	if err != nil {
-		s.logger.Error("Ошибка при выполнении свапа", zap.Error(err))
+	if wallet == nil {
+		s.logger.Error("Wallet is nil",
+			zap.String("wallet_name", task.WalletName))
 		return
 	}
 
-	s.logger.Info("Свап успешно выполнен")
+	s.logger.Info("Got wallet",
+		zap.String("wallet_name", task.WalletName),
+		zap.String("public_key", wallet.PublicKey.String()))
 
-	tx.ExecutionTime = time.Since(startTime).Seconds()
-	if err := s.storage.UpdateTransactionStatus(ctx, tx.Signature, "completed", ""); err != nil {
-		s.logger.Error("Failed to update transaction status", zap.Error(err))
+	// Проверяем параметры
+	if err := validateTaskParameters(task); err != nil {
+		s.logger.Error("Invalid task parameters", zap.Error(err))
+		return
 	}
+
+	// Выполняем свап
+	s.logger.Debug("Executing swap")
+	if err := dexModule.ExecuteSwap(ctx, task, wallet); err != nil {
+		s.logger.Error("Failed to execute swap", zap.Error(err))
+		return
+	}
+
+	s.logger.Info("Task completed successfully",
+		zap.String("task_name", task.TaskName))
+}
+
+// Вспомогательная функция для получения имен кошельков
+func getWalletNames(wallets map[string]*wallet.Wallet) []string {
+	names := make([]string, 0, len(wallets))
+	for name := range wallets {
+		names = append(names, name)
+	}
+	return names
+}
+
+func validateTaskParameters(task *types.Task) error {
+	if task.AmountIn <= 0 {
+		return fmt.Errorf("invalid amount_in: %f", task.AmountIn)
+	}
+	if task.MinAmountOut <= 0 {
+		return fmt.Errorf("invalid min_amount_out: %f", task.MinAmountOut)
+	}
+	return nil
 }

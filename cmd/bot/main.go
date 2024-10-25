@@ -18,65 +18,90 @@ import (
 )
 
 func main() {
+	fmt.Println("\n=== Starting Solana Bot ===")
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Инициализация логгера
-	logger, err := zap.NewProduction()
-	if err != nil {
-		panic("Failed to initialize logger: " + err.Error())
-	}
-	defer func() {
-		if err := logger.Sync(); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to sync logger: %v\n", err)
-		}
-	}()
+	logConfig := zap.NewDevelopmentConfig()
+	logConfig.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
+	logConfig.Development = true
+	logConfig.DisableCaller = false
+	logConfig.DisableStacktrace = false
 
+	logger, err := logConfig.Build()
+	if err != nil {
+		fmt.Printf("Failed to initialize logger: %v\n", err)
+		panic(err)
+	}
+	defer logger.Sync()
+
+	fmt.Println("=== Loading configuration ===")
 	// Загрузка конфигурации
 	cfg, err := config.LoadConfig("configs/config.json")
 	if err != nil {
+		fmt.Printf("Failed to load configuration: %v\n", err)
 		logger.Fatal("Failed to load configuration", zap.Error(err))
 	}
-
-	// Инициализация хранилища и запуск миграций
-	storage, err := postgres.NewStorage(cfg.PostgresURL, logger)
-	if err != nil {
-		logger.Fatal("Failed to initialize storage", zap.Error(err))
-	}
-
-	if err := storage.RunMigrations(""); err != nil {
-		logger.Fatal("Failed to run migrations", zap.Error(err))
-	}
+	fmt.Printf("Config loaded: %+v\n", cfg)
 
 	// Загрузка кошельков
+	fmt.Println("=== Loading wallets ===")
 	wallets, err := wallet.LoadWallets("configs/wallets.csv")
 	if err != nil {
+		fmt.Printf("Failed to load wallets: %v\n", err)
 		logger.Fatal("Failed to load wallets", zap.Error(err))
 	}
+	fmt.Printf("Loaded %d wallets\n", len(wallets))
 
 	// Инициализация Solana клиента
+	fmt.Println("=== Initializing Solana client ===")
 	client, err := solanaClient.NewClient(cfg.RPCList, logger)
 	if err != nil {
+		fmt.Printf("Failed to initialize Solana client: %v\n", err)
 		logger.Fatal("Failed to initialize Solana client", zap.Error(err))
 	}
 
 	// Инициализация блокчейнов
+	fmt.Println("=== Initializing blockchains ===")
 	blockchains := make(map[string]types.Blockchain)
 	solanaBC, err := solanaClient.NewBlockchain(client, logger)
 	if err != nil {
+		fmt.Printf("Failed to initialize Solana blockchain: %v\n", err)
 		logger.Fatal("Failed to initialize Solana blockchain", zap.Error(err))
 	}
 	blockchains["Solana"] = solanaBC
 
 	// Загрузка задач
+	fmt.Println("=== Loading tasks ===")
 	tasks, err := sniping.LoadTasks("configs/tasks.csv")
 	if err != nil {
+		fmt.Printf("Failed to load tasks: %v\n", err)
 		logger.Fatal("Failed to load tasks", zap.Error(err))
 	}
+	for i, task := range tasks {
+		fmt.Printf("Task %d: %+v\n", i+1, task)
+	}
 
-	// Создание и запуск снайпера
+	// Инициализация хранилища
+	fmt.Println("=== Initializing storage ===")
+	storage, err := postgres.NewStorage(cfg.PostgresURL, logger)
+	if err != nil {
+		fmt.Printf("Failed to initialize storage: %v\n", err)
+		logger.Fatal("Failed to initialize storage", zap.Error(err))
+	}
+
+	// Создание снайпера
+	fmt.Println("=== Creating sniper ===")
 	sniper := sniping.NewSniper(blockchains, wallets, cfg, logger, client, storage)
+	if sniper == nil {
+		fmt.Println("Failed to create sniper: sniper is nil")
+		logger.Fatal("Failed to create sniper: sniper is nil")
+	}
 
+	// Запуск снайпера
+	fmt.Println("=== Running sniper ===")
 	go func() {
 		sniper.Run(ctx, tasks)
 	}()

@@ -1,2 +1,2 @@
-task_name,module,workers,wallet_name,delta,priority_fee,amm_id,source_token,target_token,amount_in,min_amount_out,autosell_percent,autosell_delay,autosell_amount,transaction_delay,autosell_priority_fee
-NormalSwap,Raydium,1,wallet1,100,0.000001,58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2,So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,0.1,0.09,0,0,0,1000,0
+module,workers,wallet_name,delta,priority_fee,dex_name,amm_id,source_token,target_token,amount_in,min_amount_out,autosell_percent,autosell_delay,autosell_amount,transaction_delay,autosell_priority_fee
+Raydium,1,wallet1,100,0.000001,Raydium,,So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,0.001,0.09,0,0,0,1000,0

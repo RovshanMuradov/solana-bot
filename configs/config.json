@@ -1,9 +1,9 @@
 {
     "license": "TEST-LICENSE-123456789",
     "rpc_list": [
-        "https://api.devnet.solana.com"
+         "https://solana-mainnet.core.chainstack.com/130a7d138049d3e2f64684bcd6b13ffb"
     ],
-    "websocket_url": "wss://api.devnet.solana.com",
+    "websocket_url":"wss://solana-mainnet.core.chainstack.com/130a7d138049d3e2f64684bcd6b13ffb",
     "monitor_delay": 1000,
     "rpc_delay": 100,
     "price_delay": 500,
@@ -11,6 +11,5 @@
     "tps_logging": true,
     "retries": 3,
     "webhook_url": "",
-    "workers": 5,
-    "postgres_url": "postgres://rovshan:muradov25@postgres:5432/solana_bot?sslmode=disable"
+    "workers": 1
 }
