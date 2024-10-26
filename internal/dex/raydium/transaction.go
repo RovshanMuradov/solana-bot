@@ -1,4 +1,3 @@
-// internal/dex/raydium/transaction.go
 package raydium
 
 import (
@@ -6,11 +5,8 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"time"
 
 	"github.com/gagliardetto/solana-go"
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solana/programs/computebudget"
-	"github.com/rovshanmuradov/solana-bot/internal/transaction"
 	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
@@ -19,18 +15,11 @@ import (
 // Serialize сериализует данные инструкции свапа
 func (s *SwapInstructionData) Serialize() ([]byte, error) {
 	buf := new(bytes.Buffer)
-
-	// Пишем поля структуры в буфер в Little Endian формате
-	if err := binary.Write(buf, binary.LittleEndian, s.Instruction); err != nil {
-		return nil, err
+	for _, v := range []uint64{s.Instruction, s.AmountIn, s.MinAmountOut} {
+		if err := binary.Write(buf, binary.LittleEndian, v); err != nil {
+			return nil, fmt.Errorf("failed to serialize value: %w", err)
+		}
 	}
-	if err := binary.Write(buf, binary.LittleEndian, s.AmountIn); err != nil {
-		return nil, err
-	}
-	if err := binary.Write(buf, binary.LittleEndian, s.MinAmountOut); err != nil {
-		return nil, err
-	}
-
 	return buf.Bytes(), nil
 }
 
@@ -123,7 +112,6 @@ func (r *DEX) CreateSwapInstruction(
 		}
 
 		isWritable := false
-		// Определяем, какие аккаунты должны быть записываемыми
 		switch check.name {
 		case "AmmOpenOrders", "AmmTargetOrders", "PoolCoinTokenAccount",
 			"PoolPcTokenAccount", "SerumMarket", "SerumBids", "SerumAsks",
@@ -173,29 +161,29 @@ func (r *DEX) PrepareAndSendTransaction(
 	logger *zap.Logger,
 	swapInstruction solana.Instruction,
 ) error {
-	// Получение последнего blockhash
 	recentBlockhash, err := r.client.GetRecentBlockhash(ctx)
 	if err != nil {
 		logger.Error("Failed to get recent blockhash", zap.Error(err))
-		return err
+		return fmt.Errorf("failed to get recent blockhash: %w", err)
 	}
 
-	// Создаем compute budget инструкции
+	// Создаем compute budget инструкции с использованием нового PriorityManager
 	priorityManager := types.NewPriorityManager(logger)
 	budgetInstructions, err := priorityManager.CreateCustomPriorityInstructions(
-		task.PriorityFee,
-		computebudget.SnipingUnits,
+		uint64(task.PriorityFee*1e6), // Конвертируем SOL в микро-ламports
+		1_000_000,                    // Используем sniping units
 	)
 	if err != nil {
 		logger.Error("Failed to create compute budget instructions", zap.Error(err))
-		return err
+		return fmt.Errorf("failed to create compute budget instructions: %w", err)
 	}
 
-	// Исправляем appendAssign
+	// Combine all instructions properly
 	instructions := make([]solana.Instruction, 0, len(budgetInstructions)+1)
 	instructions = append(instructions, budgetInstructions...)
 	instructions = append(instructions, swapInstruction)
 
+	// Создаем транзакцию
 	tx, err := solana.NewTransaction(
 		instructions,
 		recentBlockhash,
@@ -203,37 +191,32 @@ func (r *DEX) PrepareAndSendTransaction(
 	)
 	if err != nil {
 		logger.Error("Failed to create transaction", zap.Error(err))
-		return err
+		return fmt.Errorf("failed to create transaction: %w", err)
 	}
 
-	// Подписание транзакции
-	_, err = tx.Sign(
-		func(key solana.PublicKey) *solana.PrivateKey {
-			if key.Equals(userWallet.PublicKey) {
-				return &userWallet.PrivateKey
-			}
-			return nil
-		},
-	)
-	if err != nil {
-		logger.Error("Failed to sign transaction", zap.Error(err))
-		return err
-	}
-
-	// Использование функции RetryOperation из пакета transaction
-	err = transaction.RetryOperation(3, time.Second, func() error {
-		signature, err := r.client.SendTransaction(ctx, tx)
-		if err != nil {
-			logger.Warn("Failed to send transaction, retrying", zap.Error(err))
-			return err
+	// Подписываем транзакцию
+	_, err = tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+		if key.Equals(userWallet.PublicKey) {
+			return &userWallet.PrivateKey
 		}
-		logger.Info("Transaction sent successfully", zap.String("signature", signature.String()))
 		return nil
 	})
 	if err != nil {
-		logger.Error("All attempts to send transaction failed", zap.Error(err))
-		return err
+		logger.Error("Failed to sign transaction", zap.Error(err))
+		return fmt.Errorf("failed to sign transaction: %w", err)
 	}
+
+	// Отправляем транзакцию
+	signature, err := r.client.SendTransaction(ctx, tx)
+	if err != nil {
+		logger.Error("Failed to send transaction", zap.Error(err))
+		return fmt.Errorf("failed to send transaction: %w", err)
+	}
+
+	logger.Info("Transaction sent successfully",
+		zap.String("signature", signature.String()),
+		zap.Float64("priority_fee_sol", task.PriorityFee),
+		zap.Uint64("compute_units", 1_000_000))
 
 	return nil
 }

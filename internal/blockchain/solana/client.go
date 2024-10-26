@@ -114,6 +114,37 @@ func (c *Client) validateConnections(ctx context.Context) error {
 	return nil
 }
 
+// GetAccountInfo получает информацию об аккаунте
+func (c *Client) GetAccountInfo(
+	ctx context.Context,
+	pubkey solana.PublicKey,
+) (*rpc.GetAccountInfoResult, error) {
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		client := c.getNextClient()
+		if client == nil {
+			return nil, errors.New("no active RPC clients available")
+		}
+
+		start := time.Now()
+		result, err := client.Client.GetAccountInfoWithOpts(ctx, pubkey, &rpc.GetAccountInfoOpts{
+			Encoding:   solana.EncodingBase64,
+			Commitment: rpc.CommitmentConfirmed,
+		})
+		client.updateMetrics(err == nil, time.Since(start))
+
+		if err != nil {
+			lastErr = err
+			client.setActive(false)
+			continue
+		}
+
+		return result, nil
+	}
+
+	return nil, fmt.Errorf("failed to get account info after %d attempts: %w", maxRetries, lastErr)
+}
+
 func (c *Client) GetRecentBlockhash(ctx context.Context) (solana.Hash, error) {
 	var lastErr error
 	for attempt := 0; attempt < maxRetries; attempt++ {

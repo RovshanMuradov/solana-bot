@@ -32,14 +32,17 @@ func (c *RPCClient) updateMetrics(success bool, latency time.Duration) {
 	c.metrics.latency = (c.metrics.latency + latency) / 2 // Скользящее среднее
 }
 
-func (c *RPCClient) getMetrics() (uint64, uint64, time.Duration) {
+// RPCClient methods
+func (c *RPCClient) GetMetrics() (successCount uint64, errorCount uint64, avgLatency time.Duration) {
 	c.metrics.mutex.RLock()
 	defer c.metrics.mutex.RUnlock()
-	return c.metrics.successCount, c.metrics.errorCount, c.metrics.latency
+	return atomic.LoadUint64(&c.metrics.successCount),
+		atomic.LoadUint64(&c.metrics.errorCount),
+		c.metrics.latency
 }
 
-// Методы для RPCMetrics
-func (m *RPCMetrics) reset() {
+// RPCMetrics methods
+func (m *RPCMetrics) Reset() {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 

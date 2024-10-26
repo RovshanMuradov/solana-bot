@@ -51,3 +51,8 @@ func (r *Pool) GetPoolID() string {
 func (r *Pool) GetTokenAccounts() (string, string) {
 	return r.PoolCoinTokenAccount, r.PoolPcTokenAccount
 }
+
+// Name возвращает имя DEX
+func (r *DEX) Name() string {
+	return "Raydium"
+}

@@ -35,7 +35,11 @@ func main() {
 		fmt.Printf("Failed to initialize logger: %v\n", err)
 		panic(err)
 	}
-	defer logger.Sync()
+	defer func() {
+		if err := logger.Sync(); err != nil {
+			fmt.Printf("Failed to sync logger: %v\n", err)
+		}
+	}()
 
 	fmt.Println("=== Loading configuration ===")
 	// Загрузка конфигурации

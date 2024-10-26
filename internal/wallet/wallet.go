@@ -1,13 +1,12 @@
-// internal/wallet/wallet.go
 package wallet
 
 import (
-	"encoding/base64"
 	"encoding/csv"
 	"fmt"
 	"os"
 
 	"github.com/gagliardetto/solana-go"
+	"github.com/mr-tron/base58"
 )
 
 // Wallet представляет кошелек Solana
@@ -16,18 +15,18 @@ type Wallet struct {
 	PublicKey  solana.PublicKey
 }
 
-// NewWallet создает новый кошелек из Base64-строки приватного ключа
-func NewWallet(privateKeyBase64 string) (*Wallet, error) {
-	// Декодируем Base64 строку в байты
-	privateKeyBytes, err := base64.StdEncoding.DecodeString(privateKeyBase64)
+// NewWallet создает новый кошелек из Base58-строки приватного ключа
+func NewWallet(privateKeyBase58 string) (*Wallet, error) {
+	privateKeyBytes, err := base58.Decode(privateKeyBase58)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode private key: %w", err)
 	}
 
-	// Создаем приватный ключ
-	privateKey := solana.PrivateKey(privateKeyBytes)
+	if len(privateKeyBytes) != 64 {
+		return nil, fmt.Errorf("invalid private key length: expected 64 bytes, got %d", len(privateKeyBytes))
+	}
 
-	// Получаем публичный ключ
+	privateKey := solana.PrivateKey(privateKeyBytes)
 	publicKey := privateKey.PublicKey()
 
 	return &Wallet{
@@ -50,23 +49,20 @@ func LoadWallets(path string) (map[string]*Wallet, error) {
 		return nil, fmt.Errorf("failed to read CSV: %w", err)
 	}
 
-	// Пропускаем заголовок и проверяем наличие данных
 	if len(records) < 2 {
 		return nil, fmt.Errorf("CSV file is empty or contains only header")
 	}
 
 	wallets := make(map[string]*Wallet)
-
-	// Обрабатываем каждую строку, начиная со второй (пропускаем заголовок)
 	for _, record := range records[1:] {
 		if len(record) != 2 {
-			continue // Пропускаем некорректные строки
+			continue
 		}
 
 		name := record[0]
 		wallet, err := NewWallet(record[1])
 		if err != nil {
-			continue // Пропускаем некорректные кошельки
+			continue
 		}
 
 		wallets[name] = wallet

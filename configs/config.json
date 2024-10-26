@@ -1,9 +1,7 @@
 {
     "license": "TEST-LICENSE-123456789",
-    "rpc_list": [
-         "https://solana-mainnet.core.chainstack.com/130a7d138049d3e2f64684bcd6b13ffb"
-    ],
-    "websocket_url":"wss://solana-mainnet.core.chainstack.com/130a7d138049d3e2f64684bcd6b13ffb",
+    "rpc_list": ["https://solana-mainnet.core.chainstack.com/130a7d138049d3e2f64684bcd6b13ffb"],
+    "websocket_url": "wss://solana-mainnet.core.chainstack.com/130a7d138049d3e2f64684bcd6b13ffb",
     "monitor_delay": 1000,
     "rpc_delay": 100,
     "price_delay": 500,
@@ -11,5 +9,6 @@
     "tps_logging": true,
     "retries": 3,
     "webhook_url": "",
-    "workers": 1
+    "workers": 1,
+    "postgres_url": "postgresql://rovshan:muradov25@postgres:5432/solana_bot?sslmode=disable"
 }

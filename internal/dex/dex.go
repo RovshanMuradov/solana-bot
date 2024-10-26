@@ -44,14 +44,6 @@ func GetDEXByName(name string, client *solanaClient.Client, logger *zap.Logger) 
 
 		fmt.Printf("Pool config: %+v\n", raydium.DefaultPoolConfig)
 
-		// Проверка адресов пула
-		fmt.Println("Validating pool addresses...")
-		if err := raydium.DefaultPoolConfig.ValidateAddresses(); err != nil {
-			fmt.Printf("Invalid pool configuration: %v\n", err)
-			return nil, fmt.Errorf("invalid pool configuration: %w", err)
-		}
-		fmt.Println("Pool addresses validated successfully")
-
 		dex := raydium.NewDEX(client, logger, raydium.DefaultPoolConfig)
 		if dex == nil {
 			fmt.Println("Failed to create Raydium DEX instance")

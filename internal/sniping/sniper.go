@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/gagliardetto/solana-go"
 	solanaBlockchain "github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
 	"github.com/rovshanmuradov/solana-bot/internal/config"
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
@@ -21,7 +22,8 @@ type Sniper struct {
 	config      *config.Config
 	logger      *zap.Logger
 	client      *solanaBlockchain.Client
-	storage     storage.Storage // Добавляем поле storage
+	storage     storage.Storage
+	tokenCache  *solanaBlockchain.TokenMetadataCache
 }
 
 func NewSniper(
@@ -30,7 +32,7 @@ func NewSniper(
 	cfg *config.Config,
 	logger *zap.Logger,
 	client *solanaBlockchain.Client,
-	storage storage.Storage, // Добавляем параметр storage
+	storage storage.Storage,
 ) *Sniper {
 	return &Sniper{
 		blockchains: blockchains,
@@ -39,6 +41,7 @@ func NewSniper(
 		logger:      logger,
 		client:      client,
 		storage:     storage,
+		tokenCache:  solanaBlockchain.NewTokenMetadataCache(logger),
 	}
 }
 
@@ -78,63 +81,65 @@ func (s *Sniper) worker(ctx context.Context, wg *sync.WaitGroup, taskChan <-chan
 }
 
 func (s *Sniper) executeTask(ctx context.Context, task *types.Task) {
-	fmt.Printf("\nDEBUG: Starting executeTask\n")
-	fmt.Printf("DEBUG: Task: %+v\n", task)
-	fmt.Printf("DEBUG: Client nil? %v\n", s.client == nil)
-	fmt.Printf("DEBUG: Logger nil? %v\n", s.logger == nil)
-
 	s.logger.Info("Starting task execution",
 		zap.String("task_name", task.TaskName),
 		zap.String("dex_name", task.DEXName),
 		zap.String("wallet", task.WalletName))
 
-	// Проверяем наличие и соответствие DEX имени и модуля
+	// Устанавливаем DEXName если пустой
 	if task.DEXName == "" {
-		task.DEXName = task.Module // Используем модуль как DEX имя если DEXName пустой
-		fmt.Printf("DEBUG: Using module as DEX name: %s\n", task.DEXName)
+		task.DEXName = task.Module
 	}
 
 	// Получаем DEX-модуль
-	fmt.Printf("DEBUG: Getting DEX module for: %s\n", task.DEXName)
 	dexModule, err := dex.GetDEXByName(task.DEXName, s.client, s.logger)
 	if err != nil {
 		s.logger.Error("Failed to get DEX module",
 			zap.String("dex_name", task.DEXName),
 			zap.Error(err))
-		fmt.Printf("DEBUG: Failed to get DEX module: %v\n", err)
 		return
 	}
 
-	if dexModule == nil {
-		s.logger.Error("DEX module is nil after initialization")
-		fmt.Printf("DEBUG: DEX module is nil after initialization\n")
+	// Получаем публичные ключи токенов
+	sourceMint, err := solana.PublicKeyFromBase58(task.SourceToken)
+	if err != nil {
+		s.logger.Error("Invalid source token address", zap.Error(err))
 		return
 	}
 
-	fmt.Printf("DEBUG: Got DEX module of type: %T\n", dexModule)
+	targetMint, err := solana.PublicKeyFromBase58(task.TargetToken)
+	if err != nil {
+		s.logger.Error("Invalid target token address", zap.Error(err))
+		return
+	}
 
-	s.logger.Info("Got DEX module",
-		zap.String("dex_name", task.DEXName),
-		zap.String("dex_type", fmt.Sprintf("%T", dexModule)))
+	// Получаем метаданные обоих токенов параллельно
+	metadata, err := s.tokenCache.GetMultipleTokenMetadata(ctx, s.client, []solana.PublicKey{sourceMint, targetMint})
+	if err != nil {
+		s.logger.Error("Failed to get token metadata", zap.Error(err))
+		return
+	}
+
+	// Устанавливаем decimals из метаданных
+	sourceMetadata := metadata[sourceMint.String()]
+	targetMetadata := metadata[targetMint.String()]
+
+	task.SourceTokenDecimals = int(sourceMetadata.Decimals)
+	task.TargetTokenDecimals = int(targetMetadata.Decimals)
+
+	s.logger.Debug("Token metadata loaded",
+		zap.String("source_symbol", sourceMetadata.Symbol),
+		zap.Int("source_decimals", task.SourceTokenDecimals),
+		zap.String("target_symbol", targetMetadata.Symbol),
+		zap.Int("target_decimals", task.TargetTokenDecimals))
 
 	// Получаем и проверяем кошелек
 	wallet, ok := s.wallets[task.WalletName]
-	if !ok {
-		s.logger.Error("Wallet not found",
-			zap.String("wallet_name", task.WalletName),
-			zap.Strings("available_wallets", getWalletNames(s.wallets)))
-		return
-	}
-
-	if wallet == nil {
-		s.logger.Error("Wallet is nil",
+	if !ok || wallet == nil {
+		s.logger.Error("Wallet not found or invalid",
 			zap.String("wallet_name", task.WalletName))
 		return
 	}
-
-	s.logger.Info("Got wallet",
-		zap.String("wallet_name", task.WalletName),
-		zap.String("public_key", wallet.PublicKey.String()))
 
 	// Проверяем параметры
 	if err := validateTaskParameters(task); err != nil {
@@ -143,23 +148,15 @@ func (s *Sniper) executeTask(ctx context.Context, task *types.Task) {
 	}
 
 	// Выполняем свап
-	s.logger.Debug("Executing swap")
 	if err := dexModule.ExecuteSwap(ctx, task, wallet); err != nil {
-		s.logger.Error("Failed to execute swap", zap.Error(err))
+		s.logger.Error("Swap execution failed",
+			zap.String("task", task.TaskName),
+			zap.Error(err))
 		return
 	}
 
 	s.logger.Info("Task completed successfully",
 		zap.String("task_name", task.TaskName))
-}
-
-// Вспомогательная функция для получения имен кошельков
-func getWalletNames(wallets map[string]*wallet.Wallet) []string {
-	names := make([]string, 0, len(wallets))
-	for name := range wallets {
-		names = append(names, name)
-	}
-	return names
 }
 
 func validateTaskParameters(task *types.Task) error {
