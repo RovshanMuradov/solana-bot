@@ -3,7 +3,7 @@ module github.com/rovshanmuradov/solana-bot
 go 1.23.2
 
 require (
-	github.com/blendle/zapdriver v1.3.1
+	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/gagliardetto/solana-go v1.11.0
 	github.com/gobwas/ws v1.4.0
 	github.com/google/uuid v1.6.0
@@ -20,6 +20,7 @@ require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/andres-erbsen/clock v0.0.0-20160526145045-9e14626cd129 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/blendle/zapdriver v1.3.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/fatih/color v1.17.0 // indirect

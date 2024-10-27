@@ -1,4 +1,4 @@
-// pkg/blockchain/solana/rpc_pool.go
+// pkg/blockchain/solbc/rpc_pool.go
 package solbc
 
 import (

@@ -1,4 +1,4 @@
-// internal/blockchain/solana/types.go
+// internal/blockchain/solbc/types.go
 package solbc
 
 import (

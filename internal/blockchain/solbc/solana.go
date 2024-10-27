@@ -1,4 +1,4 @@
-// internal/blockchain/solana/solana.go:
+// internal/blockchain/solbc/solana.go:
 package solbc
 
 import (

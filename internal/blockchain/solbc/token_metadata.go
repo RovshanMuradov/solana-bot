@@ -1,4 +1,4 @@
-// internal/blockchain/solana/token_metadata.go
+// internal/blockchain/solbc/token_metadata.go
 package solbc
 
 import (

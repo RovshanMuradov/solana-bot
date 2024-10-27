@@ -1,0 +1,440 @@
+=== Содержимое файла: ./internal/utils/logger/config.go ===
+// internal/utils/logger/config.go
+package logger
+
+type Config struct {
+	LogFile     string
+	MaxSize     int  // мегабайты
+	MaxAge      int  // дни
+	MaxBackups  int  // количество файлов
+	Compress    bool // сжимать ротированные файлы
+	Development bool
+}
+
+// DefaultConfig возвращает конфигурацию по умолчанию
+func DefaultConfig() *Config {
+	return &Config{
+		LogFile:     "bot.log",
+		MaxSize:     100,  // 100 MB
+		MaxAge:      7,    // 7 дней
+		MaxBackups:  3,    // 3 файла
+		Compress:    true, // сжимать старые логи
+		Development: false,
+	}
+}
+
+
+=== Содержимое файла: ./internal/utils/logger/logger.go ===
+// internal/utils/logger/logger.go
+package logger
+
+import (
+	"os"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/rovshanmuradov/solana-bot/internal/dex/raydium"
+	"github.com/rovshanmuradov/solana-bot/internal/types"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"gopkg.in/natefinch/lumberjack.v2"
+)
+
+// Logger расширяет функционал zap.Logger
+type Logger struct {
+	*zap.Logger
+	config *Config
+}
+
+// Для удобства добавим константы статусов трейда
+const (
+	TradePending   = "pending"
+	TradeCompleted = "completed"
+	TradeFailed    = "failed"
+	TradeCancelled = "cancelled"
+)
+
+// New создает новый логгер с расширенной функциональностью
+func New(cfg *Config) (*Logger, error) {
+	if cfg == nil {
+		cfg = DefaultConfig()
+	}
+
+	// Настройка ротации логов
+	logRotator := &lumberjack.Logger{
+		Filename:   cfg.LogFile,
+		MaxSize:    cfg.MaxSize,
+		MaxBackups: cfg.MaxBackups,
+		MaxAge:     cfg.MaxAge,
+		Compress:   cfg.Compress,
+	}
+
+	// Базовая конфигурация энкодера
+	encoderConfig := zap.NewProductionEncoderConfig()
+	if cfg.Development {
+		encoderConfig = zap.NewDevelopmentEncoderConfig()
+	}
+
+	// Улучшаем конфигурацию энкодера
+	encoderConfig.TimeKey = "timestamp"
+	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	encoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
+	encoderConfig.EncodeDuration = zapcore.StringDurationEncoder
+	encoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
+
+	// Создаем энкодеры для консоли и файла
+	consoleEncoder := zapcore.NewConsoleEncoder(encoderConfig)
+	fileEncoder := zapcore.NewJSONEncoder(encoderConfig)
+
+	// Определяем уровень логирования
+	var level zapcore.Level
+	if cfg.Development {
+		level = zapcore.DebugLevel
+	} else {
+		level = zapcore.InfoLevel
+	}
+
+	// Создаем core с поддержкой нескольких writers
+	core := zapcore.NewTee(
+		zapcore.NewCore(consoleEncoder, zapcore.AddSync(os.Stdout), level),
+		zapcore.NewCore(fileEncoder, zapcore.AddSync(logRotator), level),
+	)
+
+	// Создаем логгер с дополнительными опциями
+	logger := &Logger{
+		Logger: zap.New(core,
+			zap.AddCaller(),
+			zap.AddStacktrace(zapcore.ErrorLevel),
+			zap.AddCallerSkip(1),
+		),
+		config: cfg,
+	}
+
+	return logger, nil
+}
+
+// WithTransaction добавляет контекст транзакции к логам
+func (l *Logger) WithTransaction(txHash string) *zap.Logger {
+	return l.With(
+		zap.String("tx_hash", txHash),
+		zap.Time("tx_time", time.Now().UTC()),
+	)
+}
+
+// WithOperation создает логгер для конкретной операции
+func (l *Logger) WithOperation(operation string) *zap.Logger {
+	return l.With(
+		zap.String("operation", operation),
+		zap.String("correlation_id", uuid.New().String()),
+		zap.Time("start_time", time.Now().UTC()),
+	)
+}
+
+// WithComponent добавляет информацию о компоненте системы
+func (l *Logger) WithComponent(component string) *zap.Logger {
+	return l.With(zap.String("component", component))
+}
+
+// WithUser добавляет информацию о пользователе/wallet
+func (l *Logger) WithUser(userID string) *zap.Logger {
+	return l.With(zap.String("user_id", userID))
+}
+
+// LogError логирует ошибку с дополнительным контекстом
+func (l *Logger) LogError(msg string, err error, fields ...zap.Field) {
+	if err != nil {
+		fields = append(fields, zap.Error(err))
+	}
+	l.Error(msg, fields...)
+}
+
+// Sync реализует безопасный вызов Sync
+func (l *Logger) Sync() error {
+	err := l.Logger.Sync()
+	if err != nil && err.Error() == "sync /dev/stdout: invalid argument" {
+		return nil
+	}
+	return err
+}
+
+// WithTask логирует информацию о задаче
+func (l *Logger) WithTask(task *types.Task) *zap.Logger {
+	return l.With(
+		zap.String("task_name", task.TaskName),
+		zap.String("dex", task.DEXName),
+		zap.String("source_token", task.SourceToken),
+		zap.String("target_token", task.TargetToken),
+		zap.Float64("amount_in", task.AmountIn),
+		zap.Float64("min_amount_out", task.MinAmountOut),
+		zap.Float64("priority_fee", task.PriorityFee),
+	)
+}
+
+// WithPool логирует информацию о пуле
+func (l *Logger) WithPool(pool *raydium.Pool) *zap.Logger {
+	return l.With(
+		zap.String("pool_id", pool.AmmID),
+		zap.String("program_id", pool.AmmProgramID),
+		zap.String("pool_token_a", pool.PoolCoinTokenAccount),
+		zap.String("pool_token_b", pool.PoolPcTokenAccount),
+	)
+}
+
+// TrackPerformance отслеживает производительность операции
+func (l *Logger) TrackPerformance(operation string) (end func()) {
+	start := time.Now()
+	opLogger := l.WithOperation(operation)
+
+	opLogger.Debug("Starting operation")
+
+	return func() {
+		duration := time.Since(start)
+		opLogger.Debug("Operation completed",
+			zap.Duration("duration", duration),
+			zap.Float64("duration_ms", float64(duration.Microseconds())/1000),
+		)
+	}
+}
+
+
+=== Содержимое файла: ./internal/utils/logger.go ===
+// internal/utils/logger.go
+package utils
+
+import (
+	"os"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+)
+
+func InitLogger(debug bool, logFile string) (*zap.Logger, error) {
+	config := zap.NewProductionConfig()
+	if debug {
+		config = zap.NewDevelopmentConfig()
+	}
+
+	// Настройка вывода в консоль и файл
+	consoleEncoder := zapcore.NewConsoleEncoder(config.EncoderConfig)
+	fileEncoder := zapcore.NewJSONEncoder(config.EncoderConfig)
+
+	// Открытие файла для логирования
+	logFileHandle, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, err
+	}
+
+	core := zapcore.NewTee(
+		zapcore.NewCore(consoleEncoder, zapcore.AddSync(os.Stdout), config.Level),
+		zapcore.NewCore(fileEncoder, zapcore.AddSync(logFileHandle), config.Level),
+	)
+
+	logger := zap.New(core)
+	return logger, nil
+}
+
+
+=== Содержимое файла: ./internal/utils/metrics/collector.go ===
+// internal/utils/metrics/collector.go
+package metrics
+
+import (
+	"sync"
+
+	"github.com/prometheus/client_golang/prometheus"
+)
+
+// MetricType представляет тип метрики
+type MetricType string
+
+const (
+	TransactionCounterType  MetricType = "transaction_counter"
+	TransactionDurationType MetricType = "transaction_duration"
+	RPCLatencyType          MetricType = "rpc_latency"
+	WebsocketConnectionType MetricType = "websocket_connections"
+	PoolLiquidityType       MetricType = "pool_liquidity"
+)
+
+// Collector управляет набором метрик
+type Collector struct {
+	metrics sync.Map
+}
+
+// NewCollector создает новый экземпляр коллектора метрик
+func NewCollector() *Collector {
+	c := &Collector{}
+	c.initializeMetrics()
+	return c
+}
+
+func (c *Collector) initializeMetrics() {
+	metricsMap := map[MetricType]prometheus.Collector{
+		TransactionCounterType:  transactionCounter,
+		TransactionDurationType: transactionDuration,
+		RPCLatencyType:          rpcLatency,
+		WebsocketConnectionType: websocketConnections,
+		PoolLiquidityType:       poolLiquidity,
+	}
+
+	for metricType, metric := range metricsMap {
+		c.metrics.Store(metricType, metric)
+		prometheus.MustRegister(metric)
+	}
+}
+
+// Reset сбрасывает все метрики (полезно для тестирования)
+func (c *Collector) Reset() {
+	c.metrics.Range(func(_, value interface{}) bool {
+		switch m := value.(type) {
+		case *prometheus.CounterVec:
+			m.Reset()
+		case *prometheus.GaugeVec:
+			m.Reset()
+		case *prometheus.HistogramVec:
+			m.Reset()
+		}
+		return true
+	})
+}
+
+// Определение метрик с улучшенными лейблами
+var (
+	transactionCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "solana_bot",
+			Name:      "transactions_total",
+			Help:      "Total number of transactions processed",
+		},
+		[]string{"status", "type", "dex"},
+	)
+
+	transactionDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "solana_bot",
+			Name:      "transaction_duration_seconds",
+			Help:      "Transaction duration in seconds",
+			Buckets:   prometheus.ExponentialBuckets(0.01, 2, 10),
+		},
+		[]string{"type", "dex"},
+	)
+
+	rpcLatency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "solana_bot",
+			Name:      "rpc_latency_seconds",
+			Help:      "RPC request latency in seconds",
+			Buckets:   prometheus.ExponentialBuckets(0.001, 2, 10),
+		},
+		[]string{"method", "endpoint"},
+	)
+
+	websocketConnections = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "solana_bot",
+			Name:      "websocket_connections",
+			Help:      "Number of active websocket connections",
+		},
+		[]string{"status"},
+	)
+
+	poolLiquidity = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "solana_bot",
+			Name:      "pool_liquidity",
+			Help:      "Current liquidity in pools",
+		},
+		[]string{"pool_id", "token"},
+	)
+)
+
+
+=== Содержимое файла: ./internal/utils/metrics/metrics.go ===
+// internal/utils/metrics/metrics.go
+package metrics
+
+import (
+	"context"
+	"time"
+)
+
+// RecordTransaction записывает метрики транзакции с учетом контекста
+func (c *Collector) RecordTransaction(ctx context.Context, txType, dex string, duration time.Duration, success bool) {
+	// Проверяем, не отменен ли контекст
+	select {
+	case <-ctx.Done():
+		// Если контекст отменен, записываем метрику с пометкой cancelled
+		transactionCounter.WithLabelValues("cancelled", txType, dex).Inc()
+		return
+	default:
+		// Продолжаем обычное выполнение
+		status := "success"
+		if !success {
+			status = "failed"
+		}
+
+		// Записываем метрики транзакции
+		transactionCounter.WithLabelValues(status, txType, dex).Inc()
+		transactionDuration.WithLabelValues(txType, dex).Observe(duration.Seconds())
+	}
+}
+
+// RecordRPCLatency записывает метрики RPC-запроса
+func (c *Collector) RecordRPCLatency(method, endpoint string, duration time.Duration) {
+	rpcLatency.WithLabelValues(method, endpoint).Observe(duration.Seconds())
+}
+
+// UpdateWebsocketConnections обновляет метрики веб-сокет соединений
+func (c *Collector) UpdateWebsocketConnections(active int, status string) {
+	websocketConnections.WithLabelValues(status).Set(float64(active))
+}
+
+// UpdatePoolLiquidity обновляет метрики пула
+func (c *Collector) UpdatePoolLiquidity(poolID, token string, amount float64) {
+	poolLiquidity.WithLabelValues(poolID, token).Set(amount)
+}
+
+
+=== Содержимое файла: ./internal/utils/metrics.go ===
+// internal/utils/metrics.go
+package utils
+
+import (
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+)
+
+var (
+	transactionCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "solana_bot_transactions_total",
+			Help: "Total number of transactions sent",
+		},
+		[]string{"status"},
+	)
+	transactionDuration = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "solana_bot_transaction_duration_seconds",
+			Help:    "Duration of transaction preparation and sending",
+			Buckets: prometheus.LinearBuckets(0, 0.1, 10),
+		},
+	)
+)
+
+func init() {
+	prometheus.MustRegister(transactionCounter)
+	prometheus.MustRegister(transactionDuration)
+}
+
+func MeasureTransactionDuration(f func() error) error {
+	start := time.Now()
+	err := f()
+	duration := time.Since(start).Seconds()
+	transactionDuration.Observe(duration)
+	if err != nil {
+		transactionCounter.WithLabelValues("failed").Inc()
+	} else {
+		transactionCounter.WithLabelValues("success").Inc()
+	}
+	return err
+}
