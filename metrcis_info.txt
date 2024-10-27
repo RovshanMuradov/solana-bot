@@ -438,3 +438,342 @@ func MeasureTransactionDuration(f func() error) error {
 	}
 	return err
 }
+
+// internal/blockchain/solbc/transaction/manager.go
+package transaction
+
+import (
+	"context"
+	"time"
+
+	"github.com/cenkalti/backoff/v4"
+	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
+	"go.uber.org/zap"
+)
+
+type Manager struct {
+	client    *rpc.Client
+	logger    *zap.Logger
+	config    Config
+	validator *Validator
+	monitor   *Monitor
+	metrics   *Metrics
+}
+
+func NewManager(client *rpc.Client, logger *zap.Logger, config Config) *Manager {
+	return &Manager{
+		client:    client,
+		logger:    logger.Named("tx-manager"),
+		config:    config,
+		validator: NewValidator(logger),
+		monitor:   NewMonitor(client, logger, config),
+		metrics:   NewMetrics(),
+	}
+}
+
+func (tm *Manager) SendAndConfirm(ctx context.Context, tx *solana.Transaction) (*Status, error) {
+	defer tm.metrics.TrackTransaction(time.Now())
+
+	if err := tm.validator.ValidateTransaction(tx); err != nil {
+		tm.logger.Error("Transaction validation failed", zap.Error(err))
+		return nil, err
+	}
+
+	signature, err := tm.sendWithRetry(ctx, tx)
+	if err != nil {
+		tm.logger.Error("Failed to send transaction", zap.Error(err))
+		return nil, err
+	}
+
+	status, err := tm.monitor.AwaitConfirmation(ctx, signature)
+	if err != nil {
+		tm.logger.Error("Transaction confirmation failed",
+			zap.String("signature", signature.String()),
+			zap.Error(err))
+		return nil, err
+	}
+
+	return status, nil
+}
+
+func (tm *Manager) sendWithRetry(ctx context.Context, tx *solana.Transaction) (solana.Signature, error) {
+	var signature solana.Signature
+	operation := func() error {
+		var err error
+		signature, err = tm.client.SendTransactionWithOpts(ctx, tx, rpc.TransactionOpts{
+			SkipPreflight:       tm.config.SkipPreflight,
+			PreflightCommitment: tm.config.Commitment,
+		})
+		if err != nil {
+			tm.metrics.failureCounter.Inc()
+			tm.logger.Warn("Retrying transaction send", zap.Error(err))
+			return err
+		}
+		tm.metrics.successCounter.Inc()
+		return nil
+	}
+
+	err := backoff.Retry(operation, backoff.WithContext(backoff.NewExponentialBackOff(), ctx))
+	if err != nil {
+		return solana.Signature{}, err
+	}
+	return signature, nil
+}
+// internal/blockchain/solbc/transaction/metrics.go
+package transaction
+
+import (
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+)
+
+type Metrics struct {
+	successCounter    prometheus.Counter
+	failureCounter    prometheus.Counter
+	durationHistogram prometheus.Histogram
+}
+
+func NewMetrics() *Metrics {
+	successCounter := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "solana_tx_success_total",
+		Help: "Total number of successful transactions",
+	})
+	failureCounter := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "solana_tx_failure_total",
+		Help: "Total number of failed transactions",
+	})
+	durationHistogram := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "solana_tx_duration_seconds",
+		Help:    "Transaction duration in seconds",
+		Buckets: prometheus.LinearBuckets(0, 0.1, 10),
+	})
+
+	prometheus.MustRegister(successCounter, failureCounter, durationHistogram)
+
+	return &Metrics{
+		successCounter:    successCounter,
+		failureCounter:    failureCounter,
+		durationHistogram: durationHistogram,
+	}
+}
+
+func (tm *Metrics) TrackTransaction(start time.Time) {
+	tm.durationHistogram.Observe(time.Since(start).Seconds())
+}
+// internal/blockchain/solbc/transaction/monitor.go
+package transaction
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
+	"go.uber.org/zap"
+)
+
+type Monitor struct {
+	client  *rpc.Client
+	logger  *zap.Logger
+	config  Config
+	metrics *Metrics
+}
+
+func NewMonitor(client *rpc.Client, logger *zap.Logger, config Config) *Monitor {
+	if config.MinConfirmations == 0 {
+		config.MinConfirmations = 1
+	}
+	return &Monitor{
+		client:  client,
+		logger:  logger.Named("tx-monitor"),
+		config:  config,
+		metrics: NewMetrics(),
+	}
+}
+
+// checkConfirmation проверяет, подтверждена ли транзакция
+func (m *Monitor) checkConfirmation(ctx context.Context, signature solana.Signature) (bool, error) {
+	response, err := m.client.GetSignatureStatuses(ctx, false, signature)
+	if err != nil {
+		return false, fmt.Errorf("failed to get signature status: %w", err)
+	}
+
+	if len(response.Value) == 0 || response.Value[0] == nil {
+		return false, nil
+	}
+
+	status := response.Value[0]
+
+	if status.Confirmations != nil && *status.Confirmations >= uint64(m.config.MinConfirmations) {
+		return true, nil
+	}
+
+	return status.ConfirmationStatus == rpc.ConfirmationStatusFinalized, nil
+}
+
+func (m *Monitor) GetTransactionStatus(ctx context.Context, signature solana.Signature) (*Status, error) {
+	response, err := m.client.GetSignatureStatuses(ctx, false, signature)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get transaction status: %w", err)
+	}
+
+	if response == nil || len(response.Value) == 0 || response.Value[0] == nil {
+		return &Status{
+			Signature: signature.String(),
+			Status:    "pending",
+			Timestamp: time.Now(),
+		}, nil
+	}
+
+	status := response.Value[0]
+	txStatus := &Status{
+		Signature: signature.String(),
+		Timestamp: time.Now(),
+		Slot:      status.Slot,
+	}
+
+	if status.Confirmations != nil {
+		txStatus.Confirmations = *status.Confirmations
+	}
+
+	switch status.ConfirmationStatus {
+	case rpc.ConfirmationStatusFinalized:
+		txStatus.Status = "finalized"
+	case rpc.ConfirmationStatusConfirmed:
+		txStatus.Status = "confirmed"
+	default:
+		txStatus.Status = "pending"
+	}
+
+	if status.Err != nil {
+		errMsg := fmt.Sprintf("%v", status.Err)
+		txStatus.Error = errMsg
+		txStatus.Status = "failed"
+	}
+
+	return txStatus, nil
+}
+
+func (m *Monitor) AwaitConfirmation(ctx context.Context, signature solana.Signature) (*Status, error) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	deadline := time.After(m.config.ConfirmationTime)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-deadline:
+			return nil, ErrConfirmationTimeout
+		case <-ticker.C:
+			// Сначала проверяем базовое подтверждение
+			confirmed, err := m.checkConfirmation(ctx, signature)
+			if err != nil {
+				m.logger.Warn("Confirmation check failed", zap.Error(err))
+				continue
+			}
+
+			// Если транзакция подтверждена, получаем полный статус
+			if confirmed {
+				return m.GetTransactionStatus(ctx, signature)
+			}
+		}
+	}
+}
+// internal/blockchain/solbc/transaction/types.go
+package transaction
+
+import (
+	"errors"
+	"time"
+
+	"github.com/gagliardetto/solana-go/rpc"
+)
+
+var (
+	ErrConfirmationTimeout = errors.New("transaction confirmation timeout")
+	ErrInvalidSignature    = errors.New("invalid transaction signature")
+	ErrInvalidBlockhash    = errors.New("invalid blockhash")
+	ErrInvalidInstruction  = errors.New("invalid instruction")
+)
+
+type Config struct {
+	MaxRetries       int
+	RetryDelay       time.Duration
+	ConfirmationTime time.Duration
+	PriorityFee      uint64
+	ComputeUnits     uint32
+	SkipPreflight    bool
+	Commitment       rpc.CommitmentType
+	MinConfirmations uint8
+}
+
+type Status struct {
+	Signature     string
+	Status        string
+	Confirmations uint64
+	Slot          uint64
+	Error         string
+	Timestamp     time.Time
+	BlockTime     *time.Time
+}
+// internal/blockchain/solbc/transaction/validator.go
+package transaction
+
+import (
+	"github.com/gagliardetto/solana-go"
+	"go.uber.org/zap"
+)
+
+type Validator struct {
+	logger *zap.Logger
+}
+
+func NewValidator(logger *zap.Logger) *Validator {
+	return &Validator{
+		logger: logger.Named("tx-validator"),
+	}
+}
+
+func (v *Validator) ValidateTransaction(tx *solana.Transaction) error {
+	if err := v.ValidateSignatures(tx); err != nil {
+		return err
+	}
+
+	if err := v.ValidateBlockhash(tx); err != nil {
+		return err
+	}
+
+	if err := v.ValidateInstructions(tx.Message.Instructions); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (v *Validator) ValidateSignatures(tx *solana.Transaction) error {
+	if len(tx.Signatures) == 0 {
+		return ErrInvalidSignature
+	}
+	// Дополнительные проверки подписей...
+	return nil
+}
+
+func (v *Validator) ValidateBlockhash(tx *solana.Transaction) error {
+	if tx.Message.RecentBlockhash == (solana.Hash{}) {
+		return ErrInvalidBlockhash
+	}
+	return nil
+}
+
+func (v *Validator) ValidateInstructions(instructions []solana.CompiledInstruction) error {
+	if len(instructions) == 0 {
+		return ErrInvalidInstruction
+	}
+	// Дополнительные проверки инструкций...
+	return nil
+}

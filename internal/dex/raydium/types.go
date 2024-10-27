@@ -33,8 +33,6 @@ type SwapInstructionData struct {
 	AmountIn     uint64
 	MinAmountOut uint64
 }
-
-// internal/dex/raydium/types.go
 type DEX struct {
 	client   blockchain.Client // изменяем тип на интерфейс.
 	logger   *zap.Logger
