@@ -3,6 +3,7 @@ package solbc
 
 import (
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -18,8 +19,17 @@ type TokenMetadataCache struct {
 
 // Client представляет основной клиент Solana
 type Client struct {
-	rpcPool *rpc.Pool
-	logger  *zap.Logger
+	enhancedRPC *rpc.EnhancedClient
+	logger      *zap.Logger
+	metrics     *ClientMetrics
+}
+
+type ClientMetrics struct {
+	AccountInfoRequests uint64
+	TransactionRequests uint64
+	FailedRequests      uint64
+	LastError           error
+	LastErrorTime       time.Time
 }
 
 // Проверяем, что Client реализует blockchain.Client интерфейс

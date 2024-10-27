@@ -1,14 +1,16 @@
 // internal/sniping/sniper.go
+
 package sniping
 
 import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc" // Добавляем импорт
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/config"
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
 	"github.com/rovshanmuradov/solana-bot/internal/storage"
@@ -25,6 +27,10 @@ type Sniper struct {
 	client      blockchain.Client
 	storage     storage.Storage
 	tokenCache  *solbc.TokenMetadataCache
+	// Добавляем каналы для управления
+	taskChan  chan *types.Task
+	doneChan  chan struct{}
+	errorChan chan error
 }
 
 func NewSniper(
@@ -39,91 +45,209 @@ func NewSniper(
 		blockchains: blockchains,
 		wallets:     wallets,
 		config:      cfg,
-		logger:      logger,
+		logger:      logger.Named("sniper"),
 		client:      client,
 		storage:     storage,
 		tokenCache:  solbc.NewTokenMetadataCache(logger),
+		taskChan:    make(chan *types.Task, 100),
+		doneChan:    make(chan struct{}),
+		errorChan:   make(chan error, 100),
 	}
 }
 
-func (s *Sniper) Run(ctx context.Context, tasks []*types.Task) {
-	var wg sync.WaitGroup
-	taskChan := make(chan *types.Task, len(tasks))
+func (s *Sniper) Run(ctx context.Context, tasks []*types.Task) error {
+	// Создаем контекст с отменой
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
+	var wg sync.WaitGroup
 	workers := s.config.Workers
 	if workers <= 0 {
-		workers = 1 // Устанавливаем минимальное значение, если в конфигурации указано некорректное
-		s.logger.Warn("Invalid workers count in config, using 1 worker")
+		workers = 1
 	}
 
-	// Запуск воркеров
+	// Запускаем воркеров
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
-		go s.worker(ctx, &wg, taskChan)
+		go s.worker(ctx, &wg, i)
 	}
 
-	// Отправка задач в канал
-	for _, task := range tasks {
-		taskChan <- task
-	}
-	close(taskChan)
+	// Запускаем горутину для мониторинга ошибок
+	go s.monitorErrors(ctx)
 
-	// Ожидание завершения всех горутин
+	// Отправляем задачи в канал
+	go func() {
+		for _, task := range tasks {
+			select {
+			case <-ctx.Done():
+				return
+			case s.taskChan <- task:
+				s.logger.Debug("Task queued",
+					zap.String("task_name", task.TaskName),
+					zap.Int("workers", workers))
+			}
+		}
+		close(s.taskChan)
+	}()
+
+	// Ожидаем завершения всех воркеров
 	wg.Wait()
-	s.logger.Info("Sniper завершил работу")
+	close(s.doneChan)
+	close(s.errorChan)
+
+	s.logger.Info("Sniper finished work")
+	return nil
 }
 
-func (s *Sniper) worker(ctx context.Context, wg *sync.WaitGroup, taskChan <-chan *types.Task) {
+func (s *Sniper) worker(ctx context.Context, wg *sync.WaitGroup, id int) {
 	defer wg.Done()
 
-	for task := range taskChan {
-		s.executeTask(ctx, task)
+	for {
+		select {
+		case <-ctx.Done():
+			s.logger.Debug("Worker stopped due to context cancellation",
+				zap.Int("worker_id", id))
+			return
+
+		case task, ok := <-s.taskChan:
+			if !ok {
+				s.logger.Debug("Task channel closed, worker stopping",
+					zap.Int("worker_id", id))
+				return
+			}
+
+			// Создаем таймаут для выполнения задачи
+			taskCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			err := s.executeTask(taskCtx, task)
+			cancel()
+
+			if err != nil {
+				s.logger.Error("Task execution failed",
+					zap.String("task_name", task.TaskName),
+					zap.Error(err))
+				select {
+				case s.errorChan <- err:
+				case <-ctx.Done():
+					return
+				}
+			}
+
+			// Добавляем задержку между задачами
+			if task.TransactionDelay > 0 {
+				select {
+				case <-time.After(time.Duration(task.TransactionDelay) * time.Millisecond):
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
 	}
 }
 
-func (s *Sniper) executeTask(ctx context.Context, task *types.Task) {
+func (s *Sniper) monitorErrors(ctx context.Context) {
+	var errorCount int
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case err, ok := <-s.errorChan:
+			if !ok {
+				return
+			}
+			errorCount++
+			s.logger.Error("Task error received",
+				zap.Error(err),
+				zap.Int("total_errors", errorCount))
+		}
+	}
+}
+
+func (s *Sniper) executeTask(ctx context.Context, task *types.Task) error {
 	s.logger.Info("Starting task execution",
 		zap.String("task_name", task.TaskName),
 		zap.String("dex_name", task.DEXName),
 		zap.String("wallet", task.WalletName))
 
-	// Устанавливаем DEXName если пустой
-	if task.DEXName == "" {
-		task.DEXName = task.Module
+	// Проверяем контекст перед каждой длительной операцией
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context cancelled before task execution: %w", err)
 	}
 
-	// Получаем DEX-модуль
+	// Получаем DEX
 	dexModule, err := dex.GetDEXByName(task.DEXName, s.client, s.logger)
 	if err != nil {
-		s.logger.Error("Failed to get DEX module",
-			zap.String("dex_name", task.DEXName),
-			zap.Error(err))
-		return
+		return fmt.Errorf("failed to get DEX module: %w", err)
 	}
 
-	// Получаем публичные ключи токенов
+	// Валидируем токены
+	sourceMint, targetMint, err := s.validateTokens(ctx, task)
+	if err != nil {
+		return fmt.Errorf("token validation failed: %w", err)
+	}
+
+	// Получаем кошелек
+	wallet, ok := s.wallets[task.WalletName]
+	if !ok || wallet == nil {
+		return fmt.Errorf("wallet not found: %s", task.WalletName)
+	}
+
+	// Получаем метаданные токенов с таймаутом
+	tokenCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	metadata, err := s.tokenCache.GetMultipleTokenMetadata(
+		tokenCtx,
+		s.client,
+		[]solana.PublicKey{sourceMint, targetMint},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to get token metadata: %w", err)
+	}
+
+	// Устанавливаем decimals из метаданных
+	if err := s.updateTaskWithMetadata(task, metadata, sourceMint, targetMint); err != nil {
+		return err
+	}
+
+	// Выполняем свап
+	swapCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	if err := dexModule.ExecuteSwap(swapCtx, task, wallet); err != nil {
+		return fmt.Errorf("swap execution failed: %w", err)
+	}
+
+	s.logger.Info("Task completed successfully",
+		zap.String("task_name", task.TaskName))
+
+	return nil
+}
+
+func (s *Sniper) validateTokens(ctx context.Context, task *types.Task) (solana.PublicKey, solana.PublicKey, error) {
 	sourceMint, err := solana.PublicKeyFromBase58(task.SourceToken)
 	if err != nil {
-		s.logger.Error("Invalid source token address", zap.Error(err))
-		return
+		return solana.PublicKey{}, solana.PublicKey{}, fmt.Errorf("invalid source token: %w", err)
 	}
 
 	targetMint, err := solana.PublicKeyFromBase58(task.TargetToken)
 	if err != nil {
-		s.logger.Error("Invalid target token address", zap.Error(err))
-		return
+		return solana.PublicKey{}, solana.PublicKey{}, fmt.Errorf("invalid target token: %w", err)
 	}
 
-	// Получаем метаданные обоих токенов параллельно
-	metadata, err := s.tokenCache.GetMultipleTokenMetadata(ctx, s.client, []solana.PublicKey{sourceMint, targetMint})
-	if err != nil {
-		s.logger.Error("Failed to get token metadata", zap.Error(err))
-		return
-	}
+	return sourceMint, targetMint, nil
+}
 
-	// Устанавливаем decimals из метаданных
+func (s *Sniper) updateTaskWithMetadata(
+	task *types.Task,
+	metadata map[string]*solbc.TokenMetadata,
+	sourceMint, targetMint solana.PublicKey,
+) error {
 	sourceMetadata := metadata[sourceMint.String()]
 	targetMetadata := metadata[targetMint.String()]
+
+	if sourceMetadata == nil || targetMetadata == nil {
+		return fmt.Errorf("metadata not found for tokens")
+	}
 
 	task.SourceTokenDecimals = int(sourceMetadata.Decimals)
 	task.TargetTokenDecimals = int(targetMetadata.Decimals)
@@ -134,38 +258,5 @@ func (s *Sniper) executeTask(ctx context.Context, task *types.Task) {
 		zap.String("target_symbol", targetMetadata.Symbol),
 		zap.Int("target_decimals", task.TargetTokenDecimals))
 
-	// Получаем и проверяем кошелек
-	wallet, ok := s.wallets[task.WalletName]
-	if !ok || wallet == nil {
-		s.logger.Error("Wallet not found or invalid",
-			zap.String("wallet_name", task.WalletName))
-		return
-	}
-
-	// Проверяем параметры
-	if err := validateTaskParameters(task); err != nil {
-		s.logger.Error("Invalid task parameters", zap.Error(err))
-		return
-	}
-
-	// Выполняем свап
-	if err := dexModule.ExecuteSwap(ctx, task, wallet); err != nil {
-		s.logger.Error("Swap execution failed",
-			zap.String("task", task.TaskName),
-			zap.Error(err))
-		return
-	}
-
-	s.logger.Info("Task completed successfully",
-		zap.String("task_name", task.TaskName))
-}
-
-func validateTaskParameters(task *types.Task) error {
-	if task.AmountIn <= 0 {
-		return fmt.Errorf("invalid amount_in: %f", task.AmountIn)
-	}
-	if task.MinAmountOut <= 0 {
-		return fmt.Errorf("invalid min_amount_out: %f", task.MinAmountOut)
-	}
 	return nil
 }

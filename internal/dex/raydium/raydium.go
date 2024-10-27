@@ -244,14 +244,31 @@ func (r *DEX) getOrCreateTokenAccounts(
 		return solana.PublicKey{}, solana.PublicKey{}, fmt.Errorf("target ATA error: %w", err)
 	}
 
-	// Проверяем существование source ATA
-	sourceAccount, err := r.client.GetAccountInfo(ctx, sourceATA)
+	r.logger.Debug("Checking source ATA",
+		zap.String("source_ata", sourceATA.String()),
+		zap.String("wallet", wallet.PublicKey.String()),
+		zap.String("source_mint", sourceMint.String()))
+
+	r.logger.Debug("Checking target ATA",
+		zap.String("target_ata", targetATA.String()),
+		zap.String("wallet", wallet.PublicKey.String()),
+		zap.String("target_mint", targetMint.String()))
+
+	// Проверяем существование source ATA с таймаутом
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	sourceAccount, err := r.client.GetAccountInfo(ctxWithTimeout, sourceATA)
 	if err != nil {
 		return solana.PublicKey{}, solana.PublicKey{}, fmt.Errorf("failed to check source ATA: %w", err)
 	}
 
 	// Если source ATA не существует, создаем его
 	if sourceAccount.Value == nil {
+		r.logger.Debug("Creating source ATA",
+			zap.String("ata", sourceATA.String()),
+			zap.String("mint", sourceMint.String()))
+
 		createATAInstr := associatedtokenaccount.NewCreateInstruction(
 			wallet.PublicKey, // payer
 			wallet.PublicKey, // owner
@@ -263,14 +280,21 @@ func (r *DEX) getOrCreateTokenAccounts(
 		}
 	}
 
-	// Проверяем существование target ATA
-	targetAccount, err := r.client.GetAccountInfo(ctx, targetATA)
+	// Проверяем существование target ATA с таймаутом
+	ctxWithTimeout2, cancel2 := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel2()
+
+	targetAccount, err := r.client.GetAccountInfo(ctxWithTimeout2, targetATA)
 	if err != nil {
 		return solana.PublicKey{}, solana.PublicKey{}, fmt.Errorf("failed to check target ATA: %w", err)
 	}
 
 	// Если target ATA не существует, создаем его
 	if targetAccount.Value == nil {
+		r.logger.Debug("Creating target ATA",
+			zap.String("ata", targetATA.String()),
+			zap.String("mint", targetMint.String()))
+
 		createATAInstr := associatedtokenaccount.NewCreateInstruction(
 			wallet.PublicKey, // payer
 			wallet.PublicKey, // owner
