@@ -1,29 +1,29 @@
 // internal/dex/raydium/config.go
 package raydium
 
-// DefaultPoolConfig представляет конфигурацию пула Raydium с актуальными адресами
+// DefaultPoolConfig с обновленным типом для RaydiumSwapInstructionCode
 var DefaultPoolConfig = &Pool{
-	// Standard AMM (CP-Swap) программный ID
-	AmmProgramID: "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
+	// Актуальный программный ID Raydium
+	AmmProgramID: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
 
-	// Пример конфигурации для SOL-USDC пула
-	AmmID:                "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",
-	AmmAuthority:         "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
-	AmmOpenOrders:        "HRk9CMrpq7Qr6mhLkWGJR19dZ1P7RtUcYP3qHWKKYXAh",
-	AmmTargetOrders:      "CZza3Ej4Mc58MnxWA385itCC9jCo3L1D7zc3LKy1bZMR",
-	PoolCoinTokenAccount: "DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz",
-	PoolPcTokenAccount:   "HLmqeL62xR1QoZ1HKKbXRrdN1p3phKpxRMb2VVopvBBz",
+	// Актуальная конфигурация для SOL-USDC пула
+	AmmID:                "EVzLJhqMtfPHFp5piYSeXqx5cY6hLbrE8oRR5Zrm1YaT",
+	AmmAuthority:         "3uaZBfHPfmpAHW7dsimC1SnyR61X4bJqQZKWmRSCXJxv",
+	AmmOpenOrders:        "4NfmERReGt1QCKey8cH5q4LsBYJoUcsuGg11J8GQFwH8",
+	AmmTargetOrders:      "38RJcGjtgd4SKRfY2dcM8Z9LzXQR6cyZeGxvjrRsVGZD",
+	PoolCoinTokenAccount: "8spXrXn2EWtNiAHvWZY3EE2f8E1TRDHzFTYyXtNuVFKs",
+	PoolPcTokenAccount:   "DuYuU5Y6TEZoMhzwPsYYRFzB5xqF999kXGHUDmBZwJge",
 
-	// OpenBook (бывший Serum) программный ID и связанные адреса
-	SerumProgramID:        "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
-	SerumMarket:           "HWHvQhFmJB3NUcu1aihKmrKegfVxBEHzwVX6yZCKEsi1",
-	SerumBids:             "J7h7mwMjziRrz7w2cdUCcpMkKS8sdNxZsLWgjuHUcV8e",
-	SerumAsks:             "4DNBdnTw6wmrK4NmdSTTxs1kEz47yjqLGuoqsMeHvkMF",
-	SerumEventQueue:       "8w4n3fcajhgN8TF74j42ehWvbVJnck5cewpjwhRQpyyc",
-	SerumCoinVaultAccount: "36c6YqAwyGKQG66XEp2dJc5JqF8UfwUf1Em3UwFZYxUE",
-	SerumPcVaultAccount:   "8CFo8bL8mZQK8abbFyypFMwEDd8tVJjHTTojMLgQTUSZ",
-	SerumVaultSigner:      "F8Vyqk3unwxkXukZFQeYyGmFfTG3CAX4v24iyrjEYBJV",
+	// OpenBook (бывший Serum) маркет
+	SerumProgramID:        "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",
+	SerumMarket:           "8BnEgHoWFysVcuFFX7QztDmzuH8r5ZFvyP3sYwn1XTh6",
+	SerumBids:             "5jWUncPNBMZJ3sTHKmMLszypVkoRK6bfEQMQUHweeQnh",
+	SerumAsks:             "EaXdHx7x3mdGA38j5RSmKYSXMzAFzzUXCHV5T73Sw8TL",
+	SerumEventQueue:       "8CvwxZ9Db6XbLD46NZwwmVDZZRDy7eydFcAGkXKh9axa",
+	SerumCoinVaultAccount: "CKxTHwM9fPksGqGd5AHjyGWGbzGkDYjP6ABNYRLvJ1Vz",
+	SerumPcVaultAccount:   "PCxN9aXvxtwMYrXk8BgESw3NNkGLwpPM8c6DwByrjgN",
+	SerumVaultSigner:      "GXWEpRURaQZ9E62Q23EreTUfBy4hfemXgWFUWcg7YFgv",
 
-	// Код инструкции для свапа
-	RaydiumSwapInstructionCode: 9,
+	// Правильный код инструкции для свапа (теперь uint8)
+	RaydiumSwapInstructionCode: 1,
 }

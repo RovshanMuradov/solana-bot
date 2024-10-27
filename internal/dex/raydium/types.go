@@ -23,14 +23,15 @@ type Pool struct {
 	SerumCoinVaultAccount      string
 	SerumPcVaultAccount        string
 	SerumVaultSigner           string
-	RaydiumSwapInstructionCode uint64
+	RaydiumSwapInstructionCode uint8
 }
 
 // SwapInstructionData представляет данные инструкции свапа
+// Обновляем также структуру инструкции
 type SwapInstructionData struct {
-	Instruction  uint64 // Код инструкции
-	AmountIn     uint64 // Сумма входа
-	MinAmountOut uint64 // Минимальная сумма выхода
+	Instruction  uint8 // Изменено на uint8
+	AmountIn     uint64
+	MinAmountOut uint64
 }
 
 // internal/dex/raydium/types.go

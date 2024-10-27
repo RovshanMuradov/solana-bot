@@ -13,13 +13,22 @@ import (
 )
 
 // Serialize сериализует данные инструкции свапа
+// Метод Serialize нужно обновить для корректной работы с uint8
 func (s *SwapInstructionData) Serialize() ([]byte, error) {
 	buf := new(bytes.Buffer)
-	for _, v := range []uint64{s.Instruction, s.AmountIn, s.MinAmountOut} {
+
+	// Записываем Instruction как uint8
+	if err := buf.WriteByte(s.Instruction); err != nil {
+		return nil, fmt.Errorf("failed to serialize instruction: %w", err)
+	}
+
+	// Записываем AmountIn и MinAmountOut как uint64
+	for _, v := range []uint64{s.AmountIn, s.MinAmountOut} {
 		if err := binary.Write(buf, binary.LittleEndian, v); err != nil {
 			return nil, fmt.Errorf("failed to serialize value: %w", err)
 		}
 	}
+
 	return buf.Bytes(), nil
 }
 
