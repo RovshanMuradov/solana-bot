@@ -2,7 +2,7 @@
 package raydium
 
 import (
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"go.uber.org/zap"
 )
 
@@ -36,7 +36,7 @@ type SwapInstructionData struct {
 
 // internal/dex/raydium/types.go
 type DEX struct {
-	client   solana.SolanaClientInterface // изменяем тип на интерфейс
+	client   blockchain.Client // изменяем тип на интерфейс.
 	logger   *zap.Logger
 	poolInfo *Pool
 }

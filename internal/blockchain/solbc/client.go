@@ -1,4 +1,5 @@
-package solana
+// internal/blockchain/solana/client.go
+package solbc
 
 import (
 	"context"
@@ -19,14 +20,14 @@ func NewClient(rpcURLs []string, logger *zap.Logger) (*Client, error) {
 		return nil, errors.New("empty RPC URL list")
 	}
 
-	var clients []*RPCClient
+	var clients []*RPCNodeClient
 	for _, urlStr := range rpcURLs {
 		if _, err := url.Parse(urlStr); err != nil {
 			logger.Warn("Invalid RPC URL", zap.String("url", urlStr), zap.Error(err))
 			continue
 		}
 
-		client := &RPCClient{
+		client := &RPCNodeClient{
 			Client:  rpc.New(urlStr),
 			URL:     urlStr,
 			active:  true,
@@ -52,7 +53,7 @@ func NewClient(rpcURLs []string, logger *zap.Logger) (*Client, error) {
 }
 
 // testConnection проверяет подключение к RPC узлу
-func (c *Client) testConnection(ctx context.Context, rpcClient *RPCClient) error {
+func (c *Client) testConnection(ctx context.Context, rpcClient *RPCNodeClient) error {
 	// Пробуем получить версию узла как более легкий запрос
 	version, err := rpcClient.Client.GetVersion(ctx)
 	if err != nil {
@@ -81,7 +82,7 @@ func (c *Client) validateConnections(ctx context.Context) error {
 
 	for _, client := range c.rpcClients {
 		wg.Add(1)
-		go func(rpcClient *RPCClient) {
+		go func(rpcClient *RPCNodeClient) {
 			defer wg.Done()
 
 			var lastErr error
@@ -115,10 +116,7 @@ func (c *Client) validateConnections(ctx context.Context) error {
 }
 
 // GetAccountInfo получает информацию об аккаунте
-func (c *Client) GetAccountInfo(
-	ctx context.Context,
-	pubkey solana.PublicKey,
-) (*rpc.GetAccountInfoResult, error) {
+func (c *Client) GetAccountInfo(ctx context.Context, pubkey solana.PublicKey) (*rpc.GetAccountInfoResult, error) {
 	var lastErr error
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		client := c.getNextClient()
@@ -206,7 +204,7 @@ func (c *Client) hasActiveClients() bool {
 	return false
 }
 
-func (c *Client) getNextClient() *RPCClient {
+func (c *Client) getNextClient() *RPCNodeClient {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 

@@ -6,13 +6,15 @@ import (
 	"fmt"
 	"strings"
 
-	solanaClient "github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"github.com/rovshanmuradov/solana-bot/internal/dex/raydium"
 	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"go.uber.org/zap"
 )
 
-func GetDEXByName(name string, client *solanaClient.Client, logger *zap.Logger) (types.DEX, error) {
+func GetDEXByName(name string, client blockchain.Client, logger *zap.Logger) (types.DEX, error) {
+	logger = logger.With(zap.String("dex_name", name))
+	logger.Info("Getting DEX by name")
 	fmt.Printf("\n=== Getting DEX by name: %s ===\n", name)
 
 	if logger == nil {

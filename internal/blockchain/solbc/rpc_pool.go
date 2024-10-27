@@ -1,5 +1,5 @@
 // pkg/blockchain/solana/rpc_pool.go
-package solana
+package solbc
 
 import (
 	"sync/atomic"
@@ -7,19 +7,19 @@ import (
 )
 
 // Методы для RPCClient
-func (c *RPCClient) setActive(state bool) {
+func (c *RPCNodeClient) setActive(state bool) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.active = state
 }
 
-func (c *RPCClient) isActive() bool {
+func (c *RPCNodeClient) isActive() bool {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 	return c.active
 }
 
-func (c *RPCClient) updateMetrics(success bool, latency time.Duration) {
+func (c *RPCNodeClient) updateMetrics(success bool, latency time.Duration) {
 	c.metrics.mutex.Lock()
 	defer c.metrics.mutex.Unlock()
 
@@ -33,7 +33,7 @@ func (c *RPCClient) updateMetrics(success bool, latency time.Duration) {
 }
 
 // RPCClient methods
-func (c *RPCClient) GetMetrics() (successCount uint64, errorCount uint64, avgLatency time.Duration) {
+func (c *RPCNodeClient) GetMetrics() (successCount uint64, errorCount uint64, avgLatency time.Duration) {
 	c.metrics.mutex.RLock()
 	defer c.metrics.mutex.RUnlock()
 	return atomic.LoadUint64(&c.metrics.successCount),

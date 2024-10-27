@@ -7,7 +7,8 @@ import (
 	"sync"
 
 	"github.com/gagliardetto/solana-go"
-	solanaBlockchain "github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc" // Добавляем импорт
 	"github.com/rovshanmuradov/solana-bot/internal/config"
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
 	"github.com/rovshanmuradov/solana-bot/internal/storage"
@@ -21,9 +22,9 @@ type Sniper struct {
 	wallets     map[string]*wallet.Wallet
 	config      *config.Config
 	logger      *zap.Logger
-	client      *solanaBlockchain.Client
+	client      blockchain.Client
 	storage     storage.Storage
-	tokenCache  *solanaBlockchain.TokenMetadataCache
+	tokenCache  *solbc.TokenMetadataCache
 }
 
 func NewSniper(
@@ -31,7 +32,7 @@ func NewSniper(
 	wallets map[string]*wallet.Wallet,
 	cfg *config.Config,
 	logger *zap.Logger,
-	client *solanaBlockchain.Client,
+	client blockchain.Client,
 	storage storage.Storage,
 ) *Sniper {
 	return &Sniper{
@@ -41,7 +42,7 @@ func NewSniper(
 		logger:      logger,
 		client:      client,
 		storage:     storage,
-		tokenCache:  solanaBlockchain.NewTokenMetadataCache(logger),
+		tokenCache:  solbc.NewTokenMetadataCache(logger),
 	}
 }
 

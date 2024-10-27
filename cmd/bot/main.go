@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	solanaClient "github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/config"
 	"github.com/rovshanmuradov/solana-bot/internal/sniping"
 	"github.com/rovshanmuradov/solana-bot/internal/storage/postgres"
@@ -61,7 +61,7 @@ func main() {
 
 	// Инициализация Solana клиента
 	fmt.Println("=== Initializing Solana client ===")
-	client, err := solanaClient.NewClient(cfg.RPCList, logger)
+	client, err := solbc.NewClient(cfg.RPCList, logger)
 	if err != nil {
 		fmt.Printf("Failed to initialize Solana client: %v\n", err)
 		logger.Fatal("Failed to initialize Solana client", zap.Error(err))
@@ -70,7 +70,7 @@ func main() {
 	// Инициализация блокчейнов
 	fmt.Println("=== Initializing blockchains ===")
 	blockchains := make(map[string]types.Blockchain)
-	solanaBC, err := solanaClient.NewBlockchain(client, logger)
+	solanaBC, err := solbc.NewBlockchain(client, logger)
 	if err != nil {
 		fmt.Printf("Failed to initialize Solana blockchain: %v\n", err)
 		logger.Fatal("Failed to initialize Solana blockchain", zap.Error(err))

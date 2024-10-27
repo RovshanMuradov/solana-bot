@@ -7,7 +7,7 @@ import (
 	"math"
 
 	"github.com/gagliardetto/solana-go"
-	solanaClient "github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
@@ -54,7 +54,7 @@ func (r *DEX) initializeTokenAccounts(
 	return sourceATA, targetATA, nil
 }
 
-func NewDEX(client *solanaClient.Client, logger *zap.Logger, poolInfo *Pool) *DEX {
+func NewDEX(client blockchain.Client, logger *zap.Logger, poolInfo *Pool) *DEX {
 	fmt.Printf("\n=== Creating new Raydium DEX ===\n")
 	fmt.Printf("Client nil? %v\n", client == nil)
 	fmt.Printf("Logger nil? %v\n", logger == nil)
