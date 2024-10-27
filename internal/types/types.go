@@ -34,7 +34,7 @@ type Task struct {
 }
 
 type DEX interface {
-	Name() string
+	// PrepareSwapInstruction подготавливает инструкцию для свапа
 	PrepareSwapInstruction(
 		ctx context.Context,
 		wallet solana.PublicKey,
@@ -44,11 +44,16 @@ type DEX interface {
 		minAmountOut uint64,
 		logger *zap.Logger,
 	) (solana.Instruction, error)
+
+	// ExecuteSwap выполняет свап
 	ExecuteSwap(
 		ctx context.Context,
 		task *Task,
 		wallet *wallet.Wallet,
 	) error
+
+	// Name возвращает имя DEX
+	Name() string
 }
 
 type Blockchain interface {

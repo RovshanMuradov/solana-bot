@@ -1,11 +1,11 @@
 // internal/dex/raydium/raydium.go
+
 package raydium
 
 import (
 	"context"
 	"fmt"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
@@ -17,114 +17,269 @@ import (
 	"go.uber.org/zap"
 )
 
-// SwapParams содержит параметры для выполнения свапа
-type SwapParams struct {
-	SourceMint  solana.PublicKey
-	TargetMint  solana.PublicKey
-	Amount      float64
-	MinAmount   float64
-	Decimals    int
-	PriorityFee float64
-}
+const (
+	defaultTimeout  = 10 * time.Second
+	maxRetries      = 3
+	retryDelay      = 500 * time.Millisecond
+	ataCheckTimeout = 5 * time.Second
+	txSendTimeout   = 15 * time.Second
+)
 
-// NewDEX создает новый экземпляр Raydium DEX
 func NewDEX(client blockchain.Client, logger *zap.Logger, poolInfo *Pool) *DEX {
-	// Базовая валидация с информативными ошибками
-	switch {
-	case client == nil:
-		if logger != nil {
-			logger.Error("Failed to create DEX: client is nil")
-		}
-		return nil
-	case logger == nil:
-		// Если логгер nil, используем только возврат, так как логировать некуда
-		return nil
-	case poolInfo == nil:
-		logger.Error("Failed to create DEX: pool info is nil")
+	if err := validateDEXParams(client, logger, poolInfo); err != nil {
+		logger.Error("Failed to create DEX", zap.Error(err))
 		return nil
 	}
 
-	// Дополнительная валидация конфигурации пула
-	if err := ValidatePool(poolInfo); err != nil {
-		logger.Error("Failed to create DEX: invalid pool configuration",
-			zap.Error(err),
-			zap.String("amm_id", poolInfo.AmmID),
-			zap.String("program_id", poolInfo.AmmProgramID))
-		return nil
-	}
-
-	dex := &DEX{
+	return &DEX{
 		client:   client,
-		logger:   logger.Named("raydium-dex"), // Добавляем префикс для логов
+		logger:   logger.Named("raydium-dex"),
 		poolInfo: poolInfo,
 	}
-
-	// Логируем успешное создание только в debug режиме
-	logger.Debug("Raydium DEX instance created successfully",
-		zap.String("amm_id", poolInfo.AmmID),
-		zap.String("program_id", poolInfo.AmmProgramID))
-
-	return dex
 }
 
+func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wallet.Wallet) error {
+	opCtx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+
+	logger := r.logger.With(
+		zap.String("task", task.TaskName),
+		zap.String("wallet", userWallet.PublicKey.String()),
+	)
+	logger.Info("Starting swap execution")
+
+	// Проверяем и получаем токен-аккаунты с таймаутом
+	sourceMint, targetMint, err := parseTokenAddresses(task.SourceToken, task.TargetToken)
+	if err != nil {
+		return fmt.Errorf("invalid token addresses: %w", err)
+	}
+
+	ataCtx, ataCancel := context.WithTimeout(opCtx, ataCheckTimeout)
+	defer ataCancel()
+
+	sourceATA, targetATA, err := r.setupTokenAccounts(ataCtx, userWallet, sourceMint, targetMint, logger)
+	if err != nil {
+		return fmt.Errorf("failed to setup token accounts: %w", err)
+	}
+
+	// Подготавливаем amount с учетом decimals
+	amountIn := uint64(task.AmountIn * math.Pow10(task.SourceTokenDecimals))
+	minAmountOut := uint64(task.MinAmountOut * math.Pow10(task.TargetTokenDecimals))
+
+	logger.Debug("Prepared swap amounts",
+		zap.Uint64("amount_in", amountIn),
+		zap.Uint64("min_amount_out", minAmountOut))
+
+	// Создаем инструкции с таймаутом
+	swapCtx, swapCancel := context.WithTimeout(opCtx, txSendTimeout)
+	defer swapCancel()
+
+	// Подготавливаем все необходимые инструкции
+	instructions, err := r.PrepareSwapInstructions(
+		swapCtx,
+		userWallet.PublicKey,
+		sourceATA,
+		targetATA,
+		amountIn,
+		minAmountOut,
+		task.PriorityFee,
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to prepare swap instructions: %w", err)
+	}
+
+	// Отправляем транзакцию
+	signature, err := r.sendTransactionWithRetry(swapCtx, userWallet, instructions, logger)
+	if err != nil {
+		return fmt.Errorf("failed to send swap transaction: %w", err)
+	}
+
+	logger.Info("Swap transaction sent successfully",
+		zap.String("signature", signature.String()),
+		zap.Float64("priority_fee", task.PriorityFee))
+
+	return nil
+}
+
+func (r *DEX) setupTokenAccounts(
+	ctx context.Context,
+	wallet *wallet.Wallet,
+	sourceMint, targetMint solana.PublicKey,
+	logger *zap.Logger,
+) (solana.PublicKey, solana.PublicKey, error) {
+	sourceATA, _, err := solana.FindAssociatedTokenAddress(wallet.PublicKey, sourceMint)
+	if err != nil {
+		return solana.PublicKey{}, solana.PublicKey{}, fmt.Errorf("failed to find source ATA: %w", err)
+	}
+
+	targetATA, _, err := solana.FindAssociatedTokenAddress(wallet.PublicKey, targetMint)
+	if err != nil {
+		return solana.PublicKey{}, solana.PublicKey{}, fmt.Errorf("failed to find target ATA: %w", err)
+	}
+
+	// Проверяем и создаем ATA если необходимо
+	if err := r.ensureATA(ctx, wallet, sourceMint, sourceATA, "source", logger); err != nil {
+		return solana.PublicKey{}, solana.PublicKey{}, err
+	}
+
+	if err := r.ensureATA(ctx, wallet, targetMint, targetATA, "target", logger); err != nil {
+		return solana.PublicKey{}, solana.PublicKey{}, err
+	}
+
+	return sourceATA, targetATA, nil
+}
+
+func (r *DEX) ensureATA(
+	ctx context.Context,
+	wallet *wallet.Wallet,
+	mint, ata solana.PublicKey,
+	ataType string,
+	logger *zap.Logger,
+) error {
+	account, err := r.client.GetAccountInfo(ctx, ata)
+	if err != nil {
+		return fmt.Errorf("failed to check %s ATA: %w", ataType, err)
+	}
+
+	if account.Value == nil {
+		logger.Debug("Creating ATA", zap.String("type", ataType), zap.String("address", ata.String()))
+
+		instruction := associatedtokenaccount.NewCreateInstruction(
+			wallet.PublicKey,
+			wallet.PublicKey,
+			mint,
+		).Build()
+
+		if err := r.sendATATransaction(ctx, wallet, instruction); err != nil {
+			return fmt.Errorf("failed to create %s ATA: %w", ataType, err)
+		}
+
+		logger.Debug("ATA created successfully", zap.String("type", ataType))
+	}
+
+	return nil
+}
+
+// Добавляем метод sendATATransaction
+func (r *DEX) sendATATransaction(ctx context.Context, wallet *wallet.Wallet, instruction solana.Instruction) error {
+	logger := r.logger.With(
+		zap.String("wallet", wallet.PublicKey.String()),
+		zap.String("operation", "create_ata"),
+	)
+
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			recent, err := r.client.GetRecentBlockhash(ctx)
+			if err != nil {
+				lastErr = fmt.Errorf("failed to get recent blockhash: %w", err)
+				continue
+			}
+
+			tx, err := solana.NewTransaction(
+				[]solana.Instruction{instruction},
+				recent,
+				solana.TransactionPayer(wallet.PublicKey),
+			)
+			if err != nil {
+				lastErr = fmt.Errorf("failed to create ATA transaction: %w", err)
+				continue
+			}
+
+			_, err = tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+				if key.Equals(wallet.PublicKey) {
+					return &wallet.PrivateKey
+				}
+				return nil
+			})
+			if err != nil {
+				lastErr = fmt.Errorf("failed to sign ATA transaction: %w", err)
+				continue
+			}
+
+			sig, err := r.client.SendTransaction(ctx, tx)
+			if err != nil {
+				lastErr = err
+				logger.Warn("Failed to send ATA transaction, retrying",
+					zap.Int("attempt", attempt+1),
+					zap.Error(err))
+				time.Sleep(retryDelay)
+				continue
+			}
+
+			logger.Debug("ATA transaction sent successfully",
+				zap.String("signature", sig.String()))
+			return nil
+		}
+	}
+
+	return fmt.Errorf("failed to send ATA transaction after %d attempts: %w", maxRetries, lastErr)
+}
+
+// Добавляем метод PrepareSwapInstruction для соответствия интерфейсу types.DEX
+// PrepareSwapInstructions объединяет все инструкции для свапа
+func (r *DEX) PrepareSwapInstructions(
+	ctx context.Context,
+	wallet solana.PublicKey,
+	sourceATA solana.PublicKey,
+	targetATA solana.PublicKey,
+	amountIn uint64,
+	minAmountOut uint64,
+	priorityFee float64,
+	logger *zap.Logger,
+) ([]solana.Instruction, error) {
+	var instructions []solana.Instruction
+
+	// Добавляем compute budget инструкции
+	computeBudgetInst := computebudget.NewSetComputeUnitPriceInstruction(
+		uint64(priorityFee * 1e6),
+	).Build()
+	instructions = append(instructions, computeBudgetInst)
+
+	// Создаем базовую инструкцию свапа
+	swapInst, err := r.PrepareSwapInstruction(
+		ctx,
+		wallet,
+		sourceATA,
+		targetATA,
+		amountIn,
+		minAmountOut,
+		logger,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to prepare swap instruction: %w", err)
+	}
+	instructions = append(instructions, swapInst)
+
+	return instructions, nil
+}
+
+// PrepareSwapInstruction подготавливает базовую инструкцию свапа
 func (r *DEX) PrepareSwapInstruction(
 	ctx context.Context,
-	userWallet solana.PublicKey,
-	userSourceTokenAccount solana.PublicKey,
-	userDestinationTokenAccount solana.PublicKey,
+	wallet solana.PublicKey,
+	sourceATA solana.PublicKey,
+	targetATA solana.PublicKey,
 	amountIn uint64,
 	minAmountOut uint64,
 	logger *zap.Logger,
 ) (solana.Instruction, error) {
-	// Быстрая проверка контекста
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
-	}
+	logger = logger.With(
+		zap.String("wallet", wallet.String()),
+		zap.String("source_ata", sourceATA.String()),
+		zap.String("target_ata", targetATA.String()),
+	)
+	logger.Debug("Preparing swap instruction")
 
-	// Проверяем DEX и pool info перед другими операциями
-	if r == nil || r.poolInfo == nil {
-		return nil, fmt.Errorf("invalid DEX configuration")
-	}
-
-	// Валидация входных данных одним блоком для производительности
-	var invalidInputs []string
-	switch {
-	case userWallet.IsZero():
-		invalidInputs = append(invalidInputs, "wallet")
-	case userSourceTokenAccount.IsZero():
-		invalidInputs = append(invalidInputs, "source account")
-	case userDestinationTokenAccount.IsZero():
-		invalidInputs = append(invalidInputs, "destination account")
-	case amountIn == 0:
-		invalidInputs = append(invalidInputs, "amount in")
-	}
-
-	if len(invalidInputs) > 0 {
-		err := fmt.Errorf("invalid input parameters: %s", strings.Join(invalidInputs, ", "))
-		logger.Error("Swap instruction preparation failed",
-			zap.Error(err),
-			zap.Strings("invalid_inputs", invalidInputs))
-		return nil, err
-	}
-
-	// Используем defer для логирования только в случае ошибки
-	var instruction solana.Instruction
-	var err error
-	defer func() {
-		if err != nil {
-			logger.Error("Failed to prepare swap instruction",
-				zap.Error(err),
-				zap.String("wallet", userWallet.String()),
-				zap.Uint64("amount_in", amountIn),
-				zap.Uint64("min_amount_out", minAmountOut))
-		}
-	}()
-
-	// Создаем инструкцию напрямую, без использования горутины
-	instruction, err = r.CreateSwapInstruction(
-		userWallet,
-		userSourceTokenAccount,
-		userDestinationTokenAccount,
+	// Создаем инструкцию свапа
+	instruction, err := r.CreateSwapInstruction(
+		wallet,
+		sourceATA,
+		targetATA,
 		amountIn,
 		minAmountOut,
 		logger,
@@ -134,83 +289,77 @@ func (r *DEX) PrepareSwapInstruction(
 		return nil, fmt.Errorf("failed to create swap instruction: %w", err)
 	}
 
-	// Логируем успешное создание только в debug режиме
-	if logger.Core().Enabled(zap.DebugLevel) {
-		logger.Debug("Swap instruction prepared successfully",
-			zap.String("wallet", userWallet.String()),
-			zap.Uint64("amount_in", amountIn),
-			zap.Uint64("min_amount_out", minAmountOut))
-	}
-
+	logger.Debug("Swap instruction prepared successfully")
 	return instruction, nil
 }
 
-func (r *DEX) ExecuteSwap(
+func (r *DEX) sendTransactionWithRetry(
 	ctx context.Context,
-	task *types.Task,
-	userWallet *wallet.Wallet,
-) error {
-	start := time.Now()
-	logger := r.logger.With(
-		zap.String("wallet", userWallet.PublicKey.String()),
-		zap.String("task", task.TaskName),
-	)
-
-	// Базовая валидация
-	if task.AmountIn <= 0 || task.MinAmountOut <= 0 {
-		return fmt.Errorf("invalid amounts: in=%v, min_out=%v", task.AmountIn, task.MinAmountOut)
+	wallet *wallet.Wallet,
+	instructions []solana.Instruction,
+	logger *zap.Logger,
+) (solana.Signature, error) {
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		select {
+		case <-ctx.Done():
+			return solana.Signature{}, ctx.Err()
+		default:
+			signature, err := r.sendTransaction(ctx, wallet, instructions)
+			if err == nil {
+				return signature, nil
+			}
+			lastErr = err
+			logger.Warn("Retrying transaction send",
+				zap.Int("attempt", attempt+1),
+				zap.Error(err))
+			time.Sleep(retryDelay)
+		}
 	}
+	return solana.Signature{}, fmt.Errorf("failed after %d attempts: %w", maxRetries, lastErr)
+}
 
-	// Конвертация адресов токенов
-	sourceMint, targetMint, err := parseTokenAddresses(task.SourceToken, task.TargetToken)
+func (r *DEX) sendTransaction(
+	ctx context.Context,
+	wallet *wallet.Wallet,
+	instructions []solana.Instruction,
+) (solana.Signature, error) {
+	recent, err := r.client.GetRecentBlockhash(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to parse token addresses: %w", err)
+		return solana.Signature{}, fmt.Errorf("failed to get recent blockhash: %w", err)
 	}
 
-	// Получение токен-аккаунтов, передаем весь wallet
-	sourceATA, targetATA, err := r.getOrCreateTokenAccounts(
-		ctx,
-		userWallet, // передаем весь wallet, а не только PublicKey
-		sourceMint,
-		targetMint,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to get token accounts: %w", err)
-	}
-
-	// Подготовка amount с учетом decimals
-	amountIn := uint64(task.AmountIn * math.Pow10(task.SourceTokenDecimals))
-	minAmountOut := uint64(task.MinAmountOut * math.Pow10(task.TargetTokenDecimals))
-
-	// Получение инструкции свапа
-	swapInstruction, err := r.PrepareSwapInstruction(
-		ctx,
-		userWallet.PublicKey,
-		sourceATA,
-		targetATA,
-		amountIn,
-		minAmountOut,
-		logger,
+	tx, err := solana.NewTransaction(
+		instructions,
+		recent,
+		solana.TransactionPayer(wallet.PublicKey),
 	)
 	if err != nil {
-		return fmt.Errorf("failed to prepare swap instruction: %w", err)
+		return solana.Signature{}, fmt.Errorf("failed to create transaction: %w", err)
 	}
 
-	// Выполнение транзакции
-	signature, err := r.executeTransaction(ctx, userWallet, swapInstruction, task.PriorityFee)
+	_, err = tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+		if key.Equals(wallet.PublicKey) {
+			return &wallet.PrivateKey
+		}
+		return nil
+	})
 	if err != nil {
-		logger.Error("Swap failed",
-			zap.Error(err),
-			zap.Duration("duration", time.Since(start)),
-		)
-		return fmt.Errorf("swap failed: %w", err)
+		return solana.Signature{}, fmt.Errorf("failed to sign transaction: %w", err)
 	}
 
-	logger.Info("Swap completed",
-		zap.String("signature", signature.String()),
-		zap.Duration("duration", time.Since(start)),
-	)
+	return r.client.SendTransaction(ctx, tx)
+}
 
+func validateDEXParams(client blockchain.Client, logger *zap.Logger, poolInfo *Pool) error {
+	switch {
+	case client == nil:
+		return fmt.Errorf("client cannot be nil")
+	case logger == nil:
+		return fmt.Errorf("logger cannot be nil")
+	case poolInfo == nil:
+		return fmt.Errorf("pool info cannot be nil")
+	}
 	return nil
 }
 
@@ -226,196 +375,4 @@ func parseTokenAddresses(sourceToken, targetToken string) (solana.PublicKey, sol
 	}
 
 	return sourceMint, targetMint, nil
-}
-
-func (r *DEX) getOrCreateTokenAccounts(
-	ctx context.Context,
-	wallet *wallet.Wallet,
-	sourceMint, targetMint solana.PublicKey,
-) (solana.PublicKey, solana.PublicKey, error) {
-	// Находим адреса ATA, используя PublicKey из wallet
-	sourceATA, _, err := solana.FindAssociatedTokenAddress(wallet.PublicKey, sourceMint)
-	if err != nil {
-		return solana.PublicKey{}, solana.PublicKey{}, fmt.Errorf("source ATA error: %w", err)
-	}
-
-	targetATA, _, err := solana.FindAssociatedTokenAddress(wallet.PublicKey, targetMint)
-	if err != nil {
-		return solana.PublicKey{}, solana.PublicKey{}, fmt.Errorf("target ATA error: %w", err)
-	}
-
-	r.logger.Debug("Checking source ATA",
-		zap.String("source_ata", sourceATA.String()),
-		zap.String("wallet", wallet.PublicKey.String()),
-		zap.String("source_mint", sourceMint.String()))
-
-	r.logger.Debug("Checking target ATA",
-		zap.String("target_ata", targetATA.String()),
-		zap.String("wallet", wallet.PublicKey.String()),
-		zap.String("target_mint", targetMint.String()))
-
-	// Проверяем существование source ATA с таймаутом
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	sourceAccount, err := r.client.GetAccountInfo(ctxWithTimeout, sourceATA)
-	if err != nil {
-		return solana.PublicKey{}, solana.PublicKey{}, fmt.Errorf("failed to check source ATA: %w", err)
-	}
-
-	// Если source ATA не существует, создаем его
-	if sourceAccount.Value == nil {
-		r.logger.Debug("Creating source ATA",
-			zap.String("ata", sourceATA.String()),
-			zap.String("mint", sourceMint.String()))
-
-		createATAInstr := associatedtokenaccount.NewCreateInstruction(
-			wallet.PublicKey, // payer
-			wallet.PublicKey, // owner
-			sourceMint,       // mint
-		).Build()
-
-		if err := r.sendATATransaction(ctx, wallet, createATAInstr); err != nil {
-			return solana.PublicKey{}, solana.PublicKey{}, fmt.Errorf("failed to create source ATA: %w", err)
-		}
-	}
-
-	// Проверяем существование target ATA с таймаутом
-	ctxWithTimeout2, cancel2 := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel2()
-
-	targetAccount, err := r.client.GetAccountInfo(ctxWithTimeout2, targetATA)
-	if err != nil {
-		return solana.PublicKey{}, solana.PublicKey{}, fmt.Errorf("failed to check target ATA: %w", err)
-	}
-
-	// Если target ATA не существует, создаем его
-	if targetAccount.Value == nil {
-		r.logger.Debug("Creating target ATA",
-			zap.String("ata", targetATA.String()),
-			zap.String("mint", targetMint.String()))
-
-		createATAInstr := associatedtokenaccount.NewCreateInstruction(
-			wallet.PublicKey, // payer
-			wallet.PublicKey, // owner
-			targetMint,       // mint
-		).Build()
-
-		if err := r.sendATATransaction(ctx, wallet, createATAInstr); err != nil {
-			return solana.PublicKey{}, solana.PublicKey{}, fmt.Errorf("failed to create target ATA: %w", err)
-		}
-	}
-
-	return sourceATA, targetATA, nil
-}
-
-// Вспомогательный метод для отправки транзакции создания ATA
-func (r *DEX) sendATATransaction(ctx context.Context, wallet *wallet.Wallet, instruction solana.Instruction) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-		recent, err := r.client.GetRecentBlockhash(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to get recent blockhash: %w", err)
-		}
-
-		tx, err := solana.NewTransaction(
-			[]solana.Instruction{instruction},
-			recent,
-			solana.TransactionPayer(wallet.PublicKey),
-		)
-		if err != nil {
-			return fmt.Errorf("failed to create transaction: %w", err)
-		}
-
-		// Подписываем транзакцию
-		_, err = tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
-			if key.Equals(wallet.PublicKey) {
-				return &wallet.PrivateKey
-			}
-			return nil
-		})
-		if err != nil {
-			return fmt.Errorf("failed to sign transaction: %w", err)
-		}
-
-		// Отправляем транзакцию
-		sig, err := r.client.SendTransaction(ctx, tx)
-		if err != nil {
-			return fmt.Errorf("failed to send transaction: %w", err)
-		}
-
-		// Проверяем статус через GetAccountInfo
-		for i := 0; i < 50; i++ { // максимум 25 секунд ожидания
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-				time.Sleep(500 * time.Millisecond)
-
-				resp, err := r.client.GetAccountInfo(ctx, wallet.PublicKey)
-				if err != nil {
-					continue
-				}
-
-				if resp != nil && resp.Value != nil {
-					return nil // аккаунт создан
-				}
-			}
-		}
-
-		return fmt.Errorf("timeout waiting for transaction %s confirmation", sig)
-	}
-}
-
-func (r *DEX) executeTransaction(
-	ctx context.Context,
-	wallet *wallet.Wallet,
-	instruction solana.Instruction,
-	priorityFee float64,
-) (solana.Signature, error) {
-	// Получение последнего blockhash
-	blockhash, err := r.client.GetRecentBlockhash(ctx)
-	if err != nil {
-		return solana.Signature{}, fmt.Errorf("failed to get blockhash: %w", err)
-	}
-
-	// Создание транзакции с приоритетом
-	tx, err := solana.NewTransaction(
-		[]solana.Instruction{
-			ComputeBudgetInstruction(priorityFee),
-			instruction,
-		},
-		blockhash,
-		solana.TransactionPayer(wallet.PublicKey),
-	)
-	if err != nil {
-		return solana.Signature{}, fmt.Errorf("failed to create transaction: %w", err)
-	}
-
-	// Подпись транзакции
-	_, err = tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
-		if key.Equals(wallet.PublicKey) {
-			return &wallet.PrivateKey
-		}
-		return nil
-	})
-	if err != nil {
-		return solana.Signature{}, fmt.Errorf("failed to sign transaction: %w", err)
-	}
-
-	// Отправка транзакции
-	sig, err := r.client.SendTransaction(ctx, tx)
-	if err != nil {
-		return solana.Signature{}, fmt.Errorf("failed to send transaction: %w", err)
-	}
-
-	return sig, nil
-}
-
-func ComputeBudgetInstruction(priorityFee float64) solana.Instruction {
-	return computebudget.NewSetComputeUnitPriceInstruction(
-		uint64(priorityFee * 1e6), // Конвертация в микро-лампорты
-	).Build()
 }
