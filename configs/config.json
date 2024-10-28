@@ -1,7 +1,7 @@
 {
     "license": "TEST-LICENSE-123456789",
-    "rpc_list": ["https://solana-mainnet.core.chainstack.com/1696c28aa2515808434e8932367d7932"],
-    "websocket_url": "wss://solana-mainnet.core.chainstack.com/1696c28aa2515808434e8932367d7932",
+    "rpc_list": ["http://rpc-lax-a.thornode.io/e711fbc80050bff888e8584d9e2521ca"],
+    "websocket_url": "ws://rpc-lax-a.thornode.io/e711fbc80050bff888e8584d9e2521ca",
     "monitor_delay": 1000,
     "rpc_delay": 100,
     "price_delay": 500,

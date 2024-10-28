@@ -72,16 +72,6 @@ func main() {
 	}
 	defer client.Close()
 
-	// Добавляем периодический вывод метрик
-	go func() {
-		ticker := time.NewTicker(1 * time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
-			metrics := client.GetMetrics()
-			logger.Info("Client metrics", zap.Any("metrics", metrics))
-		}
-	}()
-
 	// Инициализация блокчейнов
 	fmt.Println("=== Initializing blockchains ===")
 	blockchains := make(map[string]types.Blockchain)
