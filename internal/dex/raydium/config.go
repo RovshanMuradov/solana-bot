@@ -7,7 +7,7 @@ var DefaultPoolConfig = &Pool{
 	AmmProgramID: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
 
 	// Актуальная конфигурация для SOL-USDC пула
-	AmmID:                "EVzLJhqMtfPHFp5piYSeXqx5cY6hLbrE8oRR5Zrm1YaT",
+	AmmID:                "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",
 	AmmAuthority:         "3uaZBfHPfmpAHW7dsimC1SnyR61X4bJqQZKWmRSCXJxv",
 	AmmOpenOrders:        "4NfmERReGt1QCKey8cH5q4LsBYJoUcsuGg11J8GQFwH8",
 	AmmTargetOrders:      "38RJcGjtgd4SKRfY2dcM8Z9LzXQR6cyZeGxvjrRsVGZD",

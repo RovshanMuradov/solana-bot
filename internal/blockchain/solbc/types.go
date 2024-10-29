@@ -19,7 +19,7 @@ type TokenMetadataCache struct {
 
 // Client представляет основной клиент Solana
 type Client struct {
-	rpc     *rpc.RPCClient // Меняем тип с enhancedRPC на RPCClient
+	rpc     *rpc.RPCClient
 	logger  *zap.Logger
 	metrics *ClientMetrics
 }

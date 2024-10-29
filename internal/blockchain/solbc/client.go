@@ -64,3 +64,6 @@ func (c *Client) Close() error {
 	c.rpc.Close()
 	return nil
 }
+func (c *Client) GetSignatureStatuses(ctx context.Context, signatures ...solana.Signature) (*solanarpc.GetSignatureStatusesResult, error) {
+	return c.rpc.GetSignatureStatuses(ctx, signatures...)
+}

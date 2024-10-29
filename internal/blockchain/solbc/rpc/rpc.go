@@ -144,5 +144,16 @@ func (c *RPCClient) SendTransaction(ctx context.Context, tx *solana.Transaction)
 	return signature, err
 }
 
+// Добавляем новый метод в RPCClient
+func (c *RPCClient) GetSignatureStatuses(ctx context.Context, signatures ...solana.Signature) (*solanarpc.GetSignatureStatusesResult, error) {
+	var result *solanarpc.GetSignatureStatusesResult
+	err := c.ExecuteWithRetry(ctx, func(client *solanarpc.Client) error {
+		var err error
+		result, err = client.GetSignatureStatuses(ctx, false, signatures...)
+		return err
+	})
+	return result, err
+}
+
 // Close закрывает клиент
 func (c *RPCClient) Close() {}

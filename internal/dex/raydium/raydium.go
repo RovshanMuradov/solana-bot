@@ -9,9 +9,12 @@ import (
 	"math"
 	"time"
 
+	bin "github.com/gagliardetto/binary"
 	"github.com/gagliardetto/solana-go"
 	associatedtokenaccount "github.com/gagliardetto/solana-go/programs/associated-token-account"
 	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
+	"github.com/gagliardetto/solana-go/programs/token"
+	solanarpc "github.com/gagliardetto/solana-go/rpc"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
@@ -93,7 +96,7 @@ func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wal
 	}
 
 	// Отправляем транзакцию
-	signature, err := r.sendTransactionWithRetry(swapCtx, userWallet, instructions, logger)
+	signature, err := r.sendTransactionWithRetryAndConfirmation(swapCtx, userWallet, instructions, logger)
 	if err != nil {
 		return fmt.Errorf("failed to send swap transaction: %w", err)
 	}
@@ -140,90 +143,138 @@ func (r *DEX) ensureATA(
 	ataType string,
 	logger *zap.Logger,
 ) error {
-	account, err := r.client.GetAccountInfo(ctx, ata)
+	logger = logger.With(
+		zap.String("mint", mint.String()),
+		zap.String("ata", ata.String()),
+		zap.String("wallet", wallet.PublicKey.String()),
+	)
+
+	// Проверяем существование ATA с повторными попытками
+	exists, err := r.checkATAExists(ctx, ata, logger)
 	if err != nil {
 		return fmt.Errorf("failed to check %s ATA: %w", ataType, err)
 	}
 
-	if account.Value == nil {
-		logger.Debug("Creating ATA", zap.String("type", ataType), zap.String("address", ata.String()))
+	if !exists {
+		logger.Debug("Creating new ATA")
+		// Используем правильное создание инструкции из solana-go
+		instruction, err := r.createATAInstruction(wallet, mint)
+		if err != nil {
+			return fmt.Errorf("failed to create %s ATA instruction: %w", ataType, err)
+		}
 
-		instruction := associatedtokenaccount.NewCreateInstruction(
-			wallet.PublicKey,
-			wallet.PublicKey,
-			mint,
-		).Build()
-
-		if err := r.sendATATransaction(ctx, wallet, instruction); err != nil {
+		// Отправляем транзакцию и ждем подтверждения
+		signature, err := r.sendTransactionWithRetryAndConfirmation(ctx, wallet, []solana.Instruction{instruction}, logger)
+		if err != nil {
 			return fmt.Errorf("failed to create %s ATA: %w", ataType, err)
 		}
 
-		logger.Debug("ATA created successfully", zap.String("type", ataType))
+		logger.Info("ATA created successfully",
+			zap.String("signature", signature.String()))
+
+		// Ждем появления аккаунта
+		if err := r.waitForATACreation(ctx, ata, logger); err != nil {
+			return fmt.Errorf("failed to confirm %s ATA creation: %w", ataType, err)
+		}
 	}
 
 	return nil
 }
 
-// Добавляем метод sendATATransaction
-func (r *DEX) sendATATransaction(ctx context.Context, wallet *wallet.Wallet, instruction solana.Instruction) error {
-	logger := r.logger.With(
-		zap.String("wallet", wallet.PublicKey.String()),
-		zap.String("operation", "create_ata"),
+func (r *DEX) checkATAExists(
+	ctx context.Context,
+	ata solana.PublicKey,
+	logger *zap.Logger,
+) (bool, error) {
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		account, err := r.client.GetAccountInfo(ctx, ata)
+		if err == nil && account.Value != nil {
+			// Проверяем, что владелец - TokenProgram
+			return account.Value.Owner == solana.TokenProgramID, nil
+		}
+
+		if attempt < maxRetries-1 {
+			select {
+			case <-ctx.Done():
+				return false, ctx.Err()
+			case <-time.After(retryDelay):
+				logger.Debug("Retrying ATA check", zap.Int("attempt", attempt+1))
+			}
+		}
+	}
+	return false, nil
+}
+
+func (r *DEX) createATAInstruction(
+	wallet *wallet.Wallet,
+	mint solana.PublicKey,
+) (solana.Instruction, error) {
+	// Используем билдер из solana-go
+	inst := associatedtokenaccount.NewCreateInstruction(
+		wallet.PublicKey, // payer
+		wallet.PublicKey, // wallet address
+		mint,             // token mint
 	)
 
-	var lastErr error
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	// Проводим валидацию
+	if err := inst.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid ATA instruction: %w", err)
+	}
+
+	return inst.Build(), nil
+}
+
+func (r *DEX) waitForATACreation(
+	ctx context.Context,
+	ata solana.PublicKey,
+	logger *zap.Logger,
+) error {
+	// Увеличиваем время ожидания до 2 минут
+	deadline := time.Now().Add(2 * time.Minute)
+	// Начальный интервал проверки
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	retryCount := 0
+	maxRetries := 60 // Максимальное количество попыток
+
+	for {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timeout waiting for ATA creation after 2 minutes")
+		}
+
+		if retryCount >= maxRetries {
+			return fmt.Errorf("exceeded maximum retry attempts (%d) waiting for ATA creation", maxRetries)
+		}
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		default:
-			recent, err := r.client.GetRecentBlockhash(ctx)
+		case <-ticker.C:
+			account, err := r.client.GetAccountInfo(ctx, ata)
 			if err != nil {
-				lastErr = fmt.Errorf("failed to get recent blockhash: %w", err)
+				logger.Debug("ATA verification attempt failed",
+					zap.Error(err),
+					zap.Int("retry", retryCount),
+					zap.Time("deadline", deadline))
+				retryCount++
 				continue
 			}
 
-			tx, err := solana.NewTransaction(
-				[]solana.Instruction{instruction},
-				recent,
-				solana.TransactionPayer(wallet.PublicKey),
-			)
-			if err != nil {
-				lastErr = fmt.Errorf("failed to create ATA transaction: %w", err)
-				continue
-			}
-
-			_, err = tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
-				if key.Equals(wallet.PublicKey) {
-					return &wallet.PrivateKey
-				}
+			if account.Value != nil && account.Value.Owner == solana.TokenProgramID {
+				logger.Info("ATA creation confirmed",
+					zap.String("ata", ata.String()),
+					zap.Int("retries", retryCount))
 				return nil
-			})
-			if err != nil {
-				lastErr = fmt.Errorf("failed to sign ATA transaction: %w", err)
-				continue
 			}
 
-			sig, err := r.client.SendTransaction(ctx, tx)
-			if err != nil {
-				lastErr = err
-				logger.Warn("Failed to send ATA transaction, retrying",
-					zap.Int("attempt", attempt+1),
-					zap.Error(err))
-				time.Sleep(retryDelay)
-				continue
-			}
-
-			logger.Debug("ATA transaction sent successfully",
-				zap.String("signature", sig.String()))
-			return nil
+			logger.Debug("ATA not ready yet",
+				zap.String("ata", ata.String()),
+				zap.Int("retry", retryCount))
+			retryCount++
 		}
 	}
-
-	return fmt.Errorf("failed to send ATA transaction after %d attempts: %w", maxRetries, lastErr)
 }
-
-// internal/dex/raydium/raydium.go
 
 // PrepareSwapInstructions объединяет все инструкции для свапа
 func (r *DEX) PrepareSwapInstructions(
@@ -343,24 +394,19 @@ func (r *DEX) getMintFromATA(ctx context.Context, ata solana.PublicKey) (solana.
 		return solana.PublicKey{}, fmt.Errorf("failed to get ATA info: %w", err)
 	}
 
-	if account.Value == nil || len(account.Value.Data.GetBinary()) < 32 {
+	if account.Value == nil || len(account.Value.Data.GetBinary()) < 64 {
 		return solana.PublicKey{}, fmt.Errorf("invalid ATA account data")
 	}
 
-	data := account.Value.Data.GetBinary()[:32]
-	if len(data) != 32 {
-		return solana.PublicKey{}, fmt.Errorf("invalid public key length: expected 32 bytes, got %d", len(data))
+	var tokenAccount token.Account
+	if err := bin.NewBinDecoder(account.Value.Data.GetBinary()).Decode(&tokenAccount); err != nil {
+		return solana.PublicKey{}, fmt.Errorf("failed to decode ATA data: %w", err)
 	}
 
-	pubkey := solana.PublicKeyFromBytes(data)
-	if pubkey.IsZero() {
-		return solana.PublicKey{}, fmt.Errorf("invalid zero public key")
-	}
-
-	return pubkey, nil
+	return tokenAccount.Mint, nil
 }
 
-func (r *DEX) sendTransactionWithRetry(
+func (r *DEX) sendTransactionWithRetryAndConfirmation(
 	ctx context.Context,
 	wallet *wallet.Wallet,
 	instructions []solana.Instruction,
@@ -373,14 +419,44 @@ func (r *DEX) sendTransactionWithRetry(
 			return solana.Signature{}, ctx.Err()
 		default:
 			signature, err := r.sendTransaction(ctx, wallet, instructions)
-			if err == nil {
-				return signature, nil
+			if err != nil {
+				lastErr = err
+				logger.Warn("Retrying transaction send",
+					zap.Int("attempt", attempt+1),
+					zap.Error(err))
+				time.Sleep(retryDelay)
+				continue
 			}
-			lastErr = err
-			logger.Warn("Retrying transaction send",
-				zap.Int("attempt", attempt+1),
-				zap.Error(err))
-			time.Sleep(retryDelay)
+
+			// Ждем подтверждения транзакции
+			logger.Debug("Waiting for transaction confirmation",
+				zap.String("signature", signature.String()))
+
+			// Ждем подтверждения с таймаутом
+			confirmCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+
+			for {
+				select {
+				case <-confirmCtx.Done():
+					return signature, fmt.Errorf("timeout waiting for transaction confirmation")
+				case <-time.After(time.Second):
+					// Проверяем статус транзакции
+					status, err := r.getTransactionStatus(ctx, signature)
+					if err != nil {
+						logger.Debug("Failed to get transaction status", zap.Error(err))
+						continue
+					}
+
+					// Проверяем подтверждение
+					if status.Confirmations >= 1 || status.Status == "finalized" {
+						logger.Debug("Transaction confirmed",
+							zap.String("status", status.Status),
+							zap.Uint64("confirmations", status.Confirmations))
+						return signature, nil
+					}
+				}
+			}
 		}
 	}
 	return solana.Signature{}, fmt.Errorf("failed after %d attempts: %w", maxRetries, lastErr)
@@ -452,7 +528,7 @@ func (r *DEX) getExpectedOutput(
 	poolInfo *Pool,
 	logger *zap.Logger,
 ) (float64, error) {
-	// Создаем контекст с таймаутом
+	// Создаем контекст с тайм-аутом
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -556,4 +632,51 @@ func (r *DEX) GetAmountOutQuote(
 	}
 
 	return expectedOut, nil
+}
+
+// TransactionStatus представляет статус транзакции
+type TransactionStatus struct {
+	Status        string
+	Confirmations uint64
+	Error         interface{}
+	Slot          uint64
+}
+
+// getConfirmations получает количество подтверждений из результата статуса
+func getConfirmations(status *solanarpc.SignatureStatusesResult) uint64 {
+	if status == nil {
+		return 0
+	}
+
+	if status.Confirmations == nil {
+		if status.ConfirmationStatus == solanarpc.ConfirmationStatusFinalized {
+			return math.MaxUint64 // Максимальное значение для финализированных транзакций
+		}
+		return 0
+	}
+	return *status.Confirmations
+}
+
+// getTransactionStatus получает полный статус транзакции
+func (r *DEX) getTransactionStatus(ctx context.Context, signature solana.Signature) (*TransactionStatus, error) {
+	result, err := r.client.GetSignatureStatuses(ctx, signature)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get signature status: %w", err)
+	}
+
+	if result == nil || len(result.Value) == 0 || result.Value[0] == nil {
+		return &TransactionStatus{
+			Status: "pending",
+		}, nil
+	}
+
+	status := result.Value[0]
+	confirmations := getConfirmations(status)
+
+	return &TransactionStatus{
+		Status:        string(status.ConfirmationStatus),
+		Confirmations: confirmations,
+		Error:         status.Err,
+		Slot:          status.Slot,
+	}, nil
 }

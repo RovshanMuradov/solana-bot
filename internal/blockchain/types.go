@@ -13,4 +13,5 @@ type Client interface {
 	GetRecentBlockhash(ctx context.Context) (solana.Hash, error)
 	SendTransaction(ctx context.Context, tx *solana.Transaction) (solana.Signature, error)
 	GetAccountInfo(ctx context.Context, pubkey solana.PublicKey) (*rpc.GetAccountInfoResult, error)
+	GetSignatureStatuses(ctx context.Context, signatures ...solana.Signature) (*rpc.GetSignatureStatusesResult, error)
 }

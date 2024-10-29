@@ -27,11 +27,10 @@ type Pool struct {
 }
 
 // SwapInstructionData представляет данные инструкции свапа
-// Обновляем также структуру инструкции
 type SwapInstructionData struct {
-	Instruction  uint8 // Изменено на uint8
-	AmountIn     uint64
-	MinAmountOut uint64
+	Instruction  uint8  // Тип инструкции
+	AmountIn     uint64 // Входящая сумма
+	MinAmountOut uint64 // Минимальная исходящая сумма
 }
 type DEX struct {
 	client   blockchain.Client // изменяем тип на интерфейс.
