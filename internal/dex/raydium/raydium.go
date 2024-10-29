@@ -14,6 +14,7 @@ import (
 	associatedtokenaccount "github.com/gagliardetto/solana-go/programs/associated-token-account"
 	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
 	"github.com/gagliardetto/solana-go/programs/token"
+
 	solanarpc "github.com/gagliardetto/solana-go/rpc"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"github.com/rovshanmuradov/solana-bot/internal/types"
@@ -45,6 +46,8 @@ func NewDEX(client blockchain.Client, logger *zap.Logger, poolInfo *Pool) *DEX {
 func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wallet.Wallet) error {
 	opCtx, cancel := context.WithTimeout(ctx, defaultTimeout)
 	defer cancel()
+
+	r.slippage = task.SlippageConfig.Value
 
 	logger := r.logger.With(
 		zap.String("task", task.TaskName),
@@ -350,10 +353,9 @@ func (r *DEX) PrepareSwapInstruction(
 		return nil, fmt.Errorf("failed to get expected output: %w", err)
 	}
 
-	// Используем безопасное значение minAmountOut по умолчанию (99% от ожидаемого выхода)
-	minAmountOut := uint64(float64(expectedOut) * 0.99)
+	// Используем slippage из структуры DEX
+	minAmountOut := calculateMinimumOut(expectedOut, r.slippage)
 
-	// Создаем инструкцию свапа с помощью внутреннего метода createSwapInstruction
 	return r.createSwapInstruction(
 		wallet,
 		sourceATA,
@@ -412,53 +414,76 @@ func (r *DEX) sendTransactionWithRetryAndConfirmation(
 	instructions []solana.Instruction,
 	logger *zap.Logger,
 ) (solana.Signature, error) {
+	const (
+		maxRetries          = 3
+		sendTimeout         = 15 * time.Second
+		confirmationTimeout = 60 * time.Second
+	)
+
 	var lastErr error
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		select {
 		case <-ctx.Done():
 			return solana.Signature{}, ctx.Err()
 		default:
-			signature, err := r.sendTransaction(ctx, wallet, instructions)
+			// Создаем контекст с таймаутом для отправки
+			sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
+			signature, err := r.sendTransaction(sendCtx, wallet, instructions)
+			cancel()
+
 			if err != nil {
 				lastErr = err
 				logger.Warn("Retrying transaction send",
 					zap.Int("attempt", attempt+1),
 					zap.Error(err))
-				time.Sleep(retryDelay)
+				time.Sleep(time.Second * time.Duration(attempt+1))
 				continue
 			}
 
-			// Ждем подтверждения транзакции
-			logger.Debug("Waiting for transaction confirmation",
-				zap.String("signature", signature.String()))
-
-			// Ждем подтверждения с таймаутом
-			confirmCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			// Создаем отдельный контекст для подтверждения
+			confirmCtx, cancel := context.WithTimeout(ctx, confirmationTimeout)
 			defer cancel()
+
+			// Ждем подтверждения с периодическими проверками
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
 
 			for {
 				select {
 				case <-confirmCtx.Done():
-					return signature, fmt.Errorf("timeout waiting for transaction confirmation")
-				case <-time.After(time.Second):
-					// Проверяем статус транзакции
+					return signature, fmt.Errorf("confirmation timeout exceeded: %v", confirmCtx.Err())
+				case <-ticker.C:
 					status, err := r.getTransactionStatus(ctx, signature)
 					if err != nil {
-						logger.Debug("Failed to get transaction status", zap.Error(err))
+						logger.Debug("Failed to get transaction status",
+							zap.Error(err),
+							zap.String("signature", signature.String()))
 						continue
+					}
+
+					// Проверяем ошибки в транзакции
+					if status.Error != "" {
+						return signature, fmt.Errorf("transaction failed: %s", status.Error)
 					}
 
 					// Проверяем подтверждение
 					if status.Confirmations >= 1 || status.Status == "finalized" {
 						logger.Debug("Transaction confirmed",
+							zap.String("signature", signature.String()),
 							zap.String("status", status.Status),
 							zap.Uint64("confirmations", status.Confirmations))
 						return signature, nil
 					}
+
+					logger.Debug("Waiting for confirmation",
+						zap.String("signature", signature.String()),
+						zap.String("status", status.Status),
+						zap.Uint64("confirmations", status.Confirmations))
 				}
 			}
 		}
 	}
+
 	return solana.Signature{}, fmt.Errorf("failed after %d attempts: %w", maxRetries, lastErr)
 }
 
@@ -491,7 +516,17 @@ func (r *DEX) sendTransaction(
 		return solana.Signature{}, fmt.Errorf("failed to sign transaction: %w", err)
 	}
 
-	return r.client.SendTransaction(ctx, tx)
+	opts := blockchain.TransactionOptions{
+		SkipPreflight:       true,
+		PreflightCommitment: solanarpc.CommitmentProcessed,
+	}
+
+	signature, err := r.client.SendTransactionWithOpts(ctx, tx, opts)
+	if err != nil {
+		return solana.Signature{}, fmt.Errorf("failed to send transaction: %w", err)
+	}
+
+	return signature, nil
 }
 
 func validateDEXParams(client blockchain.Client, logger *zap.Logger, poolInfo *Pool) error {
@@ -558,9 +593,23 @@ func (r *DEX) getExpectedOutput(
 	return expectedOut, nil
 }
 
+// Определяем смещения для чтения данных пула Raydium
+const (
+	// Смещения в байтах для различных полей в структуре пула
+	DISCRIMINATOR_SIZE = 8
+	STATUS_SIZE        = 1
+	NONCE_SIZE         = 1
+	BASE_SIZE          = DISCRIMINATOR_SIZE + STATUS_SIZE + NONCE_SIZE // 10 байт
+
+	// Смещения для резервов
+	baseVaultOffset    = BASE_SIZE + 32 + 32 + 32 // После discriminator, status, nonce и трех pubkeys
+	quoteVaultOffset   = baseVaultOffset + 32
+	baseReserveOffset  = quoteVaultOffset + 32 + 8 // +8 для uint64
+	quoteReserveOffset = baseReserveOffset + 8
+)
+
 // getPoolState получает текущее состояние пула
 func (r *DEX) getPoolState(ctx context.Context, poolInfo *Pool) (*PoolState, error) {
-	// Получаем аккаунт пула
 	poolAccount, err := r.client.GetAccountInfo(ctx, solana.MustPublicKeyFromBase58(poolInfo.AmmID))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pool account: %w", err)
@@ -570,47 +619,57 @@ func (r *DEX) getPoolState(ctx context.Context, poolInfo *Pool) (*PoolState, err
 		return nil, fmt.Errorf("pool account not found")
 	}
 
-	// Парсим данные аккаунта
 	data := poolAccount.Value.Data.GetBinary()
-	if len(data) < 8+32*2 { // Минимальный размер для резервов
-		return nil, fmt.Errorf("invalid pool account data size")
+
+	// Debug полных данных
+	r.logger.Debug("Full pool data",
+		zap.Binary("data", data),
+		zap.Int("length", len(data)))
+
+	if len(data) < quoteReserveOffset+8 {
+		return nil, fmt.Errorf("invalid pool data length: got %d, need at least %d",
+			len(data), quoteReserveOffset+8)
 	}
 
-	// Извлекаем резервы из данных аккаунта
-	// Обратите внимание: это упрощенная версия, реальная структура данных может отличаться
-	tokenAReserve := binary.LittleEndian.Uint64(data[8:16])
-	tokenBReserve := binary.LittleEndian.Uint64(data[16:24])
+	// Читаем резервы
+	baseReserve := binary.LittleEndian.Uint64(data[baseReserveOffset : baseReserveOffset+8])
+	quoteReserve := binary.LittleEndian.Uint64(data[quoteReserveOffset : quoteReserveOffset+8])
 
-	// Получаем информацию о комиссии пула
-	swapFee := 0.25 // 0.25% это стандартная комиссия Raydium
+	r.logger.Debug("Pool reserves offsets",
+		zap.Int("base_offset", baseReserveOffset),
+		zap.Int("quote_offset", quoteReserveOffset))
+
+	r.logger.Debug("Pool reserves raw bytes",
+		zap.Binary("base_bytes", data[baseReserveOffset:baseReserveOffset+8]),
+		zap.Binary("quote_bytes", data[quoteReserveOffset:quoteReserveOffset+8]))
 
 	return &PoolState{
-		TokenAReserve: tokenAReserve,
-		TokenBReserve: tokenBReserve,
-		SwapFee:       swapFee,
+		TokenAReserve: baseReserve,
+		TokenBReserve: quoteReserve,
+		SwapFee:       0.25,
 	}, nil
 }
 
 // calculateExpectedOutput вычисляет ожидаемый выход на основе состояния пула
 func (r *DEX) calculateExpectedOutput(amountIn uint64, state *PoolState) float64 {
-	// Константа k = x * y, где x и y - резервы токенов
-	k := float64(state.TokenAReserve) * float64(state.TokenBReserve)
+	// Конвертируем все в float64 для точных вычислений
+	amountInF := float64(amountIn)
+	reserveInF := float64(state.TokenAReserve)
+	reserveOutF := float64(state.TokenBReserve)
 
-	// Вычисляем amount_in после комиссии
-	amountInAfterFee := float64(amountIn) * (1 - state.SwapFee/100)
+	// Учитываем комиссию (0.25%)
+	amountInWithFee := amountInF * (1 - state.SwapFee/100)
 
-	// Новый резерв входного токена
-	newSourceReserve := float64(state.TokenAReserve) + amountInAfterFee
+	// Используем формулу Raydium: dy = y * dx / (x + dx)
+	// где dx - входная сумма с учетом комиссии
+	// x, y - резервы токенов
+	numerator := reserveOutF * amountInWithFee
+	denominator := reserveInF + amountInWithFee
 
-	// Вычисляем новый резерв выходного токена используя формулу k = x * y
-	newTargetReserve := k / newSourceReserve
+	expectedOut := numerator / denominator
 
-	// Ожидаемый выход это разница между старым и новым резервом
-	expectedOut := float64(state.TokenBReserve) - newTargetReserve
-
-	// Применяем дополнительный запас надежности
-	safetyFactor := 0.995 // 0.5% запас для учета изменения цены
-	return expectedOut * safetyFactor
+	// Применяем дополнительный запас надежности 0.5%
+	return expectedOut * 0.995
 }
 
 // GetAmountOutQuote получает котировку для свапа
@@ -636,25 +695,12 @@ func (r *DEX) GetAmountOutQuote(
 
 // TransactionStatus представляет статус транзакции
 type TransactionStatus struct {
-	Status        string
-	Confirmations uint64
-	Error         interface{}
-	Slot          uint64
-}
-
-// getConfirmations получает количество подтверждений из результата статуса
-func getConfirmations(status *solanarpc.SignatureStatusesResult) uint64 {
-	if status == nil {
-		return 0
-	}
-
-	if status.Confirmations == nil {
-		if status.ConfirmationStatus == solanarpc.ConfirmationStatusFinalized {
-			return math.MaxUint64 // Максимальное значение для финализированных транзакций
-		}
-		return 0
-	}
-	return *status.Confirmations
+	Signature     string    `json:"signature"`
+	Status        string    `json:"status"`
+	Confirmations uint64    `json:"confirmations"`
+	Slot          uint64    `json:"slot"`
+	Error         string    `json:"error,omitempty"`
+	Timestamp     time.Time `json:"timestamp"` // Время проверки статуса
 }
 
 // getTransactionStatus получает полный статус транзакции
@@ -664,19 +710,45 @@ func (r *DEX) getTransactionStatus(ctx context.Context, signature solana.Signatu
 		return nil, fmt.Errorf("failed to get signature status: %w", err)
 	}
 
-	if result == nil || len(result.Value) == 0 || result.Value[0] == nil {
-		return &TransactionStatus{
-			Status: "pending",
-		}, nil
+	now := time.Now()
+	status := &TransactionStatus{
+		Signature: signature.String(),
+		Status:    "pending",
+		Timestamp: now,
 	}
 
-	status := result.Value[0]
-	confirmations := getConfirmations(status)
+	if len(result.Value) == 0 || result.Value[0] == nil {
+		return status, nil
+	}
 
-	return &TransactionStatus{
-		Status:        string(status.ConfirmationStatus),
-		Confirmations: confirmations,
-		Error:         status.Err,
-		Slot:          status.Slot,
-	}, nil
+	statusInfo := result.Value[0]
+	if statusInfo.Err != nil {
+		status.Error = fmt.Sprintf("%v", statusInfo.Err)
+		status.Status = "failed"
+		return status, nil
+	}
+
+	if statusInfo.Confirmations != nil {
+		status.Confirmations = *statusInfo.Confirmations
+	}
+
+	if statusInfo.Slot > 0 {
+		status.Slot = statusInfo.Slot
+	}
+
+	switch statusInfo.ConfirmationStatus {
+	case solanarpc.ConfirmationStatusFinalized:
+		status.Status = "finalized"
+	case solanarpc.ConfirmationStatusConfirmed:
+		status.Status = "confirmed"
+	}
+
+	return status, nil
 }
+
+// GetSignatureStatus получает детальный статус подписи
+func (r *DEX) GetSignatureStatus(ctx context.Context, signature solana.Signature) (*solanarpc.GetSignatureStatusesResult, error) {
+	return r.client.GetSignatureStatuses(ctx, signature)
+}
+
+// Удалены неиспользуемые функции getConfirmations и waitForTransactionConfirmation

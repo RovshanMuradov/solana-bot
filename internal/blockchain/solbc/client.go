@@ -7,6 +7,7 @@ import (
 
 	"github.com/gagliardetto/solana-go"
 	solanarpc "github.com/gagliardetto/solana-go/rpc"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc/rpc"
 	"go.uber.org/zap"
 )
@@ -58,6 +59,18 @@ func (c *Client) SendTransaction(ctx context.Context, tx *solana.Transaction) (s
 	}
 	c.metrics.TransactionRequests++
 	return signature, nil
+}
+
+func (c *Client) SendTransactionWithOpts(
+	ctx context.Context,
+	tx *solana.Transaction,
+	opts blockchain.TransactionOptions,
+) (solana.Signature, error) {
+	rpcOpts := rpc.SendTransactionOpts{
+		SkipPreflight:       opts.SkipPreflight,
+		PreflightCommitment: opts.PreflightCommitment,
+	}
+	return c.rpc.SendTransactionWithOpts(ctx, tx, rpcOpts)
 }
 
 func (c *Client) Close() error {

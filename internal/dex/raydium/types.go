@@ -36,6 +36,7 @@ type DEX struct {
 	client   blockchain.Client // изменяем тип на интерфейс.
 	logger   *zap.Logger
 	poolInfo *Pool
+	slippage float64 // Добавляем поле для slippage
 }
 
 func (r *Pool) GetProgramID() string {

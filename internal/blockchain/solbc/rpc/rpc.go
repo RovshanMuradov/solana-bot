@@ -25,6 +25,12 @@ var (
 	ErrTimeout    = fmt.Errorf("request timeout")
 )
 
+// SendTransactionOpts определяет опции для отправки транзакции
+type SendTransactionOpts struct {
+	SkipPreflight       bool
+	PreflightCommitment solanarpc.CommitmentType
+}
+
 // RPCClient представляет упрощенный RPC клиент
 type RPCClient struct {
 	nodes   []*solanarpc.Client
@@ -50,6 +56,27 @@ func NewClient(urls []string, logger *zap.Logger) (*RPCClient, error) {
 		urls:   urls,
 		logger: logger.Named("rpc-client"),
 	}, nil
+}
+
+// SendTransactionWithOpts отправляет транзакцию с опциями
+func (c *RPCClient) SendTransactionWithOpts(
+	ctx context.Context,
+	tx *solana.Transaction,
+	opts SendTransactionOpts,
+) (solana.Signature, error) {
+	var signature solana.Signature
+	err := c.ExecuteWithRetry(ctx, func(client *solanarpc.Client) error {
+		var err error
+		signature, err = client.SendTransactionWithOpts(ctx, tx, solanarpc.TransactionOpts{
+			SkipPreflight:       opts.SkipPreflight,
+			PreflightCommitment: opts.PreflightCommitment,
+		})
+		return err
+	})
+	if err != nil {
+		return solana.Signature{}, fmt.Errorf("failed to send transaction: %w", err)
+	}
+	return signature, nil
 }
 
 // ExecuteWithRetry выполняет RPC-запрос с автоматическим переключением узлов при ошибке

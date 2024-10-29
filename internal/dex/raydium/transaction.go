@@ -4,28 +4,69 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
+	"github.com/sirupsen/logrus"
 	"go.uber.org/zap"
 )
 
 // Serialize сериализует данные инструкции свапа
 func (s *SwapInstructionData) Serialize() ([]byte, error) {
+	if err := s.Validate(); err != nil {
+		return nil, err
+	}
+
 	data := make([]byte, 17)
 
-	// Instruction (1 byte)
+	// Write instruction discriminator
 	data[0] = s.Instruction
 
-	// AmountIn (8 bytes)
+	// Write amount in
 	binary.LittleEndian.PutUint64(data[1:9], s.AmountIn)
 
-	// MinAmountOut (8 bytes)
+	// Write minimum out
 	binary.LittleEndian.PutUint64(data[9:17], s.MinAmountOut)
 
 	return data, nil
+}
+
+func (s *SwapInstructionData) Validate() error {
+	if s.Instruction != 1 {
+		return fmt.Errorf("invalid instruction type: expected 1, got %d", s.Instruction)
+	}
+
+	if s.AmountIn == 0 {
+		return fmt.Errorf("amount_in cannot be zero")
+	}
+
+	// MinimumOut может быть 0, но логируем это как предупреждение
+	if s.MinAmountOut == 0 {
+		logrus.Warn("minimum_out is set to zero, this may result in high slippage")
+	}
+
+	return nil
+}
+
+// Обновляем вычисление минимального выхода
+func calculateMinimumOut(expectedOut float64, slippagePercent float64) uint64 {
+	if expectedOut <= 0 {
+		return 1 // Минимальное безопасное значение
+	}
+
+	// Учитываем слиппаж
+	minOut := expectedOut * (1 - slippagePercent/100)
+
+	// Конвертируем в uint64 и проверяем на минимальное значение
+	result := uint64(math.Floor(minOut))
+	if result == 0 {
+		return 1
+	}
+
+	return result
 }
 
 // TestSwapInstructionDataSerialization тест для проверки сериализации

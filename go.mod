@@ -4,11 +4,13 @@ go 1.23.2
 
 require (
 	github.com/cenkalti/backoff/v4 v4.3.0
+	github.com/gagliardetto/binary v0.8.0
 	github.com/gagliardetto/solana-go v1.11.0
 	github.com/gobwas/ws v1.4.0
 	github.com/google/uuid v1.6.0
 	github.com/mr-tron/base58 v1.2.0
 	github.com/prometheus/client_golang v1.20.5
+	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/viper v1.19.0
 	go.uber.org/zap v1.27.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
@@ -25,7 +27,6 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/fatih/color v1.17.0 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
-	github.com/gagliardetto/binary v0.8.0 // indirect
 	github.com/gagliardetto/treeout v0.1.4 // indirect
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
