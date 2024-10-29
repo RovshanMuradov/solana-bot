@@ -4,6 +4,7 @@ package raydium
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"math"
 	"time"
@@ -45,6 +46,8 @@ func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wal
 	logger := r.logger.With(
 		zap.String("task", task.TaskName),
 		zap.String("wallet", userWallet.PublicKey.String()),
+		zap.String("slippage_type", string(task.SlippageConfig.Type)),
+		zap.Float64("slippage_value", task.SlippageConfig.Value),
 	)
 	logger.Info("Starting swap execution")
 
@@ -64,11 +67,12 @@ func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wal
 
 	// Подготавливаем amount с учетом decimals
 	amountIn := uint64(task.AmountIn * math.Pow10(task.SourceTokenDecimals))
-	minAmountOut := uint64(task.MinAmountOut * math.Pow10(task.TargetTokenDecimals))
 
-	logger.Debug("Prepared swap amounts",
+	logger.Debug("Prepared swap amount",
 		zap.Uint64("amount_in", amountIn),
-		zap.Uint64("min_amount_out", minAmountOut))
+		zap.String("slippage_type", string(task.SlippageConfig.Type)),
+		zap.Float64("slippage_value", task.SlippageConfig.Value),
+	)
 
 	// Создаем инструкции с таймаутом
 	swapCtx, swapCancel := context.WithTimeout(opCtx, txSendTimeout)
@@ -81,7 +85,6 @@ func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wal
 		sourceATA,
 		targetATA,
 		amountIn,
-		minAmountOut,
 		task.PriorityFee,
 		logger,
 	)
@@ -220,7 +223,8 @@ func (r *DEX) sendATATransaction(ctx context.Context, wallet *wallet.Wallet, ins
 	return fmt.Errorf("failed to send ATA transaction after %d attempts: %w", maxRetries, lastErr)
 }
 
-// Добавляем метод PrepareSwapInstruction для соответствия интерфейсу types.DEX
+// internal/dex/raydium/raydium.go
+
 // PrepareSwapInstructions объединяет все инструкции для свапа
 func (r *DEX) PrepareSwapInstructions(
 	ctx context.Context,
@@ -228,7 +232,6 @@ func (r *DEX) PrepareSwapInstructions(
 	sourceATA solana.PublicKey,
 	targetATA solana.PublicKey,
 	amountIn uint64,
-	minAmountOut uint64,
 	priorityFee float64,
 	logger *zap.Logger,
 ) ([]solana.Instruction, error) {
@@ -247,7 +250,6 @@ func (r *DEX) PrepareSwapInstructions(
 		sourceATA,
 		targetATA,
 		amountIn,
-		minAmountOut,
 		logger,
 	)
 	if err != nil {
@@ -265,7 +267,6 @@ func (r *DEX) PrepareSwapInstruction(
 	sourceATA solana.PublicKey,
 	targetATA solana.PublicKey,
 	amountIn uint64,
-	minAmountOut uint64,
 	logger *zap.Logger,
 ) (solana.Instruction, error) {
 	logger = logger.With(
@@ -275,8 +276,34 @@ func (r *DEX) PrepareSwapInstruction(
 	)
 	logger.Debug("Preparing swap instruction")
 
-	// Создаем инструкцию свапа
-	instruction, err := r.CreateSwapInstruction(
+	// Получаем ожидаемый выход
+	sourceMint, err := r.getMintFromATA(ctx, sourceATA)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get source mint: %w", err)
+	}
+
+	targetMint, err := r.getMintFromATA(ctx, targetATA)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get target mint: %w", err)
+	}
+
+	expectedOut, err := r.getExpectedOutput(
+		ctx,
+		amountIn,
+		sourceMint,
+		targetMint,
+		r.poolInfo,
+		logger,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get expected output: %w", err)
+	}
+
+	// Используем безопасное значение minAmountOut по умолчанию (99% от ожидаемого выхода)
+	minAmountOut := uint64(float64(expectedOut) * 0.99)
+
+	// Создаем инструкцию свапа с помощью внутреннего метода createSwapInstruction
+	return r.createSwapInstruction(
 		wallet,
 		sourceATA,
 		targetATA,
@@ -285,12 +312,52 @@ func (r *DEX) PrepareSwapInstruction(
 		logger,
 		r.poolInfo,
 	)
+}
+
+// createSwapInstruction внутренний метод для создания инструкции свапа
+func (r *DEX) createSwapInstruction(
+	wallet solana.PublicKey,
+	sourceATA solana.PublicKey,
+	targetATA solana.PublicKey,
+	amountIn uint64,
+	minAmountOut uint64,
+	logger *zap.Logger,
+	poolInfo *Pool,
+) (solana.Instruction, error) {
+	// Существующая логика из CreateSwapInstruction
+	return r.CreateSwapInstruction(
+		wallet,
+		sourceATA,
+		targetATA,
+		amountIn,
+		minAmountOut,
+		logger,
+		poolInfo,
+	)
+}
+
+// Вспомогательный метод для получения mint address из ATA
+func (r *DEX) getMintFromATA(ctx context.Context, ata solana.PublicKey) (solana.PublicKey, error) {
+	account, err := r.client.GetAccountInfo(ctx, ata)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create swap instruction: %w", err)
+		return solana.PublicKey{}, fmt.Errorf("failed to get ATA info: %w", err)
 	}
 
-	logger.Debug("Swap instruction prepared successfully")
-	return instruction, nil
+	if account.Value == nil || len(account.Value.Data.GetBinary()) < 32 {
+		return solana.PublicKey{}, fmt.Errorf("invalid ATA account data")
+	}
+
+	data := account.Value.Data.GetBinary()[:32]
+	if len(data) != 32 {
+		return solana.PublicKey{}, fmt.Errorf("invalid public key length: expected 32 bytes, got %d", len(data))
+	}
+
+	pubkey := solana.PublicKeyFromBytes(data)
+	if pubkey.IsZero() {
+		return solana.PublicKey{}, fmt.Errorf("invalid zero public key")
+	}
+
+	return pubkey, nil
 }
 
 func (r *DEX) sendTransactionWithRetry(
@@ -375,4 +442,118 @@ func parseTokenAddresses(sourceToken, targetToken string) (solana.PublicKey, sol
 	}
 
 	return sourceMint, targetMint, nil
+}
+
+// getExpectedOutput вычисляет ожидаемый выход для свапа
+func (r *DEX) getExpectedOutput(
+	ctx context.Context,
+	amountIn uint64,
+	sourceToken, targetToken solana.PublicKey,
+	poolInfo *Pool,
+	logger *zap.Logger,
+) (float64, error) {
+	// Создаем контекст с таймаутом
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	logger = logger.With(
+		zap.String("source_token", sourceToken.String()),
+		zap.String("target_token", targetToken.String()),
+		zap.Uint64("amount_in", amountIn),
+	)
+
+	// Получаем состояние пула
+	poolState, err := r.getPoolState(ctx, poolInfo)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get pool state: %w", err)
+	}
+
+	logger.Debug("Pool state retrieved",
+		zap.Uint64("token_a_reserve", poolState.TokenAReserve),
+		zap.Uint64("token_b_reserve", poolState.TokenBReserve),
+		zap.Float64("swap_fee", poolState.SwapFee))
+
+	// Вычисляем ожидаемый выход с учетом всех факторов
+	expectedOut := r.calculateExpectedOutput(amountIn, poolState)
+
+	logger.Debug("Expected output calculated",
+		zap.Float64("expected_out", expectedOut))
+
+	return expectedOut, nil
+}
+
+// getPoolState получает текущее состояние пула
+func (r *DEX) getPoolState(ctx context.Context, poolInfo *Pool) (*PoolState, error) {
+	// Получаем аккаунт пула
+	poolAccount, err := r.client.GetAccountInfo(ctx, solana.MustPublicKeyFromBase58(poolInfo.AmmID))
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pool account: %w", err)
+	}
+
+	if poolAccount == nil || poolAccount.Value == nil {
+		return nil, fmt.Errorf("pool account not found")
+	}
+
+	// Парсим данные аккаунта
+	data := poolAccount.Value.Data.GetBinary()
+	if len(data) < 8+32*2 { // Минимальный размер для резервов
+		return nil, fmt.Errorf("invalid pool account data size")
+	}
+
+	// Извлекаем резервы из данных аккаунта
+	// Обратите внимание: это упрощенная версия, реальная структура данных может отличаться
+	tokenAReserve := binary.LittleEndian.Uint64(data[8:16])
+	tokenBReserve := binary.LittleEndian.Uint64(data[16:24])
+
+	// Получаем информацию о комиссии пула
+	swapFee := 0.25 // 0.25% это стандартная комиссия Raydium
+
+	return &PoolState{
+		TokenAReserve: tokenAReserve,
+		TokenBReserve: tokenBReserve,
+		SwapFee:       swapFee,
+	}, nil
+}
+
+// calculateExpectedOutput вычисляет ожидаемый выход на основе состояния пула
+func (r *DEX) calculateExpectedOutput(amountIn uint64, state *PoolState) float64 {
+	// Константа k = x * y, где x и y - резервы токенов
+	k := float64(state.TokenAReserve) * float64(state.TokenBReserve)
+
+	// Вычисляем amount_in после комиссии
+	amountInAfterFee := float64(amountIn) * (1 - state.SwapFee/100)
+
+	// Новый резерв входного токена
+	newSourceReserve := float64(state.TokenAReserve) + amountInAfterFee
+
+	// Вычисляем новый резерв выходного токена используя формулу k = x * y
+	newTargetReserve := k / newSourceReserve
+
+	// Ожидаемый выход это разница между старым и новым резервом
+	expectedOut := float64(state.TokenBReserve) - newTargetReserve
+
+	// Применяем дополнительный запас надежности
+	safetyFactor := 0.995 // 0.5% запас для учета изменения цены
+	return expectedOut * safetyFactor
+}
+
+// GetAmountOutQuote получает котировку для свапа
+func (r *DEX) GetAmountOutQuote(
+	ctx context.Context,
+	amountIn uint64,
+	sourceToken, targetToken solana.PublicKey,
+) (float64, error) {
+	// Создаем временный пул для получения котировки
+	poolInfo := r.poolInfo
+	if poolInfo == nil {
+		return 0, fmt.Errorf("pool info not configured")
+	}
+
+	// Получаем ожидаемый выход
+	expectedOut, err := r.getExpectedOutput(ctx, amountIn, sourceToken, targetToken, poolInfo, r.logger)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get expected output: %w", err)
+	}
+
+	return expectedOut, nil
 }

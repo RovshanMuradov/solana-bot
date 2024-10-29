@@ -1,5 +1,4 @@
 // internal/dex/raydium/validation.go
-
 package raydium
 
 import (
@@ -11,7 +10,6 @@ import (
 
 // ValidateTask проверяет корректность параметров задачи
 func ValidateTask(task *types.Task) error {
-
 	if task == nil {
 		return fmt.Errorf("task cannot be nil")
 	}
@@ -41,8 +39,20 @@ func ValidateTask(task *types.Task) error {
 		return fmt.Errorf("amount in must be greater than 0")
 	}
 
-	if task.MinAmountOut <= 0 {
-		return fmt.Errorf("min amount out must be greater than 0")
+	// Удаляем проверку MinAmountOut, так как теперь оно может быть нулевым или пустым
+	// if task.MinAmountOut <= 0 {
+	//     return fmt.Errorf("min amount out must be greater than 0")
+	// }
+
+	// Проверяем конфигурацию проскальзывания, если она используется
+	if task.SlippageConfig.Type != types.SlippageNone {
+		if task.SlippageConfig.Type == types.SlippagePercent &&
+			(task.SlippageConfig.Value <= 0 || task.SlippageConfig.Value > 100) {
+			return fmt.Errorf("slippage percentage must be between 0 and 100")
+		}
+		if task.SlippageConfig.Type == types.SlippageFixed && task.SlippageConfig.Value < 0 {
+			return fmt.Errorf("fixed slippage value cannot be negative")
+		}
 	}
 
 	if task.SourceTokenDecimals <= 0 {

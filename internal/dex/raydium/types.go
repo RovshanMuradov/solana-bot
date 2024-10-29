@@ -55,3 +55,10 @@ func (r *Pool) GetTokenAccounts() (string, string) {
 func (r *DEX) Name() string {
 	return "Raydium"
 }
+
+// PoolState содержит состояние пула ликвидности
+type PoolState struct {
+	TokenAReserve uint64
+	TokenBReserve uint64
+	SwapFee       float64 // в процентах
+}

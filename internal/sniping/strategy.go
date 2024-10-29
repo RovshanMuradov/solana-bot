@@ -60,9 +60,12 @@ func parseTask(record []string) (*types.Task, error) {
 		return nil, fmt.Errorf("invalid AmountIn value: %v", err)
 	}
 
-	minAmountOut, err := strconv.ParseFloat(record[10], 64)
-	if err != nil {
-		return nil, fmt.Errorf("invalid MinAmountOut value: %v", err)
+	slippageValue := 1.0 // Значение по умолчанию
+	if record[10] != "" {
+		slippageValue, err = strconv.ParseFloat(record[10], 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Slippage value: %v", err)
+		}
 	}
 
 	autosellPercent, err := strconv.ParseFloat(record[11], 64)
@@ -107,12 +110,15 @@ func parseTask(record []string) (*types.Task, error) {
 		SourceToken:         record[7],
 		TargetToken:         record[8],
 		AmountIn:            amountIn,
-		MinAmountOut:        minAmountOut,
 		AutosellPercent:     autosellPercent,
 		AutosellDelay:       autosellDelay,
 		AutosellAmount:      autosellAmount,
 		TransactionDelay:    transactionDelay,
 		AutosellPriorityFee: autosellPriorityFee,
-		DEXName:             dexName, // Устанавливаем имя DEX
+		DEXName:             dexName,
+		SlippageConfig: types.SlippageConfig{
+			Type:  types.SlippagePercent, // Используем процентное проскальзывание по умолчанию
+			Value: slippageValue,
+		},
 	}, nil
 }

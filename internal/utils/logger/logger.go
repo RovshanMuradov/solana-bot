@@ -138,7 +138,8 @@ func (l *Logger) WithTask(task *types.Task) *zap.Logger {
 		zap.String("source_token", task.SourceToken),
 		zap.String("target_token", task.TargetToken),
 		zap.Float64("amount_in", task.AmountIn),
-		zap.Float64("min_amount_out", task.MinAmountOut),
+		zap.String("slippage_type", string(task.SlippageConfig.Type)),
+		zap.Float64("slippage_value", task.SlippageConfig.Value),
 		zap.Float64("priority_fee", task.PriorityFee),
 	)
 }

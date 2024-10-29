@@ -20,7 +20,6 @@ type Task struct {
 	SourceToken                 string
 	TargetToken                 string
 	AmountIn                    float64
-	MinAmountOut                float64
 	AutosellPercent             float64
 	AutosellDelay               int
 	AutosellAmount              float64
@@ -31,6 +30,7 @@ type Task struct {
 	SourceTokenDecimals         int
 	TargetTokenDecimals         int
 	DEXName                     string `default:"Raydium"` // Добавляем значение по умолчанию
+	SlippageConfig              SlippageConfig
 }
 
 type DEX interface {
@@ -41,7 +41,6 @@ type DEX interface {
 		sourceToken solana.PublicKey,
 		destinationToken solana.PublicKey,
 		amountIn uint64,
-		minAmountOut uint64,
 		logger *zap.Logger,
 	) (solana.Instruction, error)
 
