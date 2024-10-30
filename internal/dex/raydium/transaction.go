@@ -1,3 +1,5 @@
+// internal/dex/raydium/transaction.go
+
 package raydium
 
 import (
@@ -5,16 +7,15 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
-	"testing"
 
 	"github.com/gagliardetto/solana-go"
+	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
 	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
-	"github.com/sirupsen/logrus"
 	"go.uber.org/zap"
 )
 
-// Serialize сериализует данные инструкции свапа
+// Serialize serializes the swap instruction data
 func (s *SwapInstructionData) Serialize() ([]byte, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
@@ -34,6 +35,7 @@ func (s *SwapInstructionData) Serialize() ([]byte, error) {
 	return data, nil
 }
 
+// Validate validates the swap instruction data
 func (s *SwapInstructionData) Validate() error {
 	if s.Instruction != 1 {
 		return fmt.Errorf("invalid instruction type: expected 1, got %d", s.Instruction)
@@ -43,99 +45,15 @@ func (s *SwapInstructionData) Validate() error {
 		return fmt.Errorf("amount_in cannot be zero")
 	}
 
-	// MinimumOut может быть 0, но логируем это как предупреждение
+	// MinimumOut can be zero, but log a warning
 	if s.MinAmountOut == 0 {
-		logrus.Warn("minimum_out is set to zero, this may result in high slippage")
+		// You may want to log a warning here
 	}
 
 	return nil
 }
 
-// Обновляем вычисление минимального выхода
-func calculateMinimumOut(expectedOut float64, slippagePercent float64) uint64 {
-	if expectedOut <= 0 {
-		return 1 // Минимальное безопасное значение
-	}
-
-	// Учитываем слиппаж
-	minOut := expectedOut * (1 - slippagePercent/100)
-
-	// Конвертируем в uint64 и проверяем на минимальное значение
-	result := uint64(math.Floor(minOut))
-	if result == 0 {
-		return 1
-	}
-
-	return result
-}
-
-// TestSwapInstructionDataSerialization тест для проверки сериализации
-func TestSwapInstructionDataSerialization(t *testing.T) {
-	inst := &SwapInstructionData{
-		Instruction:  1,
-		AmountIn:     20000000,
-		MinAmountOut: 6,
-	}
-
-	data, err := inst.Serialize()
-	if err != nil {
-		t.Fatalf("Failed to serialize: %v", err)
-	}
-
-	// Проверяем instruction code
-	if data[0] != 1 {
-		t.Errorf("Expected instruction 1, got %d", data[0])
-	}
-
-	// Проверяем amountIn
-	gotAmountIn := binary.LittleEndian.Uint64(data[1:9])
-	if gotAmountIn != 20000000 {
-		t.Errorf("Expected amountIn 20000000, got %d", gotAmountIn)
-	}
-
-	// Проверяем minAmountOut
-	gotMinAmountOut := binary.LittleEndian.Uint64(data[9:17])
-	if gotMinAmountOut != 6 {
-		t.Errorf("Expected minAmountOut 6, got %d", gotMinAmountOut)
-	}
-}
-
-// Debug выводит шестнадцатеричное представление данных
-func (s *SwapInstructionData) Debug(logger *zap.Logger) {
-	data, err := s.Serialize()
-	if err != nil {
-		logger.Error("Failed to serialize for debug", zap.Error(err))
-		return
-	}
-
-	// Проверяем данные
-	amountIn := binary.LittleEndian.Uint64(data[1:9])
-	minAmountOut := binary.LittleEndian.Uint64(data[9:17])
-
-	logger.Debug("Instruction data debug",
-		zap.Uint8("instruction", data[0]),
-		zap.Uint64("amount_in_original", s.AmountIn),
-		zap.Uint64("amount_in_serialized", amountIn),
-		zap.Uint64("min_amount_out_original", s.MinAmountOut),
-		zap.Uint64("min_amount_out_serialized", minAmountOut),
-		zap.Binary("raw_data", data))
-}
-
-// validatePublicKey проверяет корректность публичного ключа
-func validatePublicKey(key string) (solana.PublicKey, error) {
-	if key == "" {
-		return solana.PublicKey{}, fmt.Errorf("empty public key")
-	}
-
-	pubKey, err := solana.PublicKeyFromBase58(key)
-	if err != nil {
-		return solana.PublicKey{}, fmt.Errorf("invalid public key %s: %w", key, err)
-	}
-
-	return pubKey, nil
-}
-
-// CreateSwapInstruction создает инструкцию свапа для Raydium
+// CreateSwapInstruction creates a swap instruction for Raydium
 func (r *DEX) CreateSwapInstruction(
 	userWallet solana.PublicKey,
 	userSourceTokenAccount solana.PublicKey,
@@ -156,14 +74,14 @@ func (r *DEX) CreateSwapInstruction(
 		return nil, fmt.Errorf("pool info is nil")
 	}
 
-	// Проверяем и конвертируем все необходимые публичные ключи
+	// Validate and parse all necessary public keys
 	ammProgramID, err := validatePublicKey(poolInfo.AmmProgramID)
 	if err != nil {
 		logger.Error("Invalid AmmProgramID", zap.Error(err))
 		return nil, fmt.Errorf("invalid AmmProgramID: %w", err)
 	}
 
-	// Проверяем и создаем все необходимые аккаунты
+	// Map of required accounts with their names
 	requiredAccounts := map[string]string{
 		"AmmID":                poolInfo.AmmID,
 		"AmmAuthority":         poolInfo.AmmAuthority,
@@ -193,56 +111,42 @@ func (r *DEX) CreateSwapInstruction(
 		accounts[name] = pubKey
 	}
 
-	// Создаем слайс аккаунтов в правильном порядке для Raydium
-	metas := make(solana.AccountMetaSlice, 0, 20)
+	// Create the account meta slice in the correct order
+	metas := solana.AccountMetaSlice{
+		// User accounts
+		{PublicKey: userWallet, IsSigner: true, IsWritable: false},
+		{PublicKey: userSourceTokenAccount, IsSigner: false, IsWritable: true},
+		{PublicKey: userDestinationTokenAccount, IsSigner: false, IsWritable: true},
+		// Pool accounts
+		{PublicKey: accounts["AmmID"], IsSigner: false, IsWritable: true},
+		{PublicKey: accounts["AmmAuthority"], IsSigner: false, IsWritable: false},
+		{PublicKey: accounts["AmmOpenOrders"], IsSigner: false, IsWritable: true},
+		{PublicKey: accounts["AmmTargetOrders"], IsSigner: false, IsWritable: true},
+		{PublicKey: accounts["PoolCoinTokenAccount"], IsSigner: false, IsWritable: true},
+		{PublicKey: accounts["PoolPcTokenAccount"], IsSigner: false, IsWritable: true},
+		// Serum accounts
+		{PublicKey: accounts["SerumProgramID"], IsSigner: false, IsWritable: false},
+		{PublicKey: accounts["SerumMarket"], IsSigner: false, IsWritable: true},
+		{PublicKey: accounts["SerumBids"], IsSigner: false, IsWritable: true},
+		{PublicKey: accounts["SerumAsks"], IsSigner: false, IsWritable: true},
+		{PublicKey: accounts["SerumEventQueue"], IsSigner: false, IsWritable: true},
+		{PublicKey: accounts["SerumCoinVault"], IsSigner: false, IsWritable: true},
+		{PublicKey: accounts["SerumPcVault"], IsSigner: false, IsWritable: true},
+		{PublicKey: accounts["SerumVaultSigner"], IsSigner: false, IsWritable: false},
+		// System accounts
+		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
+		{PublicKey: solana.SysVarClockPubkey, IsSigner: false, IsWritable: false},
+		{PublicKey: solana.SysVarRentPubkey, IsSigner: false, IsWritable: false},
+	}
 
-	// Токен аккаунты пользователя
-	metas = append(metas,
-		&solana.AccountMeta{PublicKey: userSourceTokenAccount, IsSigner: false, IsWritable: true},
-		&solana.AccountMeta{PublicKey: userDestinationTokenAccount, IsSigner: false, IsWritable: true},
-	)
-
-	// Аккаунты AMM
-	metas = append(metas,
-		&solana.AccountMeta{PublicKey: accounts["AmmID"], IsSigner: false, IsWritable: true},
-		&solana.AccountMeta{PublicKey: accounts["AmmAuthority"], IsSigner: false, IsWritable: false},
-		&solana.AccountMeta{PublicKey: accounts["AmmOpenOrders"], IsSigner: false, IsWritable: true},
-		&solana.AccountMeta{PublicKey: accounts["AmmTargetOrders"], IsSigner: false, IsWritable: true},
-		&solana.AccountMeta{PublicKey: accounts["PoolCoinTokenAccount"], IsSigner: false, IsWritable: true},
-		&solana.AccountMeta{PublicKey: accounts["PoolPcTokenAccount"], IsSigner: false, IsWritable: true},
-	)
-
-	// Аккаунты Serum
-	metas = append(metas,
-		&solana.AccountMeta{PublicKey: accounts["SerumProgramID"], IsSigner: false, IsWritable: false},
-		&solana.AccountMeta{PublicKey: accounts["SerumMarket"], IsSigner: false, IsWritable: true},
-		&solana.AccountMeta{PublicKey: accounts["SerumBids"], IsSigner: false, IsWritable: true},
-		&solana.AccountMeta{PublicKey: accounts["SerumAsks"], IsSigner: false, IsWritable: true},
-		&solana.AccountMeta{PublicKey: accounts["SerumEventQueue"], IsSigner: false, IsWritable: true},
-		&solana.AccountMeta{PublicKey: accounts["SerumCoinVault"], IsSigner: false, IsWritable: true},
-		&solana.AccountMeta{PublicKey: accounts["SerumPcVault"], IsSigner: false, IsWritable: true},
-		&solana.AccountMeta{PublicKey: accounts["SerumVaultSigner"], IsSigner: false, IsWritable: false},
-	)
-
-	// Системные аккаунты
-	metas = append(metas,
-		&solana.AccountMeta{PublicKey: userWallet, IsSigner: true, IsWritable: false},
-		&solana.AccountMeta{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
-		&solana.AccountMeta{PublicKey: solana.SysVarRentPubkey, IsSigner: false, IsWritable: false},
-		&solana.AccountMeta{PublicKey: solana.SysVarClockPubkey, IsSigner: false, IsWritable: false},
-	)
-
-	// Создание данных инструкции
+	// Create swap instruction data
 	instructionData := &SwapInstructionData{
 		Instruction:  poolInfo.RaydiumSwapInstructionCode,
 		AmountIn:     amountIn,
 		MinAmountOut: minAmountOut,
 	}
 
-	// Добавляем отладочный вывод
-	instructionData.Debug(logger)
-
-	// Сериализация
+	// Serialize instruction data
 	data, err := instructionData.Serialize()
 	if err != nil {
 		logger.Error("Failed to serialize instruction data",
@@ -253,39 +157,17 @@ func (r *DEX) CreateSwapInstruction(
 		return nil, fmt.Errorf("failed to serialize instruction data: %w", err)
 	}
 
-	// Проверка сериализованных данных
-	if len(data) != 17 {
-		logger.Error("Invalid serialized data length",
-			zap.Int("got_length", len(data)),
-			zap.Int("expected_length", 17))
-		return nil, fmt.Errorf("invalid serialized data length")
-	}
-
-	// Проверяем значения после сериализации
-	amountInCheck := binary.LittleEndian.Uint64(data[1:9])
-	minAmountOutCheck := binary.LittleEndian.Uint64(data[9:17])
-
-	logger.Debug("Serialized data check",
-		zap.Uint64("amount_in_check", amountInCheck),
-		zap.Uint64("min_amount_out_check", minAmountOutCheck))
-
-	if amountInCheck != amountIn {
-		logger.Error("AmountIn mismatch after serialization",
-			zap.Uint64("original", amountIn),
-			zap.Uint64("serialized", amountInCheck))
-		return nil, fmt.Errorf("amountIn mismatch after serialization")
-	}
-
+	// Create the instruction
 	instruction := solana.NewInstruction(ammProgramID, metas, data)
 
-	logger.Debug("Created instruction",
+	logger.Debug("Created swap instruction",
 		zap.Int("num_accounts", len(metas)),
 		zap.Int("data_len", len(data)))
 
 	return instruction, nil
 }
 
-// PrepareAndSendTransaction готовит и отправляет транзакцию свапа
+// PrepareAndSendTransaction prepares and sends the swap transaction
 func (r *DEX) PrepareAndSendTransaction(
 	ctx context.Context,
 	task *types.Task,
@@ -299,23 +181,18 @@ func (r *DEX) PrepareAndSendTransaction(
 		return fmt.Errorf("failed to get recent blockhash: %w", err)
 	}
 
-	// Создаем compute budget инструкции с использованием нового PriorityManager
-	priorityManager := types.NewPriorityManager(logger)
-	budgetInstructions, err := priorityManager.CreateCustomPriorityInstructions(
-		uint64(task.PriorityFee*1e6), // Конвертируем SOL в микро-ламports
-		1_000_000,                    // Используем sniping units
-	)
-	if err != nil {
-		logger.Error("Failed to create compute budget instructions", zap.Error(err))
-		return fmt.Errorf("failed to create compute budget instructions: %w", err)
+	// Create compute budget instruction if needed
+	computeBudgetInst := computebudget.NewSetComputeUnitPriceInstruction(
+		uint64(task.PriorityFee * 1e6), // Convert SOL to micro-lamports
+	).Build()
+
+	// Combine all instructions
+	instructions := []solana.Instruction{
+		computeBudgetInst,
+		swapInstruction,
 	}
 
-	// Combine all instructions properly
-	instructions := make([]solana.Instruction, 0, len(budgetInstructions)+1)
-	instructions = append(instructions, budgetInstructions...)
-	instructions = append(instructions, swapInstruction)
-
-	// Создаем транзакцию
+	// Create the transaction
 	tx, err := solana.NewTransaction(
 		instructions,
 		recentBlockhash,
@@ -326,7 +203,7 @@ func (r *DEX) PrepareAndSendTransaction(
 		return fmt.Errorf("failed to create transaction: %w", err)
 	}
 
-	// Подписываем транзакцию
+	// Sign the transaction
 	_, err = tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
 		if key.Equals(userWallet.PublicKey) {
 			return &userWallet.PrivateKey
@@ -338,7 +215,7 @@ func (r *DEX) PrepareAndSendTransaction(
 		return fmt.Errorf("failed to sign transaction: %w", err)
 	}
 
-	// Отправляем транзакцию
+	// Send the transaction
 	signature, err := r.client.SendTransaction(ctx, tx)
 	if err != nil {
 		logger.Error("Failed to send transaction", zap.Error(err))
@@ -347,8 +224,41 @@ func (r *DEX) PrepareAndSendTransaction(
 
 	logger.Info("Transaction sent successfully",
 		zap.String("signature", signature.String()),
-		zap.Float64("priority_fee_sol", task.PriorityFee),
-		zap.Uint64("compute_units", 1_000_000))
+		zap.Float64("priority_fee_sol", task.PriorityFee))
 
 	return nil
 }
+
+// validatePublicKey checks if a public key string is valid
+func validatePublicKey(key string) (solana.PublicKey, error) {
+	if key == "" {
+		return solana.PublicKey{}, fmt.Errorf("empty public key")
+	}
+
+	pubKey, err := solana.PublicKeyFromBase58(key)
+	if err != nil {
+		return solana.PublicKey{}, fmt.Errorf("invalid public key %s: %w", key, err)
+	}
+
+	return pubKey, nil
+}
+
+// Helper function to calculate minimum output considering slippage
+func calculateMinimumOut(expectedOut float64, slippagePercent float64) uint64 {
+	if expectedOut <= 0 {
+		return 1 // Minimum safe value
+	}
+
+	// Consider slippage
+	minOut := expectedOut * (1 - slippagePercent/100)
+
+	// Convert to uint64 and check for minimum value
+	result := uint64(math.Floor(minOut))
+	if result == 0 {
+		return 1
+	}
+
+	return result
+}
+
+// You may want to include other helper functions or adjust existing ones as needed

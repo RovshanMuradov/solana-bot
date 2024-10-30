@@ -17,6 +17,7 @@ import (
 
 	solanarpc "github.com/gagliardetto/solana-go/rpc"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
@@ -30,17 +31,73 @@ const (
 	txSendTimeout   = 15 * time.Second
 )
 
+// Добавляем новые типы для работы с ценами
+type PriceValidator interface {
+	ValidatePrice(poolPrice float64) error
+	GetMaxDeviation() float64
+}
+
+// Обновляем структуру PoolState
+
+// Добавляем базовую реализацию валидатора цен
+type BasicPriceValidator struct {
+	basePrice    float64
+	maxDeviation float64
+	logger       *zap.Logger
+}
+
+func NewBasicPriceValidator(basePrice float64, maxDeviation float64, logger *zap.Logger) *BasicPriceValidator {
+	return &BasicPriceValidator{
+		basePrice:    basePrice,
+		maxDeviation: maxDeviation,
+		logger:       logger,
+	}
+}
+
+func (v *BasicPriceValidator) ValidatePrice(poolPrice float64) error {
+	if v.basePrice <= 0 {
+		// Если базовая цена не установлена, пропускаем валидацию
+		return nil
+	}
+
+	deviation := math.Abs(poolPrice-v.basePrice) / v.basePrice
+	if deviation > v.maxDeviation {
+		return fmt.Errorf("pool price deviation too high: %.2f%% (pool: %.2f, base: %.2f)",
+			deviation*100, poolPrice, v.basePrice)
+	}
+
+	return nil
+}
+
+func (v *BasicPriceValidator) GetMaxDeviation() float64 {
+	return v.maxDeviation
+}
+
+// NewDEX создает новый экземпляр DEX
 func NewDEX(client blockchain.Client, logger *zap.Logger, poolInfo *Pool) *DEX {
 	if err := validateDEXParams(client, logger, poolInfo); err != nil {
 		logger.Error("Failed to create DEX", zap.Error(err))
 		return nil
 	}
 
-	return &DEX{
-		client:   client,
-		logger:   logger.Named("raydium-dex"),
-		poolInfo: poolInfo,
+	priceValidator := NewBasicPriceValidator(
+		181.0, // Базовая цена SOL/USDC
+		0.5,   // 50% максимальное отклонение
+		logger,
+	)
+
+	dex := &DEX{
+		client:         client,
+		logger:         logger.Named("raydium-dex"),
+		poolInfo:       poolInfo,
+		tokenCache:     solbc.NewTokenMetadataCache(logger),
+		priceValidator: priceValidator,
 	}
+
+	// Инициализируем atomic.Value
+	dex.lastPoolState.Store((*PoolState)(nil))
+
+	return dex
 }
 
 func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wallet.Wallet) error {
@@ -57,7 +114,7 @@ func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wal
 	)
 	logger.Info("Starting swap execution")
 
-	// Проверяем и получаем токен-аккаунты с таймаутом
+	// Parse token addresses
 	sourceMint, targetMint, err := parseTokenAddresses(task.SourceToken, task.TargetToken)
 	if err != nil {
 		return fmt.Errorf("invalid token addresses: %w", err)
@@ -66,12 +123,13 @@ func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wal
 	ataCtx, ataCancel := context.WithTimeout(opCtx, ataCheckTimeout)
 	defer ataCancel()
 
+	// Setup token accounts
 	sourceATA, targetATA, err := r.setupTokenAccounts(ataCtx, userWallet, sourceMint, targetMint, logger)
 	if err != nil {
 		return fmt.Errorf("failed to setup token accounts: %w", err)
 	}
 
-	// Подготавливаем amount с учетом decimals
+	// Prepare amount with decimals
 	amountIn := uint64(task.AmountIn * math.Pow10(task.SourceTokenDecimals))
 
 	logger.Debug("Prepared swap amount",
@@ -80,11 +138,10 @@ func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wal
 		zap.Float64("slippage_value", task.SlippageConfig.Value),
 	)
 
-	// Создаем инструкции с таймаутом
 	swapCtx, swapCancel := context.WithTimeout(opCtx, txSendTimeout)
 	defer swapCancel()
 
-	// Подготавливаем все необходимые инструкции
+	// Prepare swap instructions
 	instructions, err := r.PrepareSwapInstructions(
 		swapCtx,
 		userWallet.PublicKey,
@@ -98,7 +155,7 @@ func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wal
 		return fmt.Errorf("failed to prepare swap instructions: %w", err)
 	}
 
-	// Отправляем транзакцию
+	// Send transaction
 	signature, err := r.sendTransactionWithRetryAndConfirmation(swapCtx, userWallet, instructions, logger)
 	if err != nil {
 		return fmt.Errorf("failed to send swap transaction: %w", err)
@@ -555,7 +612,7 @@ func parseTokenAddresses(sourceToken, targetToken string) (solana.PublicKey, sol
 	return sourceMint, targetMint, nil
 }
 
-// getExpectedOutput вычисляет ожидаемый выход для свапа
+// getExpectedOutput calculates the expected output for the swap
 func (r *DEX) getExpectedOutput(
 	ctx context.Context,
 	amountIn uint64,
@@ -563,52 +620,84 @@ func (r *DEX) getExpectedOutput(
 	poolInfo *Pool,
 	logger *zap.Logger,
 ) (float64, error) {
-	// Создаем контекст с тайм-аутом
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	logger = logger.With(
-		zap.String("source_token", sourceToken.String()),
-		zap.String("target_token", targetToken.String()),
-		zap.Uint64("amount_in", amountIn),
-	)
-
-	// Получаем состояние пула
+	// Get pool state
 	poolState, err := r.getPoolState(ctx, poolInfo)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get pool state: %w", err)
 	}
 
-	logger.Debug("Pool state retrieved",
-		zap.Uint64("token_a_reserve", poolState.TokenAReserve),
-		zap.Uint64("token_b_reserve", poolState.TokenBReserve),
-		zap.Float64("swap_fee", poolState.SwapFee))
+	// Get decimals for tokens
+	sourceMetadata, err := r.tokenCache.GetTokenMetadata(ctx, r.client, sourceToken)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get source token metadata: %w", err)
+	}
 
-	// Вычисляем ожидаемый выход с учетом всех факторов
-	expectedOut := r.calculateExpectedOutput(amountIn, poolState)
+	targetMetadata, err := r.tokenCache.GetTokenMetadata(ctx, r.client, targetToken)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get target token metadata: %w", err)
+	}
 
-	logger.Debug("Expected output calculated",
-		zap.Float64("expected_out", expectedOut))
+	// Calculate expected output
+	expectedOut := r.calculateExpectedOutput(
+		amountIn,
+		int(sourceMetadata.Decimals),
+		int(targetMetadata.Decimals),
+		poolState,
+	)
+
+	// Validate calculated price against market price
+	marketPrice := 181.0 // Use current market price of SOL in USDC
+	err = validateSwapAmount(expectedOut, marketPrice, amountIn,
+		int(sourceMetadata.Decimals),
+		int(targetMetadata.Decimals))
+	if err != nil {
+		return 0, fmt.Errorf("swap amount validation failed: %w", err)
+	}
 
 	return expectedOut, nil
 }
 
-// Определяем смещения для чтения данных пула Raydium
+// getPoolState gets the current state of the pool
+// Скорректированные смещения для Raydium v4 пула
 const (
-	// Смещения в байтах для различных полей в структуре пула
 	DISCRIMINATOR_SIZE = 8
 	STATUS_SIZE        = 1
 	NONCE_SIZE         = 1
-	BASE_SIZE          = DISCRIMINATOR_SIZE + STATUS_SIZE + NONCE_SIZE // 10 байт
+	BASE_SIZE          = DISCRIMINATOR_SIZE + STATUS_SIZE + NONCE_SIZE // 10 bytes
 
-	// Смещения для резервов
-	baseVaultOffset    = BASE_SIZE + 32 + 32 + 32 // После discriminator, status, nonce и трех pubkeys
-	quoteVaultOffset   = baseVaultOffset + 32
-	baseReserveOffset  = quoteVaultOffset + 32 + 8 // +8 для uint64
-	quoteReserveOffset = baseReserveOffset + 8
+	// Новые смещения (в байтах)
+	baseVaultOffset    = BASE_SIZE + 96       // После discriminator + статуса + nonce + 3 pubkeys
+	quoteVaultOffset   = baseVaultOffset + 40 // После base vault + доп. данные
+	baseReserveOffset  = 178                  // Фиксированное смещение для базового резерва
+	quoteReserveOffset = 186                  // Фиксированное смещение для quote резерва
 )
 
-// getPoolState получает текущее состояние пула
+// Добавляем новые типы для работы с ценами
+type PriceSource interface {
+	GetCurrentPrice(ctx context.Context, base, quote solana.PublicKey) (float64, error)
+}
+
+type PoolPriceValidator struct {
+	priceSource  PriceSource
+	maxDeviation float64
+	logger       *zap.Logger
+}
+
+func NewPoolPriceValidator(priceSource PriceSource, logger *zap.Logger) *PoolPriceValidator {
+	return &PoolPriceValidator{
+		priceSource:  priceSource,
+		maxDeviation: 0.5, // 50% максимальное отклонение
+		logger:       logger,
+	}
+}
+
+// Добавляем метод для обновления валидатора цен
+func (r *DEX) SetPriceValidator(validator PriceValidator) {
+	r.priceValidator = validator
+}
+
+// internal/dex/raydium/raydium.go
+
 func (r *DEX) getPoolState(ctx context.Context, poolInfo *Pool) (*PoolState, error) {
 	poolAccount, err := r.client.GetAccountInfo(ctx, solana.MustPublicKeyFromBase58(poolInfo.AmmID))
 	if err != nil {
@@ -621,7 +710,6 @@ func (r *DEX) getPoolState(ctx context.Context, poolInfo *Pool) (*PoolState, err
 
 	data := poolAccount.Value.Data.GetBinary()
 
-	// Debug полных данных
 	r.logger.Debug("Full pool data",
 		zap.Binary("data", data),
 		zap.Int("length", len(data)))
@@ -635,41 +723,128 @@ func (r *DEX) getPoolState(ctx context.Context, poolInfo *Pool) (*PoolState, err
 	baseReserve := binary.LittleEndian.Uint64(data[baseReserveOffset : baseReserveOffset+8])
 	quoteReserve := binary.LittleEndian.Uint64(data[quoteReserveOffset : quoteReserveOffset+8])
 
-	r.logger.Debug("Pool reserves offsets",
-		zap.Int("base_offset", baseReserveOffset),
-		zap.Int("quote_offset", quoteReserveOffset))
+	r.logger.Debug("Raw reserves",
+		zap.Uint64("base_reserve_raw", baseReserve),
+		zap.Uint64("quote_reserve_raw", quoteReserve))
 
-	r.logger.Debug("Pool reserves raw bytes",
-		zap.Binary("base_bytes", data[baseReserveOffset:baseReserveOffset+8]),
-		zap.Binary("quote_bytes", data[quoteReserveOffset:quoteReserveOffset+8]))
+	// Проверяем резервы
+	if baseReserve == 0 || quoteReserve == 0 {
+		return nil, fmt.Errorf("invalid pool reserves: base=%d, quote=%d",
+			baseReserve, quoteReserve)
+	}
 
-	return &PoolState{
+	// Нормализуем значения с учетом decimals
+	solAmount := float64(baseReserve) / 1e9   // 9 decimals для SOL
+	usdcAmount := float64(quoteReserve) / 1e6 // 6 decimals для USDC
+
+	poolPrice := usdcAmount / solAmount
+	r.logger.Debug("Pool price calculated",
+		zap.Float64("pool_price", poolPrice),
+		zap.Float64("sol_amount", solAmount),
+		zap.Float64("usdc_amount", usdcAmount))
+
+	// Проверяем цену через валидатор
+	if r.priceValidator != nil {
+		if err := r.priceValidator.ValidatePrice(poolPrice); err != nil {
+			return nil, fmt.Errorf("pool price validation failed: %w", err)
+		}
+	}
+
+	state := &PoolState{
 		TokenAReserve: baseReserve,
 		TokenBReserve: quoteReserve,
 		SwapFee:       0.25,
-	}, nil
+		CurrentPrice:  poolPrice,
+	}
+
+	// Сохраняем новое состояние
+	r.UpdatePoolState(state)
+
+	return state, nil
+}
+
+// Добавляем вспомогательные методы для работы с ценами
+// GetCurrentPoolPrice возвращает текущую цену пула
+func (r *DEX) GetCurrentPoolPrice() float64 {
+	if state := r.lastPoolState.Load().(*PoolState); state != nil {
+		return state.CurrentPrice
+	}
+	return 0
+}
+
+func (r *DEX) SetMaxPriceDeviation(deviation float64) {
+	if r.priceValidator != nil {
+		if basicValidator, ok := r.priceValidator.(*BasicPriceValidator); ok {
+			basicValidator.maxDeviation = deviation
+		}
+	}
+}
+
+func (r *DEX) UpdateBasePrice(price float64) {
+	if r.priceValidator != nil {
+		if basicValidator, ok := r.priceValidator.(*BasicPriceValidator); ok {
+			basicValidator.basePrice = price
+		}
+	}
 }
 
 // calculateExpectedOutput вычисляет ожидаемый выход на основе состояния пула
-func (r *DEX) calculateExpectedOutput(amountIn uint64, state *PoolState) float64 {
-	// Конвертируем все в float64 для точных вычислений
-	amountInF := float64(amountIn)
-	reserveInF := float64(state.TokenAReserve)
-	reserveOutF := float64(state.TokenBReserve)
+// calculateExpectedOutput computes the expected output based on the pool state
+func (r *DEX) calculateExpectedOutput(
+	amountIn uint64,
+	sourceDec,
+	targetDec int,
+	state *PoolState,
+) float64 {
+	logger := r.logger.With(
+		zap.Uint64("amount_in_raw", amountIn),
+		zap.Int("source_decimals", sourceDec),
+		zap.Int("target_decimals", targetDec),
+	)
 
-	// Учитываем комиссию (0.25%)
-	amountInWithFee := amountInF * (1 - state.SwapFee/100)
+	// Normalize input amount
+	amountInF := float64(amountIn) / math.Pow10(sourceDec)
+	logger.Debug("Normalized input amount",
+		zap.Float64("amount_in_normalized", amountInF))
 
-	// Используем формулу Raydium: dy = y * dx / (x + dx)
-	// где dx - входная сумма с учетом комиссии
-	// x, y - резервы токенов
-	numerator := reserveOutF * amountInWithFee
-	denominator := reserveInF + amountInWithFee
+	// Get normalized reserves
+	reserveIn := float64(state.TokenAReserve) / math.Pow10(sourceDec)
+	reserveOut := float64(state.TokenBReserve) / math.Pow10(targetDec)
+	logger.Debug("Normalized reserves",
+		zap.Float64("reserve_in_normalized", reserveIn),
+		zap.Float64("reserve_out_normalized", reserveOut))
 
-	expectedOut := numerator / denominator
+	// Calculate output using constant product formula
+	amountOut := (amountInF * reserveOut * (1 - state.SwapFee/100)) / (reserveIn + amountInF*(1-state.SwapFee/100))
+	logger.Debug("Calculated amount out",
+		zap.Float64("amount_out", amountOut))
 
-	// Применяем дополнительный запас надежности 0.5%
-	return expectedOut * 0.995
+	// Convert back to lamports
+	finalOutput := amountOut * math.Pow10(targetDec)
+	logger.Debug("Final output in lamports",
+		zap.Float64("final_output_lamports", finalOutput))
+
+	return finalOutput
+}
+
+func validateSwapAmount(expectedOut float64, currentPrice float64, amountIn uint64, sourceDec, targetDec int) error {
+	// Normalize values
+	realAmountIn := float64(amountIn) / math.Pow10(sourceDec)
+	realExpectedOut := expectedOut / math.Pow10(targetDec)
+
+	// Calculate the swap price
+	calculatedPrice := realExpectedOut / realAmountIn
+
+	// Calculate price difference percentage
+	priceDiff := math.Abs(calculatedPrice-currentPrice) / currentPrice
+
+	// Allow up to 20% difference
+	if priceDiff > 0.2 {
+		return fmt.Errorf("calculated price differs too much from current price: %.2f vs %.2f",
+			calculatedPrice, currentPrice)
+	}
+
+	return nil
 }
 
 // GetAmountOutQuote получает котировку для свапа
@@ -750,5 +925,3 @@ func (r *DEX) getTransactionStatus(ctx context.Context, signature solana.Signatu
 func (r *DEX) GetSignatureStatus(ctx context.Context, signature solana.Signature) (*solanarpc.GetSignatureStatusesResult, error) {
 	return r.client.GetSignatureStatuses(ctx, signature)
 }
-
-// Удалены неиспользуемые функции getConfirmations и waitForTransactionConfirmation

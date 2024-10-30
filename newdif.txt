@@ -1,1340 +1,2314 @@
-diff --git a/TODO.md b/TODO.md
-index 5b1d499..34aab1e 100644
---- a/TODO.md
-+++ b/TODO.md
-@@ -264,3 +264,8 @@
-     - [ ] Например, прогнозирование цен, анализ рынка и т.д.
- - [ ] Рассмотреть возможность масштабирования
-     - [ ] Настроить приложение для работы в распределенной среде.
-+
-+
-+TODO: Оптимизация работы с ATA (Associated Token Accounts)
-+1. Этап подготовки и архитектуры
-+
-diff --git a/configs/tasks.csv b/configs/tasks.csv
-index 33e5da0..bbc2c6d 100644
---- a/configs/tasks.csv
-+++ b/configs/tasks.csv
-@@ -1,2 +1,2 @@
- TaskName,Module,Workers,WalletName,Delta,PriorityFee,AMMID,SourceToken,TargetToken,AmountIn,MinAmountOut,AutosellPercent,AutosellDelay,AutosellAmount,TransactionDelay,AutosellPriorityFee
--buyTokens,Raydium,1,wallet1,100,0.0001,,So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,0.02,0,0,0,0,100,0.0003
-\ No newline at end of file
-+buyTokens,Raydium,1,wallet1,100,0.0001,58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2,So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,0.02,0,0,0,0,100,0.0003
-\ No newline at end of file
-diff --git a/internal/blockchain/solbc/client.go b/internal/blockchain/solbc/client.go
-index 75b6e0d..bcfeacc 100644
---- a/internal/blockchain/solbc/client.go
-+++ b/internal/blockchain/solbc/client.go
-@@ -64,3 +64,6 @@ func (c *Client) Close() error {
- 	c.rpc.Close()
- 	return nil
- }
-+func (c *Client) GetSignatureStatuses(ctx context.Context, signatures ...solana.Signature) (*solanarpc.GetSignatureStatusesResult, error) {
-+	return c.rpc.GetSignatureStatuses(ctx, signatures...)
-+}
-diff --git a/internal/blockchain/solbc/rpc/rpc.go b/internal/blockchain/solbc/rpc/rpc.go
-index ee4c137..ac6f2c4 100644
---- a/internal/blockchain/solbc/rpc/rpc.go
-+++ b/internal/blockchain/solbc/rpc/rpc.go
-@@ -144,5 +144,16 @@ func (c *RPCClient) SendTransaction(ctx context.Context, tx *solana.Transaction)
- 	return signature, err
- }
- 
-+// Добавляем новый метод в RPCClient
-+func (c *RPCClient) GetSignatureStatuses(ctx context.Context, signatures ...solana.Signature) (*solanarpc.GetSignatureStatusesResult, error) {
-+	var result *solanarpc.GetSignatureStatusesResult
-+	err := c.ExecuteWithRetry(ctx, func(client *solanarpc.Client) error {
-+		var err error
-+		result, err = client.GetSignatureStatuses(ctx, false, signatures...)
-+		return err
-+	})
-+	return result, err
-+}
-+
- // Close закрывает клиент
- func (c *RPCClient) Close() {}
-diff --git a/internal/blockchain/solbc/types.go b/internal/blockchain/solbc/types.go
-index cc61a29..42debad 100644
---- a/internal/blockchain/solbc/types.go
-+++ b/internal/blockchain/solbc/types.go
-@@ -19,7 +19,7 @@ type TokenMetadataCache struct {
- 
- // Client представляет основной клиент Solana
- type Client struct {
--	rpc     *rpc.RPCClient // Меняем тип с enhancedRPC на RPCClient
-+	rpc     *rpc.RPCClient
- 	logger  *zap.Logger
- 	metrics *ClientMetrics
- }
-diff --git a/internal/blockchain/types.go b/internal/blockchain/types.go
-index 2690c82..202b59a 100644
---- a/internal/blockchain/types.go
-+++ b/internal/blockchain/types.go
-@@ -13,4 +13,5 @@ type Client interface {
- 	GetRecentBlockhash(ctx context.Context) (solana.Hash, error)
- 	SendTransaction(ctx context.Context, tx *solana.Transaction) (solana.Signature, error)
- 	GetAccountInfo(ctx context.Context, pubkey solana.PublicKey) (*rpc.GetAccountInfoResult, error)
-+	GetSignatureStatuses(ctx context.Context, signatures ...solana.Signature) (*rpc.GetSignatureStatusesResult, error)
- }
-diff --git a/internal/dex/dex.go b/internal/dex/dex.go
-index 5aebaa7..9b9fb16 100644
---- a/internal/dex/dex.go
-+++ b/internal/dex/dex.go
-@@ -1,62 +1,79 @@
--// internal/dex/dex.go
- package dex
- 
- import (
--	"errors"
- 	"fmt"
- 	"strings"
- 
- 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
-+	"github.com/rovshanmuradov/solana-bot/internal/dex/pumpfun"
- 	"github.com/rovshanmuradov/solana-bot/internal/dex/raydium"
- 	"github.com/rovshanmuradov/solana-bot/internal/types"
- 	"go.uber.org/zap"
- )
- 
-+// GetDEXByName возвращает имплементацию DEX по имени
- func GetDEXByName(name string, client blockchain.Client, logger *zap.Logger) (types.DEX, error) {
--	logger = logger.With(zap.String("dex_name", name))
--	logger.Info("Getting DEX by name")
--	fmt.Printf("\n=== Getting DEX by name: %s ===\n", name)
-+	if client == nil {
-+		return nil, fmt.Errorf("client cannot be nil")
-+	}
- 
- 	if logger == nil {
--		fmt.Println("Logger is nil")
--		return nil, errors.New("logger is nil")
-+		return nil, fmt.Errorf("logger cannot be nil")
- 	}
- 
--	name = strings.TrimSpace(name)
-+	name = strings.TrimSpace(strings.ToLower(name))
- 	if name == "" {
--		fmt.Println("DEX name is empty")
--		return nil, errors.New("DEX name cannot be empty")
-+		return nil, fmt.Errorf("DEX name cannot be empty")
- 	}
- 
--	fmt.Printf("Client nil? %v\n", client == nil)
-+	logger = logger.With(zap.String("dex_name", name))
-+	logger.Info("Initializing DEX instance")
- 
--	if client == nil {
--		fmt.Println("Solana client is nil")
--		return nil, errors.New("solana client cannot be nil")
-+	switch name {
-+	case "raydium":
-+		return initializeRaydiumDEX(client, logger)
-+	case "pump.fun":
-+		return initializePumpFunDEX(client, logger)
-+	default:
-+		logger.Error("Unsupported DEX requested", zap.String("name", name))
-+		return nil, fmt.Errorf("unsupported DEX: %s", name)
- 	}
-+}
- 
--	switch strings.ToLower(name) {
--	case strings.ToLower("Raydium"):
--		fmt.Println("Creating Raydium DEX instance")
-+// initializeRaydiumDEX инициализирует Raydium DEX
-+func initializeRaydiumDEX(client blockchain.Client, logger *zap.Logger) (types.DEX, error) {
-+	logger.Debug("Initializing Raydium DEX")
- 
--		if raydium.DefaultPoolConfig == nil {
--			fmt.Println("Default pool config is nil")
--			return nil, errors.New("default pool config is nil")
--		}
-+	if raydium.DefaultPoolConfig == nil {
-+		logger.Error("Default pool configuration is missing")
-+		return nil, fmt.Errorf("raydium default pool config is nil")
-+	}
- 
--		fmt.Printf("Pool config: %+v\n", raydium.DefaultPoolConfig)
-+	logger.Debug("Creating Raydium DEX instance",
-+		zap.String("pool_id", raydium.DefaultPoolConfig.AmmID),
-+		zap.String("program_id", raydium.DefaultPoolConfig.AmmProgramID))
- 
--		dex := raydium.NewDEX(client, logger, raydium.DefaultPoolConfig)
--		if dex == nil {
--			fmt.Println("Failed to create Raydium DEX instance")
--			return nil, errors.New("failed to create Raydium DEX instance")
--		}
-+	dex := raydium.NewDEX(client, logger, raydium.DefaultPoolConfig)
-+	if dex == nil {
-+		logger.Error("Failed to create Raydium DEX instance")
-+		return nil, fmt.Errorf("failed to create Raydium DEX instance")
-+	}
- 
--		fmt.Printf("DEX created: %+v\n", dex)
--		return dex, nil
-+	logger.Info("Raydium DEX initialized successfully")
-+	return dex, nil
-+}
- 
--	default:
--		fmt.Printf("Unsupported DEX: %s\n", name)
--		return nil, fmt.Errorf("unsupported DEX: %s", name)
-+// initializePumpFunDEX инициализирует Pump.fun DEX
-+func initializePumpFunDEX(_ blockchain.Client, logger *zap.Logger) (types.DEX, error) {
-+	logger.Debug("Initializing Pump.fun DEX")
-+
-+	// Создаем новый экземпляр Pump.fun DEX
-+	dex := pumpfun.NewDEX()
-+	if dex == nil {
-+		logger.Error("Failed to create Pump.fun DEX instance")
-+		return nil, fmt.Errorf("failed to create Pump.fun DEX instance")
- 	}
-+
-+	logger.Info("Pump.fun DEX initialized successfully")
-+	return dex, nil
- }
-diff --git a/internal/dex/pumpfun/pumpfun.go b/internal/dex/pumpfun/pumpfun.go
-index 83e62de..a1450ec 100644
---- a/internal/dex/pumpfun/pumpfun.go
-+++ b/internal/dex/pumpfun/pumpfun.go
-@@ -1,4 +1,3 @@
--// internal/dex/pumpfun/pumpfun.go
- package pumpfun
- 
- import (
-@@ -30,7 +29,6 @@ func (p *DEX) PrepareSwapInstruction(
- 	_ solana.PublicKey,
- 	_ solana.PublicKey,
- 	_ uint64,
--	_ uint64,
- 	_ *zap.Logger,
- ) (solana.Instruction, error) {
- 	return nil, fmt.Errorf("pump.fun DEX implementation not ready")
 diff --git a/internal/dex/raydium/config.go b/internal/dex/raydium/config.go
-index acf9464..cb0c21b 100644
+index cb0c21b..fab480a 100644
 --- a/internal/dex/raydium/config.go
 +++ b/internal/dex/raydium/config.go
-@@ -7,7 +7,7 @@ var DefaultPoolConfig = &Pool{
- 	AmmProgramID: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+@@ -3,27 +3,29 @@ package raydium
  
- 	// Актуальная конфигурация для SOL-USDC пула
--	AmmID:                "EVzLJhqMtfPHFp5piYSeXqx5cY6hLbrE8oRR5Zrm1YaT",
-+	AmmID:                "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",
- 	AmmAuthority:         "3uaZBfHPfmpAHW7dsimC1SnyR61X4bJqQZKWmRSCXJxv",
- 	AmmOpenOrders:        "4NfmERReGt1QCKey8cH5q4LsBYJoUcsuGg11J8GQFwH8",
- 	AmmTargetOrders:      "38RJcGjtgd4SKRfY2dcM8Z9LzXQR6cyZeGxvjrRsVGZD",
+ // DefaultPoolConfig с обновленным типом для RaydiumSwapInstructionCode
+ var DefaultPoolConfig = &Pool{
+-	// Актуальный программный ID Raydium
+-	AmmProgramID: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
++	// Программы
++	AmmProgramID:   "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8", // ✅ Подтверждено
++	SerumProgramID: "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",  // ✅ Подтверждено
+ 
+-	// Актуальная конфигурация для SOL-USDC пула
+-	AmmID:                "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",
+-	AmmAuthority:         "3uaZBfHPfmpAHW7dsimC1SnyR61X4bJqQZKWmRSCXJxv",
+-	AmmOpenOrders:        "4NfmERReGt1QCKey8cH5q4LsBYJoUcsuGg11J8GQFwH8",
+-	AmmTargetOrders:      "38RJcGjtgd4SKRfY2dcM8Z9LzXQR6cyZeGxvjrRsVGZD",
+-	PoolCoinTokenAccount: "8spXrXn2EWtNiAHvWZY3EE2f8E1TRDHzFTYyXtNuVFKs",
+-	PoolPcTokenAccount:   "DuYuU5Y6TEZoMhzwPsYYRFzB5xqF999kXGHUDmBZwJge",
++	// AMM конфигурация
++	AmmID:           "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2", // ✅ Подтверждено
++	AmmAuthority:    "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1", // ✅ Обновлено (authority)
++	AmmOpenOrders:   "HmiHHzq4Fym9e1D4qzLS6LDDM3tNsCTBPDWHTLZ763jY", // ✅ Обновлено (openOrders)
++	AmmTargetOrders: "CZza3Ej4Mc58MnxWA385itCC9jCo3L1D7zc3LKy1bZMR", // ✅ Обновлено (targetOrders)
+ 
+-	// OpenBook (бывший Serum) маркет
+-	SerumProgramID:        "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",
+-	SerumMarket:           "8BnEgHoWFysVcuFFX7QztDmzuH8r5ZFvyP3sYwn1XTh6",
+-	SerumBids:             "5jWUncPNBMZJ3sTHKmMLszypVkoRK6bfEQMQUHweeQnh",
+-	SerumAsks:             "EaXdHx7x3mdGA38j5RSmKYSXMzAFzzUXCHV5T73Sw8TL",
+-	SerumEventQueue:       "8CvwxZ9Db6XbLD46NZwwmVDZZRDy7eydFcAGkXKh9axa",
+-	SerumCoinVaultAccount: "CKxTHwM9fPksGqGd5AHjyGWGbzGkDYjP6ABNYRLvJ1Vz",
+-	SerumPcVaultAccount:   "PCxN9aXvxtwMYrXk8BgESw3NNkGLwpPM8c6DwByrjgN",
+-	SerumVaultSigner:      "GXWEpRURaQZ9E62Q23EreTUfBy4hfemXgWFUWcg7YFgv",
++	// Token Accounts
++	PoolCoinTokenAccount: "DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz", // ✅ Обновлено (baseVault)
++	PoolPcTokenAccount:   "HLmqeL62xR1QoZ1HKKbXRrdN1p3phKpxRMb2VVopvBBz", // ✅ Обновлено (quoteVault)
+ 
+-	// Правильный код инструкции для свапа (теперь uint8)
+-	RaydiumSwapInstructionCode: 1,
++	// Serum Market
++	SerumMarket:           "8BnEgHoWFysVcuFFX7QztDmzuH8r5ZFvyP3sYwn1XTh6", // ✅ Подтверждено
++	SerumBids:             "5jWUncPNBMZJ3sTHKmMLszypVkoRK6bfEQMQUHweeQnh", // ✅ Подтверждено
++	SerumAsks:             "EaXdHx7x3mdGA38j5RSmKYSXMzAFzzUXCLNBEDXDn1d5", // ✅ Обновлено
++	SerumEventQueue:       "8CvwxZ9Db6XbLD46NZwwmVDZZRDy7eydFcAGkXKh9axa", // ✅ Подтверждено
++	SerumCoinVaultAccount: "CKxTHwM9fPMRRvZmFnFoqKNd9pQR21c5Aq9bh5h9oghX", // ✅ Обновлено (marketBaseVault)
++	SerumPcVaultAccount:   "6A5NHCj1yF6urc9wZNe6Bcjj4LVszQNj5DwAWG97yzMu", // ✅ Обновлено (marketQuoteVault)
++	SerumVaultSigner:      "CTz5UMLQm2SRWHzQnU62Pi4yJqbNGjgRBHqqp6oDHfF7", // ✅ Обновлено (marketAuthority)
++
++	// Дополнительные параметры
++	RaydiumSwapInstructionCode: 1, // ✅ Не изменилось
+ }
 diff --git a/internal/dex/raydium/raydium.go b/internal/dex/raydium/raydium.go
-index bcd26a9..8e2c6c3 100644
+index 48baf94..c684b6e 100644
 --- a/internal/dex/raydium/raydium.go
 +++ b/internal/dex/raydium/raydium.go
-@@ -9,9 +9,12 @@ import (
- 	"math"
- 	"time"
+@@ -17,6 +17,7 @@ import (
  
-+	bin "github.com/gagliardetto/binary"
- 	"github.com/gagliardetto/solana-go"
- 	associatedtokenaccount "github.com/gagliardetto/solana-go/programs/associated-token-account"
- 	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
-+	"github.com/gagliardetto/solana-go/programs/token"
-+	solanarpc "github.com/gagliardetto/solana-go/rpc"
+ 	solanarpc "github.com/gagliardetto/solana-go/rpc"
  	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
++	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
  	"github.com/rovshanmuradov/solana-bot/internal/types"
  	"github.com/rovshanmuradov/solana-bot/internal/wallet"
-@@ -93,7 +96,7 @@ func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wal
+ 	"go.uber.org/zap"
+@@ -30,17 +31,73 @@ const (
+ 	txSendTimeout   = 15 * time.Second
+ )
+ 
++// Добавляем новые типы для работы с ценами
++type PriceValidator interface {
++	ValidatePrice(poolPrice float64) error
++	GetMaxDeviation() float64
++}
++
++// Обновляем структуру PoolState
++
++// Добавляем базовую реализацию валидатора цен
++type BasicPriceValidator struct {
++	basePrice    float64
++	maxDeviation float64
++	logger       *zap.Logger
++}
++
++func NewBasicPriceValidator(basePrice float64, maxDeviation float64, logger *zap.Logger) *BasicPriceValidator {
++	return &BasicPriceValidator{
++		basePrice:    basePrice,
++		maxDeviation: maxDeviation,
++		logger:       logger,
++	}
++}
++
++func (v *BasicPriceValidator) ValidatePrice(poolPrice float64) error {
++	if v.basePrice <= 0 {
++		// Если базовая цена не установлена, пропускаем валидацию
++		return nil
++	}
++
++	deviation := math.Abs(poolPrice-v.basePrice) / v.basePrice
++	if deviation > v.maxDeviation {
++		return fmt.Errorf("pool price deviation too high: %.2f%% (pool: %.2f, base: %.2f)",
++			deviation*100, poolPrice, v.basePrice)
++	}
++
++	return nil
++}
++
++func (v *BasicPriceValidator) GetMaxDeviation() float64 {
++	return v.maxDeviation
++}
++
++// NewDEX создает новый экземпляр DEX
+ func NewDEX(client blockchain.Client, logger *zap.Logger, poolInfo *Pool) *DEX {
+ 	if err := validateDEXParams(client, logger, poolInfo); err != nil {
+ 		logger.Error("Failed to create DEX", zap.Error(err))
+ 		return nil
  	}
  
- 	// Отправляем транзакцию
--	signature, err := r.sendTransactionWithRetry(swapCtx, userWallet, instructions, logger)
-+	signature, err := r.sendTransactionWithRetryAndConfirmation(swapCtx, userWallet, instructions, logger)
- 	if err != nil {
- 		return fmt.Errorf("failed to send swap transaction: %w", err)
- 	}
-@@ -140,91 +143,139 @@ func (r *DEX) ensureATA(
- 	ataType string,
- 	logger *zap.Logger,
- ) error {
--	account, err := r.client.GetAccountInfo(ctx, ata)
-+	logger = logger.With(
-+		zap.String("mint", mint.String()),
-+		zap.String("ata", ata.String()),
-+		zap.String("wallet", wallet.PublicKey.String()),
+-	return &DEX{
+-		client:   client,
+-		logger:   logger.Named("raydium-dex"),
+-		poolInfo: poolInfo,
++	priceValidator := NewBasicPriceValidator(
++		181.0, // Базовая цена SOL/USDC
++		0.5,   // 50% максимальное отклонение
++		logger,
 +	)
 +
-+	// Проверяем существование ATA с повторными попытками
-+	exists, err := r.checkATAExists(ctx, ata, logger)
- 	if err != nil {
- 		return fmt.Errorf("failed to check %s ATA: %w", ataType, err)
++	dex := &DEX{
++		client:         client,
++		logger:         logger.Named("raydium-dex"),
++		poolInfo:       poolInfo,
++		tokenCache:     solbc.NewTokenMetadataCache(logger),
++		priceValidator: priceValidator,
  	}
- 
--	if account.Value == nil {
--		logger.Debug("Creating ATA", zap.String("type", ataType), zap.String("address", ata.String()))
--
--		instruction := associatedtokenaccount.NewCreateInstruction(
--			wallet.PublicKey,
--			wallet.PublicKey,
--			mint,
--		).Build()
-+	if !exists {
-+		logger.Debug("Creating new ATA")
-+		// Используем правильное создание инструкции из solana-go
-+		instruction, err := r.createATAInstruction(wallet, mint)
-+		if err != nil {
-+			return fmt.Errorf("failed to create %s ATA instruction: %w", ataType, err)
-+		}
- 
--		if err := r.sendATATransaction(ctx, wallet, instruction); err != nil {
-+		// Отправляем транзакцию и ждем подтверждения
-+		signature, err := r.sendTransactionWithRetryAndConfirmation(ctx, wallet, []solana.Instruction{instruction}, logger)
-+		if err != nil {
- 			return fmt.Errorf("failed to create %s ATA: %w", ataType, err)
- 		}
- 
--		logger.Debug("ATA created successfully", zap.String("type", ataType))
-+		logger.Info("ATA created successfully",
-+			zap.String("signature", signature.String()))
 +
-+		// Ждем появления аккаунта
-+		if err := r.waitForATACreation(ctx, ata, logger); err != nil {
-+			return fmt.Errorf("failed to confirm %s ATA creation: %w", ataType, err)
-+		}
- 	}
- 
- 	return nil
++	// Инициализируем atomic.Value
++	dex.lastPoolState.Store((*PoolState)(nil))
++
++	return dex
  }
  
--// Добавляем метод sendATATransaction
--func (r *DEX) sendATATransaction(ctx context.Context, wallet *wallet.Wallet, instruction solana.Instruction) error {
--	logger := r.logger.With(
--		zap.String("wallet", wallet.PublicKey.String()),
--		zap.String("operation", "create_ata"),
-+func (r *DEX) checkATAExists(
-+	ctx context.Context,
-+	ata solana.PublicKey,
-+	logger *zap.Logger,
-+) (bool, error) {
-+	for attempt := 0; attempt < maxRetries; attempt++ {
-+		account, err := r.client.GetAccountInfo(ctx, ata)
-+		if err == nil && account.Value != nil {
-+			// Проверяем, что владелец - TokenProgram
-+			return account.Value.Owner == solana.TokenProgramID, nil
-+		}
-+
-+		if attempt < maxRetries-1 {
-+			select {
-+			case <-ctx.Done():
-+				return false, ctx.Err()
-+			case <-time.After(retryDelay):
-+				logger.Debug("Retrying ATA check", zap.Int("attempt", attempt+1))
-+			}
-+		}
-+	}
-+	return false, nil
-+}
-+
-+func (r *DEX) createATAInstruction(
-+	wallet *wallet.Wallet,
-+	mint solana.PublicKey,
-+) (solana.Instruction, error) {
-+	// Используем билдер из solana-go
-+	inst := associatedtokenaccount.NewCreateInstruction(
-+		wallet.PublicKey, // payer
-+		wallet.PublicKey, // wallet address
-+		mint,             // token mint
+ func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wallet.Wallet) error {
+@@ -57,7 +114,7 @@ func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wal
+ 	)
+ 	logger.Info("Starting swap execution")
+ 
+-	// Проверяем и получаем токен-аккаунты с таймаутом
++	// Parse token addresses
+ 	sourceMint, targetMint, err := parseTokenAddresses(task.SourceToken, task.TargetToken)
+ 	if err != nil {
+ 		return fmt.Errorf("invalid token addresses: %w", err)
+@@ -66,12 +123,13 @@ func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wal
+ 	ataCtx, ataCancel := context.WithTimeout(opCtx, ataCheckTimeout)
+ 	defer ataCancel()
+ 
++	// Setup token accounts
+ 	sourceATA, targetATA, err := r.setupTokenAccounts(ataCtx, userWallet, sourceMint, targetMint, logger)
+ 	if err != nil {
+ 		return fmt.Errorf("failed to setup token accounts: %w", err)
+ 	}
+ 
+-	// Подготавливаем amount с учетом decimals
++	// Prepare amount with decimals
+ 	amountIn := uint64(task.AmountIn * math.Pow10(task.SourceTokenDecimals))
+ 
+ 	logger.Debug("Prepared swap amount",
+@@ -80,11 +138,10 @@ func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wal
+ 		zap.Float64("slippage_value", task.SlippageConfig.Value),
  	)
  
--	var lastErr error
--	for attempt := 0; attempt < maxRetries; attempt++ {
-+	// Проводим валидацию
-+	if err := inst.Validate(); err != nil {
-+		return nil, fmt.Errorf("invalid ATA instruction: %w", err)
-+	}
-+
-+	return inst.Build(), nil
-+}
-+
-+func (r *DEX) waitForATACreation(
-+	ctx context.Context,
-+	ata solana.PublicKey,
-+	logger *zap.Logger,
-+) error {
-+	// Увеличиваем время ожидания до 2 минут
-+	deadline := time.Now().Add(2 * time.Minute)
-+	// Начальный интервал проверки
-+	ticker := time.NewTicker(2 * time.Second)
-+	defer ticker.Stop()
-+
-+	retryCount := 0
-+	maxRetries := 60 // Максимальное количество попыток
-+
-+	for {
-+		if time.Now().After(deadline) {
-+			return fmt.Errorf("timeout waiting for ATA creation after 2 minutes")
-+		}
-+
-+		if retryCount >= maxRetries {
-+			return fmt.Errorf("exceeded maximum retry attempts (%d) waiting for ATA creation", maxRetries)
-+		}
-+
- 		select {
- 		case <-ctx.Done():
- 			return ctx.Err()
--		default:
--			recent, err := r.client.GetRecentBlockhash(ctx)
-+		case <-ticker.C:
-+			account, err := r.client.GetAccountInfo(ctx, ata)
- 			if err != nil {
--				lastErr = fmt.Errorf("failed to get recent blockhash: %w", err)
-+				logger.Debug("ATA verification attempt failed",
-+					zap.Error(err),
-+					zap.Int("retry", retryCount),
-+					zap.Time("deadline", deadline))
-+				retryCount++
- 				continue
- 			}
+-	// Создаем инструкции с таймаутом
+ 	swapCtx, swapCancel := context.WithTimeout(opCtx, txSendTimeout)
+ 	defer swapCancel()
  
--			tx, err := solana.NewTransaction(
--				[]solana.Instruction{instruction},
--				recent,
--				solana.TransactionPayer(wallet.PublicKey),
--			)
--			if err != nil {
--				lastErr = fmt.Errorf("failed to create ATA transaction: %w", err)
--				continue
--			}
--
--			_, err = tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
--				if key.Equals(wallet.PublicKey) {
--					return &wallet.PrivateKey
--				}
-+			if account.Value != nil && account.Value.Owner == solana.TokenProgramID {
-+				logger.Info("ATA creation confirmed",
-+					zap.String("ata", ata.String()),
-+					zap.Int("retries", retryCount))
- 				return nil
--			})
--			if err != nil {
--				lastErr = fmt.Errorf("failed to sign ATA transaction: %w", err)
--				continue
- 			}
- 
--			sig, err := r.client.SendTransaction(ctx, tx)
--			if err != nil {
--				lastErr = err
--				logger.Warn("Failed to send ATA transaction, retrying",
--					zap.Int("attempt", attempt+1),
--					zap.Error(err))
--				time.Sleep(retryDelay)
--				continue
--			}
--
--			logger.Debug("ATA transaction sent successfully",
--				zap.String("signature", sig.String()))
--			return nil
-+			logger.Debug("ATA not ready yet",
-+				zap.String("ata", ata.String()),
-+				zap.Int("retry", retryCount))
-+			retryCount++
- 		}
+-	// Подготавливаем все необходимые инструкции
++	// Prepare swap instructions
+ 	instructions, err := r.PrepareSwapInstructions(
+ 		swapCtx,
+ 		userWallet.PublicKey,
+@@ -98,7 +155,7 @@ func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wal
+ 		return fmt.Errorf("failed to prepare swap instructions: %w", err)
  	}
--
--	return fmt.Errorf("failed to send ATA transaction after %d attempts: %w", maxRetries, lastErr)
+ 
+-	// Отправляем транзакцию
++	// Send transaction
+ 	signature, err := r.sendTransactionWithRetryAndConfirmation(swapCtx, userWallet, instructions, logger)
+ 	if err != nil {
+ 		return fmt.Errorf("failed to send swap transaction: %w", err)
+@@ -555,7 +612,7 @@ func parseTokenAddresses(sourceToken, targetToken string) (solana.PublicKey, sol
+ 	return sourceMint, targetMint, nil
  }
  
--// internal/dex/raydium/raydium.go
--
- // PrepareSwapInstructions объединяет все инструкции для свапа
- func (r *DEX) PrepareSwapInstructions(
+-// getExpectedOutput вычисляет ожидаемый выход для свапа
++// getExpectedOutput calculates the expected output for the swap
+ func (r *DEX) getExpectedOutput(
  	ctx context.Context,
-@@ -343,24 +394,19 @@ func (r *DEX) getMintFromATA(ctx context.Context, ata solana.PublicKey) (solana.
- 		return solana.PublicKey{}, fmt.Errorf("failed to get ATA info: %w", err)
- 	}
- 
--	if account.Value == nil || len(account.Value.Data.GetBinary()) < 32 {
-+	if account.Value == nil || len(account.Value.Data.GetBinary()) < 64 {
- 		return solana.PublicKey{}, fmt.Errorf("invalid ATA account data")
- 	}
- 
--	data := account.Value.Data.GetBinary()[:32]
--	if len(data) != 32 {
--		return solana.PublicKey{}, fmt.Errorf("invalid public key length: expected 32 bytes, got %d", len(data))
-+	var tokenAccount token.Account
-+	if err := bin.NewBinDecoder(account.Value.Data.GetBinary()).Decode(&tokenAccount); err != nil {
-+		return solana.PublicKey{}, fmt.Errorf("failed to decode ATA data: %w", err)
- 	}
- 
--	pubkey := solana.PublicKeyFromBytes(data)
--	if pubkey.IsZero() {
--		return solana.PublicKey{}, fmt.Errorf("invalid zero public key")
--	}
--
--	return pubkey, nil
-+	return tokenAccount.Mint, nil
- }
- 
--func (r *DEX) sendTransactionWithRetry(
-+func (r *DEX) sendTransactionWithRetryAndConfirmation(
- 	ctx context.Context,
- 	wallet *wallet.Wallet,
- 	instructions []solana.Instruction,
-@@ -373,14 +419,44 @@ func (r *DEX) sendTransactionWithRetry(
- 			return solana.Signature{}, ctx.Err()
- 		default:
- 			signature, err := r.sendTransaction(ctx, wallet, instructions)
--			if err == nil {
--				return signature, nil
-+			if err != nil {
-+				lastErr = err
-+				logger.Warn("Retrying transaction send",
-+					zap.Int("attempt", attempt+1),
-+					zap.Error(err))
-+				time.Sleep(retryDelay)
-+				continue
-+			}
-+
-+			// Ждем подтверждения транзакции
-+			logger.Debug("Waiting for transaction confirmation",
-+				zap.String("signature", signature.String()))
-+
-+			// Ждем подтверждения с таймаутом
-+			confirmCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-+			defer cancel()
-+
-+			for {
-+				select {
-+				case <-confirmCtx.Done():
-+					return signature, fmt.Errorf("timeout waiting for transaction confirmation")
-+				case <-time.After(time.Second):
-+					// Проверяем статус транзакции
-+					status, err := r.getTransactionStatus(ctx, signature)
-+					if err != nil {
-+						logger.Debug("Failed to get transaction status", zap.Error(err))
-+						continue
-+					}
-+
-+					// Проверяем подтверждение
-+					if status.Confirmations >= 1 || status.Status == "finalized" {
-+						logger.Debug("Transaction confirmed",
-+							zap.String("status", status.Status),
-+							zap.Uint64("confirmations", status.Confirmations))
-+						return signature, nil
-+					}
-+				}
- 			}
--			lastErr = err
--			logger.Warn("Retrying transaction send",
--				zap.Int("attempt", attempt+1),
--				zap.Error(err))
--			time.Sleep(retryDelay)
- 		}
- 	}
- 	return solana.Signature{}, fmt.Errorf("failed after %d attempts: %w", maxRetries, lastErr)
-@@ -452,7 +528,7 @@ func (r *DEX) getExpectedOutput(
+ 	amountIn uint64,
+@@ -563,52 +620,84 @@ func (r *DEX) getExpectedOutput(
  	poolInfo *Pool,
  	logger *zap.Logger,
  ) (float64, error) {
--	// Создаем контекст с таймаутом
-+	// Создаем контекст с тайм-аутом
- 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
- 	defer cancel()
+-	// Создаем контекст с тайм-аутом
+-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+-	defer cancel()
+-
+-	logger = logger.With(
+-		zap.String("source_token", sourceToken.String()),
+-		zap.String("target_token", targetToken.String()),
+-		zap.Uint64("amount_in", amountIn),
+-	)
+-
+-	// Получаем состояние пула
++	// Get pool state
+ 	poolState, err := r.getPoolState(ctx, poolInfo)
+ 	if err != nil {
+ 		return 0, fmt.Errorf("failed to get pool state: %w", err)
+ 	}
  
-@@ -557,3 +633,50 @@ func (r *DEX) GetAmountOutQuote(
+-	logger.Debug("Pool state retrieved",
+-		zap.Uint64("token_a_reserve", poolState.TokenAReserve),
+-		zap.Uint64("token_b_reserve", poolState.TokenBReserve),
+-		zap.Float64("swap_fee", poolState.SwapFee))
++	// Get decimals for tokens
++	sourceMetadata, err := r.tokenCache.GetTokenMetadata(ctx, r.client, sourceToken)
++	if err != nil {
++		return 0, fmt.Errorf("failed to get source token metadata: %w", err)
++	}
+ 
+-	// Вычисляем ожидаемый выход с учетом всех факторов
+-	expectedOut := r.calculateExpectedOutput(amountIn, poolState)
++	targetMetadata, err := r.tokenCache.GetTokenMetadata(ctx, r.client, targetToken)
++	if err != nil {
++		return 0, fmt.Errorf("failed to get target token metadata: %w", err)
++	}
+ 
+-	logger.Debug("Expected output calculated",
+-		zap.Float64("expected_out", expectedOut))
++	// Calculate expected output
++	expectedOut := r.calculateExpectedOutput(
++		amountIn,
++		int(sourceMetadata.Decimals),
++		int(targetMetadata.Decimals),
++		poolState,
++	)
++
++	// Validate calculated price against market price
++	marketPrice := 181.0 // Use current market price of SOL in USDC
++	err = validateSwapAmount(expectedOut, marketPrice, amountIn,
++		int(sourceMetadata.Decimals),
++		int(targetMetadata.Decimals))
++	if err != nil {
++		return 0, fmt.Errorf("swap amount validation failed: %w", err)
++	}
  
  	return expectedOut, nil
  }
-+
-+// TransactionStatus представляет статус транзакции
-+type TransactionStatus struct {
-+	Status        string
-+	Confirmations uint64
-+	Error         interface{}
-+	Slot          uint64
+ 
+-// Определяем смещения для чтения данных пула Raydium
++// getPoolState gets the current state of the pool
++// Скорректированные смещения для Raydium v4 пула
+ const (
+-	// Смещения в байтах для различных полей в структуре пула
+ 	DISCRIMINATOR_SIZE = 8
+ 	STATUS_SIZE        = 1
+ 	NONCE_SIZE         = 1
+-	BASE_SIZE          = DISCRIMINATOR_SIZE + STATUS_SIZE + NONCE_SIZE // 10 байт
++	BASE_SIZE          = DISCRIMINATOR_SIZE + STATUS_SIZE + NONCE_SIZE // 10 bytes
+ 
+-	// Смещения для резервов
+-	baseVaultOffset    = BASE_SIZE + 32 + 32 + 32 // После discriminator, status, nonce и трех pubkeys
+-	quoteVaultOffset   = baseVaultOffset + 32
+-	baseReserveOffset  = quoteVaultOffset + 32 + 8 // +8 для uint64
+-	quoteReserveOffset = baseReserveOffset + 8
++	// Новые смещения (в байтах)
++	baseVaultOffset    = BASE_SIZE + 96       // После discriminator + статуса + nonce + 3 pubkeys
++	quoteVaultOffset   = baseVaultOffset + 40 // После base vault + доп. данные
++	baseReserveOffset  = 178                  // Фиксированное смещение для базового резерва
++	quoteReserveOffset = 186                  // Фиксированное смещение для quote резерва
+ )
+ 
+-// getPoolState получает текущее состояние пула
++// Добавляем новые типы для работы с ценами
++type PriceSource interface {
++	GetCurrentPrice(ctx context.Context, base, quote solana.PublicKey) (float64, error)
 +}
 +
-+// getConfirmations получает количество подтверждений из результата статуса
-+func getConfirmations(status *solanarpc.SignatureStatusesResult) uint64 {
-+	if status == nil {
-+		return 0
++type PoolPriceValidator struct {
++	priceSource  PriceSource
++	maxDeviation float64
++	logger       *zap.Logger
++}
++
++func NewPoolPriceValidator(priceSource PriceSource, logger *zap.Logger) *PoolPriceValidator {
++	return &PoolPriceValidator{
++		priceSource:  priceSource,
++		maxDeviation: 0.5, // 50% максимальное отклонение
++		logger:       logger,
++	}
++}
++
++// Добавляем метод для обновления валидатора цен
++func (r *DEX) SetPriceValidator(validator PriceValidator) {
++	r.priceValidator = validator
++}
++
++// internal/dex/raydium/raydium.go
++
+ func (r *DEX) getPoolState(ctx context.Context, poolInfo *Pool) (*PoolState, error) {
+ 	poolAccount, err := r.client.GetAccountInfo(ctx, solana.MustPublicKeyFromBase58(poolInfo.AmmID))
+ 	if err != nil {
+@@ -621,7 +710,6 @@ func (r *DEX) getPoolState(ctx context.Context, poolInfo *Pool) (*PoolState, err
+ 
+ 	data := poolAccount.Value.Data.GetBinary()
+ 
+-	// Debug полных данных
+ 	r.logger.Debug("Full pool data",
+ 		zap.Binary("data", data),
+ 		zap.Int("length", len(data)))
+@@ -635,41 +723,128 @@ func (r *DEX) getPoolState(ctx context.Context, poolInfo *Pool) (*PoolState, err
+ 	baseReserve := binary.LittleEndian.Uint64(data[baseReserveOffset : baseReserveOffset+8])
+ 	quoteReserve := binary.LittleEndian.Uint64(data[quoteReserveOffset : quoteReserveOffset+8])
+ 
+-	r.logger.Debug("Pool reserves offsets",
+-		zap.Int("base_offset", baseReserveOffset),
+-		zap.Int("quote_offset", quoteReserveOffset))
++	r.logger.Debug("Raw reserves",
++		zap.Uint64("base_reserve_raw", baseReserve),
++		zap.Uint64("quote_reserve_raw", quoteReserve))
+ 
+-	r.logger.Debug("Pool reserves raw bytes",
+-		zap.Binary("base_bytes", data[baseReserveOffset:baseReserveOffset+8]),
+-		zap.Binary("quote_bytes", data[quoteReserveOffset:quoteReserveOffset+8]))
++	// Проверяем резервы
++	if baseReserve == 0 || quoteReserve == 0 {
++		return nil, fmt.Errorf("invalid pool reserves: base=%d, quote=%d",
++			baseReserve, quoteReserve)
 +	}
 +
-+	if status.Confirmations == nil {
-+		if status.ConfirmationStatus == solanarpc.ConfirmationStatusFinalized {
-+			return math.MaxUint64 // Максимальное значение для финализированных транзакций
++	// Нормализуем значения с учетом decimals
++	solAmount := float64(baseReserve) / 1e9   // 9 decimals для SOL
++	usdcAmount := float64(quoteReserve) / 1e6 // 6 decimals для USDC
++
++	poolPrice := usdcAmount / solAmount
++	r.logger.Debug("Pool price calculated",
++		zap.Float64("pool_price", poolPrice),
++		zap.Float64("sol_amount", solAmount),
++		zap.Float64("usdc_amount", usdcAmount))
++
++	// Проверяем цену через валидатор
++	if r.priceValidator != nil {
++		if err := r.priceValidator.ValidatePrice(poolPrice); err != nil {
++			return nil, fmt.Errorf("pool price validation failed: %w", err)
 +		}
-+		return 0
 +	}
-+	return *status.Confirmations
+ 
+-	return &PoolState{
++	state := &PoolState{
+ 		TokenAReserve: baseReserve,
+ 		TokenBReserve: quoteReserve,
+ 		SwapFee:       0.25,
+-	}, nil
++		CurrentPrice:  poolPrice,
++	}
++
++	// Сохраняем новое состояние
++	r.UpdatePoolState(state)
++
++	return state, nil
 +}
 +
-+// getTransactionStatus получает полный статус транзакции
-+func (r *DEX) getTransactionStatus(ctx context.Context, signature solana.Signature) (*TransactionStatus, error) {
-+	result, err := r.client.GetSignatureStatuses(ctx, signature)
-+	if err != nil {
-+		return nil, fmt.Errorf("failed to get signature status: %w", err)
++// Добавляем вспомогательные методы для работы с ценами
++// GetCurrentPoolPrice возвращает текущую цену пула
++func (r *DEX) GetCurrentPoolPrice() float64 {
++	if state := r.lastPoolState.Load().(*PoolState); state != nil {
++		return state.CurrentPrice
 +	}
-+
-+	if result == nil || len(result.Value) == 0 || result.Value[0] == nil {
-+		return &TransactionStatus{
-+			Status: "pending",
-+		}, nil
-+	}
-+
-+	status := result.Value[0]
-+	confirmations := getConfirmations(status)
-+
-+	return &TransactionStatus{
-+		Status:        string(status.ConfirmationStatus),
-+		Confirmations: confirmations,
-+		Error:         status.Err,
-+		Slot:          status.Slot,
-+	}, nil
++	return 0
 +}
++
++func (r *DEX) SetMaxPriceDeviation(deviation float64) {
++	if r.priceValidator != nil {
++		if basicValidator, ok := r.priceValidator.(*BasicPriceValidator); ok {
++			basicValidator.maxDeviation = deviation
++		}
++	}
++}
++
++func (r *DEX) UpdateBasePrice(price float64) {
++	if r.priceValidator != nil {
++		if basicValidator, ok := r.priceValidator.(*BasicPriceValidator); ok {
++			basicValidator.basePrice = price
++		}
++	}
+ }
+ 
+ // calculateExpectedOutput вычисляет ожидаемый выход на основе состояния пула
+-func (r *DEX) calculateExpectedOutput(amountIn uint64, state *PoolState) float64 {
+-	// Конвертируем все в float64 для точных вычислений
+-	amountInF := float64(amountIn)
+-	reserveInF := float64(state.TokenAReserve)
+-	reserveOutF := float64(state.TokenBReserve)
++// calculateExpectedOutput computes the expected output based on the pool state
++func (r *DEX) calculateExpectedOutput(
++	amountIn uint64,
++	sourceDec,
++	targetDec int,
++	state *PoolState,
++) float64 {
++	logger := r.logger.With(
++		zap.Uint64("amount_in_raw", amountIn),
++		zap.Int("source_decimals", sourceDec),
++		zap.Int("target_decimals", targetDec),
++	)
++
++	// Normalize input amount
++	amountInF := float64(amountIn) / math.Pow10(sourceDec)
++	logger.Debug("Normalized input amount",
++		zap.Float64("amount_in_normalized", amountInF))
++
++	// Get normalized reserves
++	reserveIn := float64(state.TokenAReserve) / math.Pow10(sourceDec)
++	reserveOut := float64(state.TokenBReserve) / math.Pow10(targetDec)
++	logger.Debug("Normalized reserves",
++		zap.Float64("reserve_in_normalized", reserveIn),
++		zap.Float64("reserve_out_normalized", reserveOut))
++
++	// Calculate output using constant product formula
++	amountOut := (amountInF * reserveOut * (1 - state.SwapFee/100)) / (reserveIn + amountInF*(1-state.SwapFee/100))
++	logger.Debug("Calculated amount out",
++		zap.Float64("amount_out", amountOut))
++
++	// Convert back to lamports
++	finalOutput := amountOut * math.Pow10(targetDec)
++	logger.Debug("Final output in lamports",
++		zap.Float64("final_output_lamports", finalOutput))
++
++	return finalOutput
++}
+ 
+-	// Учитываем комиссию (0.25%)
+-	amountInWithFee := amountInF * (1 - state.SwapFee/100)
++func validateSwapAmount(expectedOut float64, currentPrice float64, amountIn uint64, sourceDec, targetDec int) error {
++	// Normalize values
++	realAmountIn := float64(amountIn) / math.Pow10(sourceDec)
++	realExpectedOut := expectedOut / math.Pow10(targetDec)
+ 
+-	// Используем формулу Raydium: dy = y * dx / (x + dx)
+-	// где dx - входная сумма с учетом комиссии
+-	// x, y - резервы токенов
+-	numerator := reserveOutF * amountInWithFee
+-	denominator := reserveInF + amountInWithFee
++	// Calculate the swap price
++	calculatedPrice := realExpectedOut / realAmountIn
+ 
+-	expectedOut := numerator / denominator
++	// Calculate price difference percentage
++	priceDiff := math.Abs(calculatedPrice-currentPrice) / currentPrice
+ 
+-	// Применяем дополнительный запас надежности 0.5%
+-	return expectedOut * 0.995
++	// Allow up to 20% difference
++	if priceDiff > 0.2 {
++		return fmt.Errorf("calculated price differs too much from current price: %.2f vs %.2f",
++			calculatedPrice, currentPrice)
++	}
++
++	return nil
+ }
+ 
+ // GetAmountOutQuote получает котировку для свапа
+@@ -750,5 +925,3 @@ func (r *DEX) getTransactionStatus(ctx context.Context, signature solana.Signatu
+ func (r *DEX) GetSignatureStatus(ctx context.Context, signature solana.Signature) (*solanarpc.GetSignatureStatusesResult, error) {
+ 	return r.client.GetSignatureStatuses(ctx, signature)
+ }
+-
+-// Удалены неиспользуемые функции getConfirmations и waitForTransactionConfirmation
 diff --git a/internal/dex/raydium/transaction.go b/internal/dex/raydium/transaction.go
-index 85d91eb..cf37967 100644
+index 2063598..61d78a0 100644
 --- a/internal/dex/raydium/transaction.go
 +++ b/internal/dex/raydium/transaction.go
-@@ -1,10 +1,10 @@
+@@ -1,3 +1,5 @@
++// internal/dex/raydium/transaction.go
++
  package raydium
  
  import (
--	"bytes"
- 	"context"
+@@ -5,16 +7,15 @@ import (
  	"encoding/binary"
  	"fmt"
-+	"testing"
+ 	"math"
+-	"testing"
  
  	"github.com/gagliardetto/solana-go"
++	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
  	"github.com/rovshanmuradov/solana-bot/internal/types"
-@@ -13,23 +13,71 @@ import (
+ 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
+-	"github.com/sirupsen/logrus"
+ 	"go.uber.org/zap"
  )
  
- // Serialize сериализует данные инструкции свапа
--// Метод Serialize нужно обновить для корректной работы с uint8
+-// Serialize сериализует данные инструкции свапа
++// Serialize serializes the swap instruction data
  func (s *SwapInstructionData) Serialize() ([]byte, error) {
--	buf := new(bytes.Buffer)
-+	data := make([]byte, 17)
- 
--	// Записываем Instruction как uint8
--	if err := buf.WriteByte(s.Instruction); err != nil {
--		return nil, fmt.Errorf("failed to serialize instruction: %w", err)
-+	// Instruction (1 byte)
-+	data[0] = s.Instruction
-+
-+	// AmountIn (8 bytes)
-+	binary.LittleEndian.PutUint64(data[1:9], s.AmountIn)
-+
-+	// MinAmountOut (8 bytes)
-+	binary.LittleEndian.PutUint64(data[9:17], s.MinAmountOut)
-+
-+	return data, nil
-+}
-+
-+// TestSwapInstructionDataSerialization тест для проверки сериализации
-+func TestSwapInstructionDataSerialization(t *testing.T) {
-+	inst := &SwapInstructionData{
-+		Instruction:  1,
-+		AmountIn:     20000000,
-+		MinAmountOut: 6,
- 	}
- 
--	// Записываем AmountIn и MinAmountOut как uint64
--	for _, v := range []uint64{s.AmountIn, s.MinAmountOut} {
--		if err := binary.Write(buf, binary.LittleEndian, v); err != nil {
--			return nil, fmt.Errorf("failed to serialize value: %w", err)
--		}
-+	data, err := inst.Serialize()
-+	if err != nil {
-+		t.Fatalf("Failed to serialize: %v", err)
- 	}
- 
--	return buf.Bytes(), nil
-+	// Проверяем instruction code
-+	if data[0] != 1 {
-+		t.Errorf("Expected instruction 1, got %d", data[0])
-+	}
-+
-+	// Проверяем amountIn
-+	gotAmountIn := binary.LittleEndian.Uint64(data[1:9])
-+	if gotAmountIn != 20000000 {
-+		t.Errorf("Expected amountIn 20000000, got %d", gotAmountIn)
-+	}
-+
-+	// Проверяем minAmountOut
-+	gotMinAmountOut := binary.LittleEndian.Uint64(data[9:17])
-+	if gotMinAmountOut != 6 {
-+		t.Errorf("Expected minAmountOut 6, got %d", gotMinAmountOut)
-+	}
-+}
-+
-+// Debug выводит шестнадцатеричное представление данных
-+func (s *SwapInstructionData) Debug(logger *zap.Logger) {
-+	data, err := s.Serialize()
-+	if err != nil {
-+		logger.Error("Failed to serialize for debug", zap.Error(err))
-+		return
-+	}
-+
-+	// Проверяем данные
-+	amountIn := binary.LittleEndian.Uint64(data[1:9])
-+	minAmountOut := binary.LittleEndian.Uint64(data[9:17])
-+
-+	logger.Debug("Instruction data debug",
-+		zap.Uint8("instruction", data[0]),
-+		zap.Uint64("amount_in_original", s.AmountIn),
-+		zap.Uint64("amount_in_serialized", amountIn),
-+		zap.Uint64("min_amount_out_original", s.MinAmountOut),
-+		zap.Uint64("min_amount_out_serialized", minAmountOut),
-+		zap.Binary("raw_data", data))
+ 	if err := s.Validate(); err != nil {
+ 		return nil, err
+@@ -34,6 +35,7 @@ func (s *SwapInstructionData) Serialize() ([]byte, error) {
+ 	return data, nil
  }
  
- // validatePublicKey проверяет корректность публичного ключа
-@@ -74,91 +122,125 @@ func (r *DEX) CreateSwapInstruction(
++// Validate validates the swap instruction data
+ func (s *SwapInstructionData) Validate() error {
+ 	if s.Instruction != 1 {
+ 		return fmt.Errorf("invalid instruction type: expected 1, got %d", s.Instruction)
+@@ -43,99 +45,15 @@ func (s *SwapInstructionData) Validate() error {
+ 		return fmt.Errorf("amount_in cannot be zero")
+ 	}
+ 
+-	// MinimumOut может быть 0, но логируем это как предупреждение
++	// MinimumOut can be zero, but log a warning
+ 	if s.MinAmountOut == 0 {
+-		logrus.Warn("minimum_out is set to zero, this may result in high slippage")
++		// You may want to log a warning here
+ 	}
+ 
+ 	return nil
+ }
+ 
+-// Обновляем вычисление минимального выхода
+-func calculateMinimumOut(expectedOut float64, slippagePercent float64) uint64 {
+-	if expectedOut <= 0 {
+-		return 1 // Минимальное безопасное значение
+-	}
+-
+-	// Учитываем слиппаж
+-	minOut := expectedOut * (1 - slippagePercent/100)
+-
+-	// Конвертируем в uint64 и проверяем на минимальное значение
+-	result := uint64(math.Floor(minOut))
+-	if result == 0 {
+-		return 1
+-	}
+-
+-	return result
+-}
+-
+-// TestSwapInstructionDataSerialization тест для проверки сериализации
+-func TestSwapInstructionDataSerialization(t *testing.T) {
+-	inst := &SwapInstructionData{
+-		Instruction:  1,
+-		AmountIn:     20000000,
+-		MinAmountOut: 6,
+-	}
+-
+-	data, err := inst.Serialize()
+-	if err != nil {
+-		t.Fatalf("Failed to serialize: %v", err)
+-	}
+-
+-	// Проверяем instruction code
+-	if data[0] != 1 {
+-		t.Errorf("Expected instruction 1, got %d", data[0])
+-	}
+-
+-	// Проверяем amountIn
+-	gotAmountIn := binary.LittleEndian.Uint64(data[1:9])
+-	if gotAmountIn != 20000000 {
+-		t.Errorf("Expected amountIn 20000000, got %d", gotAmountIn)
+-	}
+-
+-	// Проверяем minAmountOut
+-	gotMinAmountOut := binary.LittleEndian.Uint64(data[9:17])
+-	if gotMinAmountOut != 6 {
+-		t.Errorf("Expected minAmountOut 6, got %d", gotMinAmountOut)
+-	}
+-}
+-
+-// Debug выводит шестнадцатеричное представление данных
+-func (s *SwapInstructionData) Debug(logger *zap.Logger) {
+-	data, err := s.Serialize()
+-	if err != nil {
+-		logger.Error("Failed to serialize for debug", zap.Error(err))
+-		return
+-	}
+-
+-	// Проверяем данные
+-	amountIn := binary.LittleEndian.Uint64(data[1:9])
+-	minAmountOut := binary.LittleEndian.Uint64(data[9:17])
+-
+-	logger.Debug("Instruction data debug",
+-		zap.Uint8("instruction", data[0]),
+-		zap.Uint64("amount_in_original", s.AmountIn),
+-		zap.Uint64("amount_in_serialized", amountIn),
+-		zap.Uint64("min_amount_out_original", s.MinAmountOut),
+-		zap.Uint64("min_amount_out_serialized", minAmountOut),
+-		zap.Binary("raw_data", data))
+-}
+-
+-// validatePublicKey проверяет корректность публичного ключа
+-func validatePublicKey(key string) (solana.PublicKey, error) {
+-	if key == "" {
+-		return solana.PublicKey{}, fmt.Errorf("empty public key")
+-	}
+-
+-	pubKey, err := solana.PublicKeyFromBase58(key)
+-	if err != nil {
+-		return solana.PublicKey{}, fmt.Errorf("invalid public key %s: %w", key, err)
+-	}
+-
+-	return pubKey, nil
+-}
+-
+-// CreateSwapInstruction создает инструкцию свапа для Raydium
++// CreateSwapInstruction creates a swap instruction for Raydium
+ func (r *DEX) CreateSwapInstruction(
+ 	userWallet solana.PublicKey,
+ 	userSourceTokenAccount solana.PublicKey,
+@@ -156,14 +74,14 @@ func (r *DEX) CreateSwapInstruction(
+ 		return nil, fmt.Errorf("pool info is nil")
+ 	}
+ 
+-	// Проверяем и конвертируем все необходимые публичные ключи
++	// Validate and parse all necessary public keys
+ 	ammProgramID, err := validatePublicKey(poolInfo.AmmProgramID)
+ 	if err != nil {
+ 		logger.Error("Invalid AmmProgramID", zap.Error(err))
  		return nil, fmt.Errorf("invalid AmmProgramID: %w", err)
  	}
  
--	ammID, err := validatePublicKey(poolInfo.AmmID)
--	if err != nil {
--		logger.Error("Invalid AmmID", zap.Error(err))
--		return nil, fmt.Errorf("invalid AmmID: %w", err)
--	}
+-	// Проверяем и создаем все необходимые аккаунты
++	// Map of required accounts with their names
+ 	requiredAccounts := map[string]string{
+ 		"AmmID":                poolInfo.AmmID,
+ 		"AmmAuthority":         poolInfo.AmmAuthority,
+@@ -193,56 +111,42 @@ func (r *DEX) CreateSwapInstruction(
+ 		accounts[name] = pubKey
+ 	}
+ 
+-	// Создаем слайс аккаунтов в правильном порядке для Raydium
+-	metas := make(solana.AccountMetaSlice, 0, 20)
 -
--	// Создаем массив для всех аккаунтов, которые нужно проверить
--	accountChecks := []struct {
--		name    string
--		address string
--	}{
--		{"AmmAuthority", poolInfo.AmmAuthority},
--		{"AmmOpenOrders", poolInfo.AmmOpenOrders},
--		{"AmmTargetOrders", poolInfo.AmmTargetOrders},
--		{"PoolCoinTokenAccount", poolInfo.PoolCoinTokenAccount},
--		{"PoolPcTokenAccount", poolInfo.PoolPcTokenAccount},
--		{"SerumProgramID", poolInfo.SerumProgramID},
--		{"SerumMarket", poolInfo.SerumMarket},
--		{"SerumBids", poolInfo.SerumBids},
--		{"SerumAsks", poolInfo.SerumAsks},
--		{"SerumEventQueue", poolInfo.SerumEventQueue},
--		{"SerumCoinVaultAccount", poolInfo.SerumCoinVaultAccount},
--		{"SerumPcVaultAccount", poolInfo.SerumPcVaultAccount},
--		{"SerumVaultSigner", poolInfo.SerumVaultSigner},
--	}
+-	// Токен аккаунты пользователя
+-	metas = append(metas,
+-		&solana.AccountMeta{PublicKey: userSourceTokenAccount, IsSigner: false, IsWritable: true},
+-		&solana.AccountMeta{PublicKey: userDestinationTokenAccount, IsSigner: false, IsWritable: true},
+-	)
 -
--	// Создаем слайс для аккаунтов с предварительно выделенной памятью
--	accounts := make([]*solana.AccountMeta, 0, len(accountChecks)+7) // +7 для базовых аккаунтов
+-	// Аккаунты AMM
+-	metas = append(metas,
+-		&solana.AccountMeta{PublicKey: accounts["AmmID"], IsSigner: false, IsWritable: true},
+-		&solana.AccountMeta{PublicKey: accounts["AmmAuthority"], IsSigner: false, IsWritable: false},
+-		&solana.AccountMeta{PublicKey: accounts["AmmOpenOrders"], IsSigner: false, IsWritable: true},
+-		&solana.AccountMeta{PublicKey: accounts["AmmTargetOrders"], IsSigner: false, IsWritable: true},
+-		&solana.AccountMeta{PublicKey: accounts["PoolCoinTokenAccount"], IsSigner: false, IsWritable: true},
+-		&solana.AccountMeta{PublicKey: accounts["PoolPcTokenAccount"], IsSigner: false, IsWritable: true},
+-	)
 -
--	// Добавляем базовые аккаунты
--	accounts = append(accounts, []*solana.AccountMeta{
--		{PublicKey: userSourceTokenAccount, IsSigner: false, IsWritable: true},
--		{PublicKey: userDestinationTokenAccount, IsSigner: false, IsWritable: true},
--		{PublicKey: ammID, IsSigner: false, IsWritable: true},
--	}...)
+-	// Аккаунты Serum
+-	metas = append(metas,
+-		&solana.AccountMeta{PublicKey: accounts["SerumProgramID"], IsSigner: false, IsWritable: false},
+-		&solana.AccountMeta{PublicKey: accounts["SerumMarket"], IsSigner: false, IsWritable: true},
+-		&solana.AccountMeta{PublicKey: accounts["SerumBids"], IsSigner: false, IsWritable: true},
+-		&solana.AccountMeta{PublicKey: accounts["SerumAsks"], IsSigner: false, IsWritable: true},
+-		&solana.AccountMeta{PublicKey: accounts["SerumEventQueue"], IsSigner: false, IsWritable: true},
+-		&solana.AccountMeta{PublicKey: accounts["SerumCoinVault"], IsSigner: false, IsWritable: true},
+-		&solana.AccountMeta{PublicKey: accounts["SerumPcVault"], IsSigner: false, IsWritable: true},
+-		&solana.AccountMeta{PublicKey: accounts["SerumVaultSigner"], IsSigner: false, IsWritable: false},
+-	)
 -
--	// Проверяем и добавляем остальные аккаунты
--	for _, check := range accountChecks {
--		pubKey, err := validatePublicKey(check.address)
-+	// Проверяем и создаем все необходимые аккаунты
-+	requiredAccounts := map[string]string{
-+		"AmmID":                poolInfo.AmmID,
-+		"AmmAuthority":         poolInfo.AmmAuthority,
-+		"AmmOpenOrders":        poolInfo.AmmOpenOrders,
-+		"AmmTargetOrders":      poolInfo.AmmTargetOrders,
-+		"PoolCoinTokenAccount": poolInfo.PoolCoinTokenAccount,
-+		"PoolPcTokenAccount":   poolInfo.PoolPcTokenAccount,
-+		"SerumProgramID":       poolInfo.SerumProgramID,
-+		"SerumMarket":          poolInfo.SerumMarket,
-+		"SerumBids":            poolInfo.SerumBids,
-+		"SerumAsks":            poolInfo.SerumAsks,
-+		"SerumEventQueue":      poolInfo.SerumEventQueue,
-+		"SerumCoinVault":       poolInfo.SerumCoinVaultAccount,
-+		"SerumPcVault":         poolInfo.SerumPcVaultAccount,
-+		"SerumVaultSigner":     poolInfo.SerumVaultSigner,
+-	// Системные аккаунты
+-	metas = append(metas,
+-		&solana.AccountMeta{PublicKey: userWallet, IsSigner: true, IsWritable: false},
+-		&solana.AccountMeta{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
+-		&solana.AccountMeta{PublicKey: solana.SysVarRentPubkey, IsSigner: false, IsWritable: false},
+-		&solana.AccountMeta{PublicKey: solana.SysVarClockPubkey, IsSigner: false, IsWritable: false},
+-	)
++	// Create the account meta slice in the correct order
++	metas := solana.AccountMetaSlice{
++		// User accounts
++		{PublicKey: userWallet, IsSigner: true, IsWritable: false},
++		{PublicKey: userSourceTokenAccount, IsSigner: false, IsWritable: true},
++		{PublicKey: userDestinationTokenAccount, IsSigner: false, IsWritable: true},
++		// Pool accounts
++		{PublicKey: accounts["AmmID"], IsSigner: false, IsWritable: true},
++		{PublicKey: accounts["AmmAuthority"], IsSigner: false, IsWritable: false},
++		{PublicKey: accounts["AmmOpenOrders"], IsSigner: false, IsWritable: true},
++		{PublicKey: accounts["AmmTargetOrders"], IsSigner: false, IsWritable: true},
++		{PublicKey: accounts["PoolCoinTokenAccount"], IsSigner: false, IsWritable: true},
++		{PublicKey: accounts["PoolPcTokenAccount"], IsSigner: false, IsWritable: true},
++		// Serum accounts
++		{PublicKey: accounts["SerumProgramID"], IsSigner: false, IsWritable: false},
++		{PublicKey: accounts["SerumMarket"], IsSigner: false, IsWritable: true},
++		{PublicKey: accounts["SerumBids"], IsSigner: false, IsWritable: true},
++		{PublicKey: accounts["SerumAsks"], IsSigner: false, IsWritable: true},
++		{PublicKey: accounts["SerumEventQueue"], IsSigner: false, IsWritable: true},
++		{PublicKey: accounts["SerumCoinVault"], IsSigner: false, IsWritable: true},
++		{PublicKey: accounts["SerumPcVault"], IsSigner: false, IsWritable: true},
++		{PublicKey: accounts["SerumVaultSigner"], IsSigner: false, IsWritable: false},
++		// System accounts
++		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
++		{PublicKey: solana.SysVarClockPubkey, IsSigner: false, IsWritable: false},
++		{PublicKey: solana.SysVarRentPubkey, IsSigner: false, IsWritable: false},
 +	}
-+
-+	accounts := make(map[string]solana.PublicKey)
-+	for name, address := range requiredAccounts {
-+		pubKey, err := validatePublicKey(address)
- 		if err != nil {
--			logger.Error(fmt.Sprintf("Invalid %s", check.name),
--				zap.String("address", check.address),
-+			logger.Error(fmt.Sprintf("Invalid %s", name),
-+				zap.String("address", address),
- 				zap.Error(err))
--			return nil, fmt.Errorf("invalid %s: %w", check.name, err)
-+			return nil, fmt.Errorf("invalid %s: %w", name, err)
- 		}
-+		accounts[name] = pubKey
-+	}
  
--		isWritable := false
--		switch check.name {
--		case "AmmOpenOrders", "AmmTargetOrders", "PoolCoinTokenAccount",
--			"PoolPcTokenAccount", "SerumMarket", "SerumBids", "SerumAsks",
--			"SerumEventQueue", "SerumCoinVaultAccount", "SerumPcVaultAccount":
--			isWritable = true
--		}
-+	// Создаем слайс аккаунтов в правильном порядке для Raydium
-+	metas := make(solana.AccountMetaSlice, 0, 20)
- 
--		accounts = append(accounts, &solana.AccountMeta{
--			PublicKey:  pubKey,
--			IsSigner:   false,
--			IsWritable: isWritable,
--		})
--	}
-+	// Токен аккаунты пользователя
-+	metas = append(metas,
-+		&solana.AccountMeta{PublicKey: userSourceTokenAccount, IsSigner: false, IsWritable: true},
-+		&solana.AccountMeta{PublicKey: userDestinationTokenAccount, IsSigner: false, IsWritable: true},
-+	)
-+
-+	// Аккаунты AMM
-+	metas = append(metas,
-+		&solana.AccountMeta{PublicKey: accounts["AmmID"], IsSigner: false, IsWritable: true},
-+		&solana.AccountMeta{PublicKey: accounts["AmmAuthority"], IsSigner: false, IsWritable: false},
-+		&solana.AccountMeta{PublicKey: accounts["AmmOpenOrders"], IsSigner: false, IsWritable: true},
-+		&solana.AccountMeta{PublicKey: accounts["AmmTargetOrders"], IsSigner: false, IsWritable: true},
-+		&solana.AccountMeta{PublicKey: accounts["PoolCoinTokenAccount"], IsSigner: false, IsWritable: true},
-+		&solana.AccountMeta{PublicKey: accounts["PoolPcTokenAccount"], IsSigner: false, IsWritable: true},
-+	)
-+
-+	// Аккаунты Serum
-+	metas = append(metas,
-+		&solana.AccountMeta{PublicKey: accounts["SerumProgramID"], IsSigner: false, IsWritable: false},
-+		&solana.AccountMeta{PublicKey: accounts["SerumMarket"], IsSigner: false, IsWritable: true},
-+		&solana.AccountMeta{PublicKey: accounts["SerumBids"], IsSigner: false, IsWritable: true},
-+		&solana.AccountMeta{PublicKey: accounts["SerumAsks"], IsSigner: false, IsWritable: true},
-+		&solana.AccountMeta{PublicKey: accounts["SerumEventQueue"], IsSigner: false, IsWritable: true},
-+		&solana.AccountMeta{PublicKey: accounts["SerumCoinVault"], IsSigner: false, IsWritable: true},
-+		&solana.AccountMeta{PublicKey: accounts["SerumPcVault"], IsSigner: false, IsWritable: true},
-+		&solana.AccountMeta{PublicKey: accounts["SerumVaultSigner"], IsSigner: false, IsWritable: false},
-+	)
- 
--	// Добавляем системные аккаунты
--	accounts = append(accounts, []*solana.AccountMeta{
--		{PublicKey: userWallet, IsSigner: true, IsWritable: false},
--		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
--		{PublicKey: solana.SysVarRentPubkey, IsSigner: false, IsWritable: false},
--		{PublicKey: solana.SysVarClockPubkey, IsSigner: false, IsWritable: false},
--	}...)
-+	// Системные аккаунты
-+	metas = append(metas,
-+		&solana.AccountMeta{PublicKey: userWallet, IsSigner: true, IsWritable: false},
-+		&solana.AccountMeta{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
-+		&solana.AccountMeta{PublicKey: solana.SysVarRentPubkey, IsSigner: false, IsWritable: false},
-+		&solana.AccountMeta{PublicKey: solana.SysVarClockPubkey, IsSigner: false, IsWritable: false},
-+	)
- 
- 	// Создание данных инструкции
--	instructionData := SwapInstructionData{
-+	instructionData := &SwapInstructionData{
+-	// Создание данных инструкции
++	// Create swap instruction data
+ 	instructionData := &SwapInstructionData{
  		Instruction:  poolInfo.RaydiumSwapInstructionCode,
  		AmountIn:     amountIn,
  		MinAmountOut: minAmountOut,
  	}
  
-+	// Добавляем отладочный вывод
-+	instructionData.Debug(logger)
-+
-+	// Сериализация
+-	// Добавляем отладочный вывод
+-	instructionData.Debug(logger)
+-
+-	// Сериализация
++	// Serialize instruction data
  	data, err := instructionData.Serialize()
  	if err != nil {
--		logger.Error("Failed to serialize instruction data", zap.Error(err))
-+		logger.Error("Failed to serialize instruction data",
-+			zap.Error(err),
-+			zap.Uint8("instruction", instructionData.Instruction),
-+			zap.Uint64("amount_in", instructionData.AmountIn),
-+			zap.Uint64("min_amount_out", instructionData.MinAmountOut))
+ 		logger.Error("Failed to serialize instruction data",
+@@ -253,39 +157,17 @@ func (r *DEX) CreateSwapInstruction(
  		return nil, fmt.Errorf("failed to serialize instruction data: %w", err)
  	}
  
--	instruction := solana.NewInstruction(ammProgramID, accounts, data)
-+	// Проверка сериализованных данных
-+	if len(data) != 17 {
-+		logger.Error("Invalid serialized data length",
-+			zap.Int("got_length", len(data)),
-+			zap.Int("expected_length", 17))
-+		return nil, fmt.Errorf("invalid serialized data length")
-+	}
-+
-+	// Проверяем значения после сериализации
-+	amountInCheck := binary.LittleEndian.Uint64(data[1:9])
-+	minAmountOutCheck := binary.LittleEndian.Uint64(data[9:17])
-+
-+	logger.Debug("Serialized data check",
-+		zap.Uint64("amount_in_check", amountInCheck),
-+		zap.Uint64("min_amount_out_check", minAmountOutCheck))
-+
-+	if amountInCheck != amountIn {
-+		logger.Error("AmountIn mismatch after serialization",
-+			zap.Uint64("original", amountIn),
-+			zap.Uint64("serialized", amountInCheck))
-+		return nil, fmt.Errorf("amountIn mismatch after serialization")
-+	}
-+
-+	instruction := solana.NewInstruction(ammProgramID, metas, data)
-+
-+	logger.Debug("Created instruction",
-+		zap.Int("num_accounts", len(metas)),
-+		zap.Int("data_len", len(data)))
+-	// Проверка сериализованных данных
+-	if len(data) != 17 {
+-		logger.Error("Invalid serialized data length",
+-			zap.Int("got_length", len(data)),
+-			zap.Int("expected_length", 17))
+-		return nil, fmt.Errorf("invalid serialized data length")
+-	}
+-
+-	// Проверяем значения после сериализации
+-	amountInCheck := binary.LittleEndian.Uint64(data[1:9])
+-	minAmountOutCheck := binary.LittleEndian.Uint64(data[9:17])
+-
+-	logger.Debug("Serialized data check",
+-		zap.Uint64("amount_in_check", amountInCheck),
+-		zap.Uint64("min_amount_out_check", minAmountOutCheck))
+-
+-	if amountInCheck != amountIn {
+-		logger.Error("AmountIn mismatch after serialization",
+-			zap.Uint64("original", amountIn),
+-			zap.Uint64("serialized", amountInCheck))
+-		return nil, fmt.Errorf("amountIn mismatch after serialization")
+-	}
+-
++	// Create the instruction
+ 	instruction := solana.NewInstruction(ammProgramID, metas, data)
  
--	logger.Debug("Swap instruction created successfully")
+-	logger.Debug("Created instruction",
++	logger.Debug("Created swap instruction",
+ 		zap.Int("num_accounts", len(metas)),
+ 		zap.Int("data_len", len(data)))
+ 
  	return instruction, nil
  }
  
+-// PrepareAndSendTransaction готовит и отправляет транзакцию свапа
++// PrepareAndSendTransaction prepares and sends the swap transaction
+ func (r *DEX) PrepareAndSendTransaction(
+ 	ctx context.Context,
+ 	task *types.Task,
+@@ -299,23 +181,18 @@ func (r *DEX) PrepareAndSendTransaction(
+ 		return fmt.Errorf("failed to get recent blockhash: %w", err)
+ 	}
+ 
+-	// Создаем compute budget инструкции с использованием нового PriorityManager
+-	priorityManager := types.NewPriorityManager(logger)
+-	budgetInstructions, err := priorityManager.CreateCustomPriorityInstructions(
+-		uint64(task.PriorityFee*1e6), // Конвертируем SOL в микро-ламports
+-		1_000_000,                    // Используем sniping units
+-	)
+-	if err != nil {
+-		logger.Error("Failed to create compute budget instructions", zap.Error(err))
+-		return fmt.Errorf("failed to create compute budget instructions: %w", err)
+-	}
++	// Create compute budget instruction if needed
++	computeBudgetInst := computebudget.NewSetComputeUnitPriceInstruction(
++		uint64(task.PriorityFee * 1e6), // Convert SOL to micro-lamports
++	).Build()
+ 
+-	// Combine all instructions properly
+-	instructions := make([]solana.Instruction, 0, len(budgetInstructions)+1)
+-	instructions = append(instructions, budgetInstructions...)
+-	instructions = append(instructions, swapInstruction)
++	// Combine all instructions
++	instructions := []solana.Instruction{
++		computeBudgetInst,
++		swapInstruction,
++	}
+ 
+-	// Создаем транзакцию
++	// Create the transaction
+ 	tx, err := solana.NewTransaction(
+ 		instructions,
+ 		recentBlockhash,
+@@ -326,7 +203,7 @@ func (r *DEX) PrepareAndSendTransaction(
+ 		return fmt.Errorf("failed to create transaction: %w", err)
+ 	}
+ 
+-	// Подписываем транзакцию
++	// Sign the transaction
+ 	_, err = tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+ 		if key.Equals(userWallet.PublicKey) {
+ 			return &userWallet.PrivateKey
+@@ -338,7 +215,7 @@ func (r *DEX) PrepareAndSendTransaction(
+ 		return fmt.Errorf("failed to sign transaction: %w", err)
+ 	}
+ 
+-	// Отправляем транзакцию
++	// Send the transaction
+ 	signature, err := r.client.SendTransaction(ctx, tx)
+ 	if err != nil {
+ 		logger.Error("Failed to send transaction", zap.Error(err))
+@@ -347,8 +224,41 @@ func (r *DEX) PrepareAndSendTransaction(
+ 
+ 	logger.Info("Transaction sent successfully",
+ 		zap.String("signature", signature.String()),
+-		zap.Float64("priority_fee_sol", task.PriorityFee),
+-		zap.Uint64("compute_units", 1_000_000))
++		zap.Float64("priority_fee_sol", task.PriorityFee))
+ 
+ 	return nil
+ }
++
++// validatePublicKey checks if a public key string is valid
++func validatePublicKey(key string) (solana.PublicKey, error) {
++	if key == "" {
++		return solana.PublicKey{}, fmt.Errorf("empty public key")
++	}
++
++	pubKey, err := solana.PublicKeyFromBase58(key)
++	if err != nil {
++		return solana.PublicKey{}, fmt.Errorf("invalid public key %s: %w", key, err)
++	}
++
++	return pubKey, nil
++}
++
++// Helper function to calculate minimum output considering slippage
++func calculateMinimumOut(expectedOut float64, slippagePercent float64) uint64 {
++	if expectedOut <= 0 {
++		return 1 // Minimum safe value
++	}
++
++	// Consider slippage
++	minOut := expectedOut * (1 - slippagePercent/100)
++
++	// Convert to uint64 and check for minimum value
++	result := uint64(math.Floor(minOut))
++	if result == 0 {
++		return 1
++	}
++
++	return result
++}
++
++// You may want to include other helper functions or adjust existing ones as needed
 diff --git a/internal/dex/raydium/types.go b/internal/dex/raydium/types.go
-index cd3089e..4cc1b1e 100644
+index 001489f..7db11c6 100644
 --- a/internal/dex/raydium/types.go
 +++ b/internal/dex/raydium/types.go
-@@ -27,11 +27,10 @@ type Pool struct {
+@@ -1,8 +1,13 @@
+ // internal/dex/raydium/types.go
++
+ package raydium
+ 
+ import (
++	"sync"
++	"sync/atomic"
++
+ 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
++	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
+ 	"go.uber.org/zap"
+ )
+ 
+@@ -25,6 +30,12 @@ type Pool struct {
+ 	SerumVaultSigner           string
+ 	RaydiumSwapInstructionCode uint8
  }
++type PoolState struct {
++	TokenAReserve uint64
++	TokenBReserve uint64
++	SwapFee       float64 // в процентах
++	CurrentPrice  float64 // текущая цена пула
++}
  
  // SwapInstructionData представляет данные инструкции свапа
--// Обновляем также структуру инструкции
  type SwapInstructionData struct {
--	Instruction  uint8 // Изменено на uint8
--	AmountIn     uint64
--	MinAmountOut uint64
-+	Instruction  uint8  // Тип инструкции
-+	AmountIn     uint64 // Входящая сумма
-+	MinAmountOut uint64 // Минимальная исходящая сумма
+@@ -33,32 +44,60 @@ type SwapInstructionData struct {
+ 	MinAmountOut uint64 // Минимальная исходящая сумма
  }
  type DEX struct {
- 	client   blockchain.Client // изменяем тип на интерфейс.
+-	client   blockchain.Client // изменяем тип на интерфейс.
+-	logger   *zap.Logger
+-	poolInfo *Pool
+-	slippage float64 // Добавляем поле для slippage
++	client         blockchain.Client
++	logger         *zap.Logger
++	poolInfo       *Pool
++	slippage       float64
++	tokenCache     *solbc.TokenMetadataCache
++	priceValidator PriceValidator
++	lastPoolState  atomic.Value // Используем atomic.Value для потокобезопасного доступа
++	stateMutex     sync.RWMutex // Мьютекс для дополнительной синхронизации при необходимости
+ }
+ 
+-func (r *Pool) GetProgramID() string {
+-	return r.AmmProgramID
++// setLastPoolState безопасно обновляет состояние пула
++func (r *DEX) setLastPoolState(state *PoolState) {
++	r.lastPoolState.Store(state)
+ }
+ 
+-func (r *Pool) GetPoolID() string {
+-	return r.AmmID
++// getLastPoolState безопасно получает состояние пула
++func (r *DEX) getLastPoolState() *PoolState {
++	return r.lastPoolState.Load().(*PoolState)
+ }
+ 
+-func (r *Pool) GetTokenAccounts() (string, string) {
+-	return r.PoolCoinTokenAccount, r.PoolPcTokenAccount
++// UpdatePoolState обновляет состояние пула с дополнительной синхронизацией
++func (r *DEX) UpdatePoolState(state *PoolState) {
++	r.stateMutex.Lock()
++	defer r.stateMutex.Unlock()
++
++	r.setLastPoolState(state)
++
++	// Логируем обновление состояния
++	r.logger.Debug("Pool state updated",
++		zap.Float64("current_price", state.CurrentPrice),
++		zap.Uint64("token_a_reserve", state.TokenAReserve),
++		zap.Uint64("token_b_reserve", state.TokenBReserve))
++}
++
++// GetPoolStateSnapshot получает снапшот текущего состояния пула
++func (r *DEX) GetPoolStateSnapshot() *PoolState {
++	r.stateMutex.RLock()
++	defer r.stateMutex.RUnlock()
++
++	state := r.getLastPoolState()
++	if state == nil {
++		return nil
++	}
++
++	// Возвращаем копию состояния
++	return &PoolState{
++		TokenAReserve: state.TokenAReserve,
++		TokenBReserve: state.TokenBReserve,
++		SwapFee:       state.SwapFee,
++		CurrentPrice:  state.CurrentPrice,
++	}
+ }
+ 
+ // Name возвращает имя DEX
+ func (r *DEX) Name() string {
+ 	return "Raydium"
+ }
+-
+-// PoolState содержит состояние пула ликвидности
+-type PoolState struct {
+-	TokenAReserve uint64
+-	TokenBReserve uint64
+-	SwapFee       float64 // в процентах
+-}
 diff --git a/newdif.txt b/newdif.txt
-index 073754f..a086373 100644
+index cc2c079..c7ae03d 100644
 --- a/newdif.txt
 +++ b/newdif.txt
-@@ -1,436 +0,0 @@
+@@ -1,1340 +0,0 @@
+-diff --git a/TODO.md b/TODO.md
+-index 5b1d499..34aab1e 100644
+---- a/TODO.md
+-+++ b/TODO.md
+-@@ -264,3 +264,8 @@
+-     - [ ] Например, прогнозирование цен, анализ рынка и т.д.
+- - [ ] Рассмотреть возможность масштабирования
+-     - [ ] Настроить приложение для работы в распределенной среде.
+-+
+-+
+-+TODO: Оптимизация работы с ATA (Associated Token Accounts)
+-+1. Этап подготовки и архитектуры
+-+
 -diff --git a/configs/tasks.csv b/configs/tasks.csv
--index e44faa8..33e5da0 100644
+-index 33e5da0..bbc2c6d 100644
 ---- a/configs/tasks.csv
 -+++ b/configs/tasks.csv
 -@@ -1,2 +1,2 @@
 - TaskName,Module,Workers,WalletName,Delta,PriorityFee,AMMID,SourceToken,TargetToken,AmountIn,MinAmountOut,AutosellPercent,AutosellDelay,AutosellAmount,TransactionDelay,AutosellPriorityFee
---buyTokens,Raydium,1,wallet1,100,0.0001,,So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,0.02,,,,,100,
+--buyTokens,Raydium,1,wallet1,100,0.0001,,So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,0.02,0,0,0,0,100,0.0003
 -\ No newline at end of file
--+buyTokens,Raydium,1,wallet1,100,0.0001,,So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,0.02,0,0,0,0,100,0.0003
+-+buyTokens,Raydium,1,wallet1,100,0.0001,58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2,So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,0.02,0,0,0,0,100,0.0003
 -\ No newline at end of file
--diff --git a/internal/dex/raydium/raydium.go b/internal/dex/raydium/raydium.go
--index 1703360..bcd26a9 100644
----- a/internal/dex/raydium/raydium.go
--+++ b/internal/dex/raydium/raydium.go
--@@ -4,6 +4,7 @@ package raydium
-- 
-- import (
-- 	"context"
--+	"encoding/binary"
-- 	"fmt"
-- 	"math"
-- 	"time"
--@@ -45,6 +46,8 @@ func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wal
-- 	logger := r.logger.With(
-- 		zap.String("task", task.TaskName),
-- 		zap.String("wallet", userWallet.PublicKey.String()),
--+		zap.String("slippage_type", string(task.SlippageConfig.Type)),
--+		zap.Float64("slippage_value", task.SlippageConfig.Value),
-- 	)
-- 	logger.Info("Starting swap execution")
-- 
--@@ -64,11 +67,12 @@ func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wal
-- 
-- 	// Подготавливаем amount с учетом decimals
-- 	amountIn := uint64(task.AmountIn * math.Pow10(task.SourceTokenDecimals))
---	minAmountOut := uint64(task.MinAmountOut * math.Pow10(task.TargetTokenDecimals))
-- 
---	logger.Debug("Prepared swap amounts",
--+	logger.Debug("Prepared swap amount",
-- 		zap.Uint64("amount_in", amountIn),
---		zap.Uint64("min_amount_out", minAmountOut))
--+		zap.String("slippage_type", string(task.SlippageConfig.Type)),
--+		zap.Float64("slippage_value", task.SlippageConfig.Value),
--+	)
-- 
-- 	// Создаем инструкции с таймаутом
-- 	swapCtx, swapCancel := context.WithTimeout(opCtx, txSendTimeout)
--@@ -81,7 +85,6 @@ func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wal
-- 		sourceATA,
-- 		targetATA,
-- 		amountIn,
---		minAmountOut,
-- 		task.PriorityFee,
-- 		logger,
-- 	)
--@@ -220,7 +223,8 @@ func (r *DEX) sendATATransaction(ctx context.Context, wallet *wallet.Wallet, ins
-- 	return fmt.Errorf("failed to send ATA transaction after %d attempts: %w", maxRetries, lastErr)
+-diff --git a/internal/blockchain/solbc/client.go b/internal/blockchain/solbc/client.go
+-index 75b6e0d..bcfeacc 100644
+---- a/internal/blockchain/solbc/client.go
+-+++ b/internal/blockchain/solbc/client.go
+-@@ -64,3 +64,6 @@ func (c *Client) Close() error {
+- 	c.rpc.Close()
+- 	return nil
+- }
+-+func (c *Client) GetSignatureStatuses(ctx context.Context, signatures ...solana.Signature) (*solanarpc.GetSignatureStatusesResult, error) {
+-+	return c.rpc.GetSignatureStatuses(ctx, signatures...)
+-+}
+-diff --git a/internal/blockchain/solbc/rpc/rpc.go b/internal/blockchain/solbc/rpc/rpc.go
+-index ee4c137..ac6f2c4 100644
+---- a/internal/blockchain/solbc/rpc/rpc.go
+-+++ b/internal/blockchain/solbc/rpc/rpc.go
+-@@ -144,5 +144,16 @@ func (c *RPCClient) SendTransaction(ctx context.Context, tx *solana.Transaction)
+- 	return signature, err
 - }
 - 
---// Добавляем метод PrepareSwapInstruction для соответствия интерфейсу types.DEX
--+// internal/dex/raydium/raydium.go
+-+// Добавляем новый метод в RPCClient
+-+func (c *RPCClient) GetSignatureStatuses(ctx context.Context, signatures ...solana.Signature) (*solanarpc.GetSignatureStatusesResult, error) {
+-+	var result *solanarpc.GetSignatureStatusesResult
+-+	err := c.ExecuteWithRetry(ctx, func(client *solanarpc.Client) error {
+-+		var err error
+-+		result, err = client.GetSignatureStatuses(ctx, false, signatures...)
+-+		return err
+-+	})
+-+	return result, err
+-+}
 -+
+- // Close закрывает клиент
+- func (c *RPCClient) Close() {}
+-diff --git a/internal/blockchain/solbc/types.go b/internal/blockchain/solbc/types.go
+-index cc61a29..42debad 100644
+---- a/internal/blockchain/solbc/types.go
+-+++ b/internal/blockchain/solbc/types.go
+-@@ -19,7 +19,7 @@ type TokenMetadataCache struct {
+- 
+- // Client представляет основной клиент Solana
+- type Client struct {
+--	rpc     *rpc.RPCClient // Меняем тип с enhancedRPC на RPCClient
+-+	rpc     *rpc.RPCClient
+- 	logger  *zap.Logger
+- 	metrics *ClientMetrics
+- }
+-diff --git a/internal/blockchain/types.go b/internal/blockchain/types.go
+-index 2690c82..202b59a 100644
+---- a/internal/blockchain/types.go
+-+++ b/internal/blockchain/types.go
+-@@ -13,4 +13,5 @@ type Client interface {
+- 	GetRecentBlockhash(ctx context.Context) (solana.Hash, error)
+- 	SendTransaction(ctx context.Context, tx *solana.Transaction) (solana.Signature, error)
+- 	GetAccountInfo(ctx context.Context, pubkey solana.PublicKey) (*rpc.GetAccountInfoResult, error)
+-+	GetSignatureStatuses(ctx context.Context, signatures ...solana.Signature) (*rpc.GetSignatureStatusesResult, error)
+- }
+-diff --git a/internal/dex/dex.go b/internal/dex/dex.go
+-index 5aebaa7..9b9fb16 100644
+---- a/internal/dex/dex.go
+-+++ b/internal/dex/dex.go
+-@@ -1,62 +1,79 @@
+--// internal/dex/dex.go
+- package dex
+- 
+- import (
+--	"errors"
+- 	"fmt"
+- 	"strings"
+- 
+- 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+-+	"github.com/rovshanmuradov/solana-bot/internal/dex/pumpfun"
+- 	"github.com/rovshanmuradov/solana-bot/internal/dex/raydium"
+- 	"github.com/rovshanmuradov/solana-bot/internal/types"
+- 	"go.uber.org/zap"
+- )
+- 
+-+// GetDEXByName возвращает имплементацию DEX по имени
+- func GetDEXByName(name string, client blockchain.Client, logger *zap.Logger) (types.DEX, error) {
+--	logger = logger.With(zap.String("dex_name", name))
+--	logger.Info("Getting DEX by name")
+--	fmt.Printf("\n=== Getting DEX by name: %s ===\n", name)
+-+	if client == nil {
+-+		return nil, fmt.Errorf("client cannot be nil")
+-+	}
+- 
+- 	if logger == nil {
+--		fmt.Println("Logger is nil")
+--		return nil, errors.New("logger is nil")
+-+		return nil, fmt.Errorf("logger cannot be nil")
+- 	}
+- 
+--	name = strings.TrimSpace(name)
+-+	name = strings.TrimSpace(strings.ToLower(name))
+- 	if name == "" {
+--		fmt.Println("DEX name is empty")
+--		return nil, errors.New("DEX name cannot be empty")
+-+		return nil, fmt.Errorf("DEX name cannot be empty")
+- 	}
+- 
+--	fmt.Printf("Client nil? %v\n", client == nil)
+-+	logger = logger.With(zap.String("dex_name", name))
+-+	logger.Info("Initializing DEX instance")
+- 
+--	if client == nil {
+--		fmt.Println("Solana client is nil")
+--		return nil, errors.New("solana client cannot be nil")
+-+	switch name {
+-+	case "raydium":
+-+		return initializeRaydiumDEX(client, logger)
+-+	case "pump.fun":
+-+		return initializePumpFunDEX(client, logger)
+-+	default:
+-+		logger.Error("Unsupported DEX requested", zap.String("name", name))
+-+		return nil, fmt.Errorf("unsupported DEX: %s", name)
+- 	}
+-+}
+- 
+--	switch strings.ToLower(name) {
+--	case strings.ToLower("Raydium"):
+--		fmt.Println("Creating Raydium DEX instance")
+-+// initializeRaydiumDEX инициализирует Raydium DEX
+-+func initializeRaydiumDEX(client blockchain.Client, logger *zap.Logger) (types.DEX, error) {
+-+	logger.Debug("Initializing Raydium DEX")
+- 
+--		if raydium.DefaultPoolConfig == nil {
+--			fmt.Println("Default pool config is nil")
+--			return nil, errors.New("default pool config is nil")
+--		}
+-+	if raydium.DefaultPoolConfig == nil {
+-+		logger.Error("Default pool configuration is missing")
+-+		return nil, fmt.Errorf("raydium default pool config is nil")
+-+	}
+- 
+--		fmt.Printf("Pool config: %+v\n", raydium.DefaultPoolConfig)
+-+	logger.Debug("Creating Raydium DEX instance",
+-+		zap.String("pool_id", raydium.DefaultPoolConfig.AmmID),
+-+		zap.String("program_id", raydium.DefaultPoolConfig.AmmProgramID))
+- 
+--		dex := raydium.NewDEX(client, logger, raydium.DefaultPoolConfig)
+--		if dex == nil {
+--			fmt.Println("Failed to create Raydium DEX instance")
+--			return nil, errors.New("failed to create Raydium DEX instance")
+--		}
+-+	dex := raydium.NewDEX(client, logger, raydium.DefaultPoolConfig)
+-+	if dex == nil {
+-+		logger.Error("Failed to create Raydium DEX instance")
+-+		return nil, fmt.Errorf("failed to create Raydium DEX instance")
+-+	}
+- 
+--		fmt.Printf("DEX created: %+v\n", dex)
+--		return dex, nil
+-+	logger.Info("Raydium DEX initialized successfully")
+-+	return dex, nil
+-+}
+- 
+--	default:
+--		fmt.Printf("Unsupported DEX: %s\n", name)
+--		return nil, fmt.Errorf("unsupported DEX: %s", name)
+-+// initializePumpFunDEX инициализирует Pump.fun DEX
+-+func initializePumpFunDEX(_ blockchain.Client, logger *zap.Logger) (types.DEX, error) {
+-+	logger.Debug("Initializing Pump.fun DEX")
+-+
+-+	// Создаем новый экземпляр Pump.fun DEX
+-+	dex := pumpfun.NewDEX()
+-+	if dex == nil {
+-+		logger.Error("Failed to create Pump.fun DEX instance")
+-+		return nil, fmt.Errorf("failed to create Pump.fun DEX instance")
+- 	}
+-+
+-+	logger.Info("Pump.fun DEX initialized successfully")
+-+	return dex, nil
+- }
+-diff --git a/internal/dex/pumpfun/pumpfun.go b/internal/dex/pumpfun/pumpfun.go
+-index 83e62de..a1450ec 100644
+---- a/internal/dex/pumpfun/pumpfun.go
+-+++ b/internal/dex/pumpfun/pumpfun.go
+-@@ -1,4 +1,3 @@
+--// internal/dex/pumpfun/pumpfun.go
+- package pumpfun
+- 
+- import (
+-@@ -30,7 +29,6 @@ func (p *DEX) PrepareSwapInstruction(
+- 	_ solana.PublicKey,
+- 	_ solana.PublicKey,
+- 	_ uint64,
+--	_ uint64,
+- 	_ *zap.Logger,
+- ) (solana.Instruction, error) {
+- 	return nil, fmt.Errorf("pump.fun DEX implementation not ready")
+-diff --git a/internal/dex/raydium/config.go b/internal/dex/raydium/config.go
+-index acf9464..cb0c21b 100644
+---- a/internal/dex/raydium/config.go
+-+++ b/internal/dex/raydium/config.go
+-@@ -7,7 +7,7 @@ var DefaultPoolConfig = &Pool{
+- 	AmmProgramID: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+- 
+- 	// Актуальная конфигурация для SOL-USDC пула
+--	AmmID:                "EVzLJhqMtfPHFp5piYSeXqx5cY6hLbrE8oRR5Zrm1YaT",
+-+	AmmID:                "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",
+- 	AmmAuthority:         "3uaZBfHPfmpAHW7dsimC1SnyR61X4bJqQZKWmRSCXJxv",
+- 	AmmOpenOrders:        "4NfmERReGt1QCKey8cH5q4LsBYJoUcsuGg11J8GQFwH8",
+- 	AmmTargetOrders:      "38RJcGjtgd4SKRfY2dcM8Z9LzXQR6cyZeGxvjrRsVGZD",
+-diff --git a/internal/dex/raydium/raydium.go b/internal/dex/raydium/raydium.go
+-index bcd26a9..8e2c6c3 100644
+---- a/internal/dex/raydium/raydium.go
+-+++ b/internal/dex/raydium/raydium.go
+-@@ -9,9 +9,12 @@ import (
+- 	"math"
+- 	"time"
+- 
+-+	bin "github.com/gagliardetto/binary"
+- 	"github.com/gagliardetto/solana-go"
+- 	associatedtokenaccount "github.com/gagliardetto/solana-go/programs/associated-token-account"
+- 	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
+-+	"github.com/gagliardetto/solana-go/programs/token"
+-+	solanarpc "github.com/gagliardetto/solana-go/rpc"
+- 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+- 	"github.com/rovshanmuradov/solana-bot/internal/types"
+- 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
+-@@ -93,7 +96,7 @@ func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wal
+- 	}
+- 
+- 	// Отправляем транзакцию
+--	signature, err := r.sendTransactionWithRetry(swapCtx, userWallet, instructions, logger)
+-+	signature, err := r.sendTransactionWithRetryAndConfirmation(swapCtx, userWallet, instructions, logger)
+- 	if err != nil {
+- 		return fmt.Errorf("failed to send swap transaction: %w", err)
+- 	}
+-@@ -140,91 +143,139 @@ func (r *DEX) ensureATA(
+- 	ataType string,
+- 	logger *zap.Logger,
+- ) error {
+--	account, err := r.client.GetAccountInfo(ctx, ata)
+-+	logger = logger.With(
+-+		zap.String("mint", mint.String()),
+-+		zap.String("ata", ata.String()),
+-+		zap.String("wallet", wallet.PublicKey.String()),
+-+	)
+-+
+-+	// Проверяем существование ATA с повторными попытками
+-+	exists, err := r.checkATAExists(ctx, ata, logger)
+- 	if err != nil {
+- 		return fmt.Errorf("failed to check %s ATA: %w", ataType, err)
+- 	}
+- 
+--	if account.Value == nil {
+--		logger.Debug("Creating ATA", zap.String("type", ataType), zap.String("address", ata.String()))
+--
+--		instruction := associatedtokenaccount.NewCreateInstruction(
+--			wallet.PublicKey,
+--			wallet.PublicKey,
+--			mint,
+--		).Build()
+-+	if !exists {
+-+		logger.Debug("Creating new ATA")
+-+		// Используем правильное создание инструкции из solana-go
+-+		instruction, err := r.createATAInstruction(wallet, mint)
+-+		if err != nil {
+-+			return fmt.Errorf("failed to create %s ATA instruction: %w", ataType, err)
+-+		}
+- 
+--		if err := r.sendATATransaction(ctx, wallet, instruction); err != nil {
+-+		// Отправляем транзакцию и ждем подтверждения
+-+		signature, err := r.sendTransactionWithRetryAndConfirmation(ctx, wallet, []solana.Instruction{instruction}, logger)
+-+		if err != nil {
+- 			return fmt.Errorf("failed to create %s ATA: %w", ataType, err)
+- 		}
+- 
+--		logger.Debug("ATA created successfully", zap.String("type", ataType))
+-+		logger.Info("ATA created successfully",
+-+			zap.String("signature", signature.String()))
+-+
+-+		// Ждем появления аккаунта
+-+		if err := r.waitForATACreation(ctx, ata, logger); err != nil {
+-+			return fmt.Errorf("failed to confirm %s ATA creation: %w", ataType, err)
+-+		}
+- 	}
+- 
+- 	return nil
+- }
+- 
+--// Добавляем метод sendATATransaction
+--func (r *DEX) sendATATransaction(ctx context.Context, wallet *wallet.Wallet, instruction solana.Instruction) error {
+--	logger := r.logger.With(
+--		zap.String("wallet", wallet.PublicKey.String()),
+--		zap.String("operation", "create_ata"),
+-+func (r *DEX) checkATAExists(
+-+	ctx context.Context,
+-+	ata solana.PublicKey,
+-+	logger *zap.Logger,
+-+) (bool, error) {
+-+	for attempt := 0; attempt < maxRetries; attempt++ {
+-+		account, err := r.client.GetAccountInfo(ctx, ata)
+-+		if err == nil && account.Value != nil {
+-+			// Проверяем, что владелец - TokenProgram
+-+			return account.Value.Owner == solana.TokenProgramID, nil
+-+		}
+-+
+-+		if attempt < maxRetries-1 {
+-+			select {
+-+			case <-ctx.Done():
+-+				return false, ctx.Err()
+-+			case <-time.After(retryDelay):
+-+				logger.Debug("Retrying ATA check", zap.Int("attempt", attempt+1))
+-+			}
+-+		}
+-+	}
+-+	return false, nil
+-+}
+-+
+-+func (r *DEX) createATAInstruction(
+-+	wallet *wallet.Wallet,
+-+	mint solana.PublicKey,
+-+) (solana.Instruction, error) {
+-+	// Используем билдер из solana-go
+-+	inst := associatedtokenaccount.NewCreateInstruction(
+-+		wallet.PublicKey, // payer
+-+		wallet.PublicKey, // wallet address
+-+		mint,             // token mint
+- 	)
+- 
+--	var lastErr error
+--	for attempt := 0; attempt < maxRetries; attempt++ {
+-+	// Проводим валидацию
+-+	if err := inst.Validate(); err != nil {
+-+		return nil, fmt.Errorf("invalid ATA instruction: %w", err)
+-+	}
+-+
+-+	return inst.Build(), nil
+-+}
+-+
+-+func (r *DEX) waitForATACreation(
+-+	ctx context.Context,
+-+	ata solana.PublicKey,
+-+	logger *zap.Logger,
+-+) error {
+-+	// Увеличиваем время ожидания до 2 минут
+-+	deadline := time.Now().Add(2 * time.Minute)
+-+	// Начальный интервал проверки
+-+	ticker := time.NewTicker(2 * time.Second)
+-+	defer ticker.Stop()
+-+
+-+	retryCount := 0
+-+	maxRetries := 60 // Максимальное количество попыток
+-+
+-+	for {
+-+		if time.Now().After(deadline) {
+-+			return fmt.Errorf("timeout waiting for ATA creation after 2 minutes")
+-+		}
+-+
+-+		if retryCount >= maxRetries {
+-+			return fmt.Errorf("exceeded maximum retry attempts (%d) waiting for ATA creation", maxRetries)
+-+		}
+-+
+- 		select {
+- 		case <-ctx.Done():
+- 			return ctx.Err()
+--		default:
+--			recent, err := r.client.GetRecentBlockhash(ctx)
+-+		case <-ticker.C:
+-+			account, err := r.client.GetAccountInfo(ctx, ata)
+- 			if err != nil {
+--				lastErr = fmt.Errorf("failed to get recent blockhash: %w", err)
+-+				logger.Debug("ATA verification attempt failed",
+-+					zap.Error(err),
+-+					zap.Int("retry", retryCount),
+-+					zap.Time("deadline", deadline))
+-+				retryCount++
+- 				continue
+- 			}
+- 
+--			tx, err := solana.NewTransaction(
+--				[]solana.Instruction{instruction},
+--				recent,
+--				solana.TransactionPayer(wallet.PublicKey),
+--			)
+--			if err != nil {
+--				lastErr = fmt.Errorf("failed to create ATA transaction: %w", err)
+--				continue
+--			}
+--
+--			_, err = tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+--				if key.Equals(wallet.PublicKey) {
+--					return &wallet.PrivateKey
+--				}
+-+			if account.Value != nil && account.Value.Owner == solana.TokenProgramID {
+-+				logger.Info("ATA creation confirmed",
+-+					zap.String("ata", ata.String()),
+-+					zap.Int("retries", retryCount))
+- 				return nil
+--			})
+--			if err != nil {
+--				lastErr = fmt.Errorf("failed to sign ATA transaction: %w", err)
+--				continue
+- 			}
+- 
+--			sig, err := r.client.SendTransaction(ctx, tx)
+--			if err != nil {
+--				lastErr = err
+--				logger.Warn("Failed to send ATA transaction, retrying",
+--					zap.Int("attempt", attempt+1),
+--					zap.Error(err))
+--				time.Sleep(retryDelay)
+--				continue
+--			}
+--
+--			logger.Debug("ATA transaction sent successfully",
+--				zap.String("signature", sig.String()))
+--			return nil
+-+			logger.Debug("ATA not ready yet",
+-+				zap.String("ata", ata.String()),
+-+				zap.Int("retry", retryCount))
+-+			retryCount++
+- 		}
+- 	}
+--
+--	return fmt.Errorf("failed to send ATA transaction after %d attempts: %w", maxRetries, lastErr)
+- }
+- 
+--// internal/dex/raydium/raydium.go
+--
 - // PrepareSwapInstructions объединяет все инструкции для свапа
 - func (r *DEX) PrepareSwapInstructions(
 - 	ctx context.Context,
--@@ -228,7 +232,6 @@ func (r *DEX) PrepareSwapInstructions(
-- 	sourceATA solana.PublicKey,
-- 	targetATA solana.PublicKey,
-- 	amountIn uint64,
---	minAmountOut uint64,
-- 	priorityFee float64,
-- 	logger *zap.Logger,
-- ) ([]solana.Instruction, error) {
--@@ -247,7 +250,6 @@ func (r *DEX) PrepareSwapInstructions(
-- 		sourceATA,
-- 		targetATA,
-- 		amountIn,
---		minAmountOut,
-- 		logger,
-- 	)
-- 	if err != nil {
--@@ -265,7 +267,6 @@ func (r *DEX) PrepareSwapInstruction(
-- 	sourceATA solana.PublicKey,
-- 	targetATA solana.PublicKey,
-- 	amountIn uint64,
---	minAmountOut uint64,
-- 	logger *zap.Logger,
-- ) (solana.Instruction, error) {
-- 	logger = logger.With(
--@@ -275,8 +276,34 @@ func (r *DEX) PrepareSwapInstruction(
-- 	)
-- 	logger.Debug("Preparing swap instruction")
-- 
---	// Создаем инструкцию свапа
---	instruction, err := r.CreateSwapInstruction(
--+	// Получаем ожидаемый выход
--+	sourceMint, err := r.getMintFromATA(ctx, sourceATA)
--+	if err != nil {
--+		return nil, fmt.Errorf("failed to get source mint: %w", err)
--+	}
--+
--+	targetMint, err := r.getMintFromATA(ctx, targetATA)
--+	if err != nil {
--+		return nil, fmt.Errorf("failed to get target mint: %w", err)
--+	}
--+
--+	expectedOut, err := r.getExpectedOutput(
--+		ctx,
--+		amountIn,
--+		sourceMint,
--+		targetMint,
--+		r.poolInfo,
--+		logger,
--+	)
--+	if err != nil {
--+		return nil, fmt.Errorf("failed to get expected output: %w", err)
--+	}
--+
--+	// Используем безопасное значение minAmountOut по умолчанию (99% от ожидаемого выхода)
--+	minAmountOut := uint64(float64(expectedOut) * 0.99)
--+
--+	// Создаем инструкцию свапа с помощью внутреннего метода createSwapInstruction
--+	return r.createSwapInstruction(
-- 		wallet,
-- 		sourceATA,
-- 		targetATA,
--@@ -285,12 +312,52 @@ func (r *DEX) PrepareSwapInstruction(
-- 		logger,
-- 		r.poolInfo,
-- 	)
--+}
--+
--+// createSwapInstruction внутренний метод для создания инструкции свапа
--+func (r *DEX) createSwapInstruction(
--+	wallet solana.PublicKey,
--+	sourceATA solana.PublicKey,
--+	targetATA solana.PublicKey,
--+	amountIn uint64,
--+	minAmountOut uint64,
--+	logger *zap.Logger,
--+	poolInfo *Pool,
--+) (solana.Instruction, error) {
--+	// Существующая логика из CreateSwapInstruction
--+	return r.CreateSwapInstruction(
--+		wallet,
--+		sourceATA,
--+		targetATA,
--+		amountIn,
--+		minAmountOut,
--+		logger,
--+		poolInfo,
--+	)
--+}
--+
--+// Вспомогательный метод для получения mint address из ATA
--+func (r *DEX) getMintFromATA(ctx context.Context, ata solana.PublicKey) (solana.PublicKey, error) {
--+	account, err := r.client.GetAccountInfo(ctx, ata)
-- 	if err != nil {
---		return nil, fmt.Errorf("failed to create swap instruction: %w", err)
--+		return solana.PublicKey{}, fmt.Errorf("failed to get ATA info: %w", err)
+-@@ -343,24 +394,19 @@ func (r *DEX) getMintFromATA(ctx context.Context, ata solana.PublicKey) (solana.
+- 		return solana.PublicKey{}, fmt.Errorf("failed to get ATA info: %w", err)
 - 	}
 - 
---	logger.Debug("Swap instruction prepared successfully")
---	return instruction, nil
--+	if account.Value == nil || len(account.Value.Data.GetBinary()) < 32 {
--+		return solana.PublicKey{}, fmt.Errorf("invalid ATA account data")
--+	}
--+
--+	data := account.Value.Data.GetBinary()[:32]
--+	if len(data) != 32 {
--+		return solana.PublicKey{}, fmt.Errorf("invalid public key length: expected 32 bytes, got %d", len(data))
--+	}
--+
--+	pubkey := solana.PublicKeyFromBytes(data)
--+	if pubkey.IsZero() {
--+		return solana.PublicKey{}, fmt.Errorf("invalid zero public key")
--+	}
--+
--+	return pubkey, nil
+--	if account.Value == nil || len(account.Value.Data.GetBinary()) < 32 {
+-+	if account.Value == nil || len(account.Value.Data.GetBinary()) < 64 {
+- 		return solana.PublicKey{}, fmt.Errorf("invalid ATA account data")
+- 	}
+- 
+--	data := account.Value.Data.GetBinary()[:32]
+--	if len(data) != 32 {
+--		return solana.PublicKey{}, fmt.Errorf("invalid public key length: expected 32 bytes, got %d", len(data))
+-+	var tokenAccount token.Account
+-+	if err := bin.NewBinDecoder(account.Value.Data.GetBinary()).Decode(&tokenAccount); err != nil {
+-+		return solana.PublicKey{}, fmt.Errorf("failed to decode ATA data: %w", err)
+- 	}
+- 
+--	pubkey := solana.PublicKeyFromBytes(data)
+--	if pubkey.IsZero() {
+--		return solana.PublicKey{}, fmt.Errorf("invalid zero public key")
+--	}
+--
+--	return pubkey, nil
+-+	return tokenAccount.Mint, nil
 - }
 - 
-- func (r *DEX) sendTransactionWithRetry(
--@@ -376,3 +443,117 @@ func parseTokenAddresses(sourceToken, targetToken string) (solana.PublicKey, sol
+--func (r *DEX) sendTransactionWithRetry(
+-+func (r *DEX) sendTransactionWithRetryAndConfirmation(
+- 	ctx context.Context,
+- 	wallet *wallet.Wallet,
+- 	instructions []solana.Instruction,
+-@@ -373,14 +419,44 @@ func (r *DEX) sendTransactionWithRetry(
+- 			return solana.Signature{}, ctx.Err()
+- 		default:
+- 			signature, err := r.sendTransaction(ctx, wallet, instructions)
+--			if err == nil {
+--				return signature, nil
+-+			if err != nil {
+-+				lastErr = err
+-+				logger.Warn("Retrying transaction send",
+-+					zap.Int("attempt", attempt+1),
+-+					zap.Error(err))
+-+				time.Sleep(retryDelay)
+-+				continue
+-+			}
+-+
+-+			// Ждем подтверждения транзакции
+-+			logger.Debug("Waiting for transaction confirmation",
+-+				zap.String("signature", signature.String()))
+-+
+-+			// Ждем подтверждения с таймаутом
+-+			confirmCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+-+			defer cancel()
+-+
+-+			for {
+-+				select {
+-+				case <-confirmCtx.Done():
+-+					return signature, fmt.Errorf("timeout waiting for transaction confirmation")
+-+				case <-time.After(time.Second):
+-+					// Проверяем статус транзакции
+-+					status, err := r.getTransactionStatus(ctx, signature)
+-+					if err != nil {
+-+						logger.Debug("Failed to get transaction status", zap.Error(err))
+-+						continue
+-+					}
+-+
+-+					// Проверяем подтверждение
+-+					if status.Confirmations >= 1 || status.Status == "finalized" {
+-+						logger.Debug("Transaction confirmed",
+-+							zap.String("status", status.Status),
+-+							zap.Uint64("confirmations", status.Confirmations))
+-+						return signature, nil
+-+					}
+-+				}
+- 			}
+--			lastErr = err
+--			logger.Warn("Retrying transaction send",
+--				zap.Int("attempt", attempt+1),
+--				zap.Error(err))
+--			time.Sleep(retryDelay)
+- 		}
+- 	}
+- 	return solana.Signature{}, fmt.Errorf("failed after %d attempts: %w", maxRetries, lastErr)
+-@@ -452,7 +528,7 @@ func (r *DEX) getExpectedOutput(
+- 	poolInfo *Pool,
+- 	logger *zap.Logger,
+- ) (float64, error) {
+--	// Создаем контекст с таймаутом
+-+	// Создаем контекст с тайм-аутом
+- 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+- 	defer cancel()
 - 
-- 	return sourceMint, targetMint, nil
+-@@ -557,3 +633,50 @@ func (r *DEX) GetAmountOutQuote(
+- 
+- 	return expectedOut, nil
 - }
 -+
--+// getExpectedOutput вычисляет ожидаемый выход для свапа
--+func (r *DEX) getExpectedOutput(
--+	ctx context.Context,
--+	amountIn uint64,
--+	sourceToken, targetToken solana.PublicKey,
--+	poolInfo *Pool,
--+	logger *zap.Logger,
--+) (float64, error) {
--+	// Создаем контекст с таймаутом
--+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
--+	defer cancel()
--+
--+	logger = logger.With(
--+		zap.String("source_token", sourceToken.String()),
--+		zap.String("target_token", targetToken.String()),
--+		zap.Uint64("amount_in", amountIn),
--+	)
--+
--+	// Получаем состояние пула
--+	poolState, err := r.getPoolState(ctx, poolInfo)
--+	if err != nil {
--+		return 0, fmt.Errorf("failed to get pool state: %w", err)
--+	}
--+
--+	logger.Debug("Pool state retrieved",
--+		zap.Uint64("token_a_reserve", poolState.TokenAReserve),
--+		zap.Uint64("token_b_reserve", poolState.TokenBReserve),
--+		zap.Float64("swap_fee", poolState.SwapFee))
--+
--+	// Вычисляем ожидаемый выход с учетом всех факторов
--+	expectedOut := r.calculateExpectedOutput(amountIn, poolState)
--+
--+	logger.Debug("Expected output calculated",
--+		zap.Float64("expected_out", expectedOut))
--+
--+	return expectedOut, nil
+-+// TransactionStatus представляет статус транзакции
+-+type TransactionStatus struct {
+-+	Status        string
+-+	Confirmations uint64
+-+	Error         interface{}
+-+	Slot          uint64
 -+}
 -+
--+// getPoolState получает текущее состояние пула
--+func (r *DEX) getPoolState(ctx context.Context, poolInfo *Pool) (*PoolState, error) {
--+	// Получаем аккаунт пула
--+	poolAccount, err := r.client.GetAccountInfo(ctx, solana.MustPublicKeyFromBase58(poolInfo.AmmID))
+-+// getConfirmations получает количество подтверждений из результата статуса
+-+func getConfirmations(status *solanarpc.SignatureStatusesResult) uint64 {
+-+	if status == nil {
+-+		return 0
+-+	}
+-+
+-+	if status.Confirmations == nil {
+-+		if status.ConfirmationStatus == solanarpc.ConfirmationStatusFinalized {
+-+			return math.MaxUint64 // Максимальное значение для финализированных транзакций
+-+		}
+-+		return 0
+-+	}
+-+	return *status.Confirmations
+-+}
+-+
+-+// getTransactionStatus получает полный статус транзакции
+-+func (r *DEX) getTransactionStatus(ctx context.Context, signature solana.Signature) (*TransactionStatus, error) {
+-+	result, err := r.client.GetSignatureStatuses(ctx, signature)
 -+	if err != nil {
--+		return nil, fmt.Errorf("failed to get pool account: %w", err)
+-+		return nil, fmt.Errorf("failed to get signature status: %w", err)
 -+	}
 -+
--+	if poolAccount == nil || poolAccount.Value == nil {
--+		return nil, fmt.Errorf("pool account not found")
+-+	if result == nil || len(result.Value) == 0 || result.Value[0] == nil {
+-+		return &TransactionStatus{
+-+			Status: "pending",
+-+		}, nil
 -+	}
 -+
--+	// Парсим данные аккаунта
--+	data := poolAccount.Value.Data.GetBinary()
--+	if len(data) < 8+32*2 { // Минимальный размер для резервов
--+		return nil, fmt.Errorf("invalid pool account data size")
--+	}
+-+	status := result.Value[0]
+-+	confirmations := getConfirmations(status)
 -+
--+	// Извлекаем резервы из данных аккаунта
--+	// Обратите внимание: это упрощенная версия, реальная структура данных может отличаться
--+	tokenAReserve := binary.LittleEndian.Uint64(data[8:16])
--+	tokenBReserve := binary.LittleEndian.Uint64(data[16:24])
--+
--+	// Получаем информацию о комиссии пула
--+	swapFee := 0.25 // 0.25% это стандартная комиссия Raydium
--+
--+	return &PoolState{
--+		TokenAReserve: tokenAReserve,
--+		TokenBReserve: tokenBReserve,
--+		SwapFee:       swapFee,
+-+	return &TransactionStatus{
+-+		Status:        string(status.ConfirmationStatus),
+-+		Confirmations: confirmations,
+-+		Error:         status.Err,
+-+		Slot:          status.Slot,
 -+	}, nil
 -+}
--+
--+// calculateExpectedOutput вычисляет ожидаемый выход на основе состояния пула
--+func (r *DEX) calculateExpectedOutput(amountIn uint64, state *PoolState) float64 {
--+	// Константа k = x * y, где x и y - резервы токенов
--+	k := float64(state.TokenAReserve) * float64(state.TokenBReserve)
--+
--+	// Вычисляем amount_in после комиссии
--+	amountInAfterFee := float64(amountIn) * (1 - state.SwapFee/100)
--+
--+	// Новый резерв входного токена
--+	newSourceReserve := float64(state.TokenAReserve) + amountInAfterFee
--+
--+	// Вычисляем новый резерв выходного токена используя формулу k = x * y
--+	newTargetReserve := k / newSourceReserve
--+
--+	// Ожидаемый выход это разница между старым и новым резервом
--+	expectedOut := float64(state.TokenBReserve) - newTargetReserve
--+
--+	// Применяем дополнительный запас надежности
--+	safetyFactor := 0.995 // 0.5% запас для учета изменения цены
--+	return expectedOut * safetyFactor
--+}
--+
--+// GetAmountOutQuote получает котировку для свапа
--+func (r *DEX) GetAmountOutQuote(
--+	ctx context.Context,
--+	amountIn uint64,
--+	sourceToken, targetToken solana.PublicKey,
--+) (float64, error) {
--+	// Создаем временный пул для получения котировки
--+	poolInfo := r.poolInfo
--+	if poolInfo == nil {
--+		return 0, fmt.Errorf("pool info not configured")
--+	}
--+
--+	// Получаем ожидаемый выход
--+	expectedOut, err := r.getExpectedOutput(ctx, amountIn, sourceToken, targetToken, poolInfo, r.logger)
--+	if err != nil {
--+		return 0, fmt.Errorf("failed to get expected output: %w", err)
--+	}
--+
--+	return expectedOut, nil
--+}
--diff --git a/internal/dex/raydium/types.go b/internal/dex/raydium/types.go
--index dd0f18f..cd3089e 100644
----- a/internal/dex/raydium/types.go
--+++ b/internal/dex/raydium/types.go
--@@ -55,3 +55,10 @@ func (r *Pool) GetTokenAccounts() (string, string) {
-- func (r *DEX) Name() string {
-- 	return "Raydium"
-- }
--+
--+// PoolState содержит состояние пула ликвидности
--+type PoolState struct {
--+	TokenAReserve uint64
--+	TokenBReserve uint64
--+	SwapFee       float64 // в процентах
--+}
--diff --git a/internal/dex/raydium/validation.go b/internal/dex/raydium/validation.go
--index a948715..9267897 100644
----- a/internal/dex/raydium/validation.go
--+++ b/internal/dex/raydium/validation.go
--@@ -1,5 +1,4 @@
-- // internal/dex/raydium/validation.go
---
+-diff --git a/internal/dex/raydium/transaction.go b/internal/dex/raydium/transaction.go
+-index 85d91eb..cf37967 100644
+---- a/internal/dex/raydium/transaction.go
+-+++ b/internal/dex/raydium/transaction.go
+-@@ -1,10 +1,10 @@
 - package raydium
 - 
 - import (
--@@ -11,7 +10,6 @@ import (
+--	"bytes"
+- 	"context"
+- 	"encoding/binary"
+- 	"fmt"
+-+	"testing"
 - 
-- // ValidateTask проверяет корректность параметров задачи
-- func ValidateTask(task *types.Task) error {
---
-- 	if task == nil {
-- 		return fmt.Errorf("task cannot be nil")
-- 	}
--@@ -41,8 +39,20 @@ func ValidateTask(task *types.Task) error {
-- 		return fmt.Errorf("amount in must be greater than 0")
-- 	}
+- 	"github.com/gagliardetto/solana-go"
+- 	"github.com/rovshanmuradov/solana-bot/internal/types"
+-@@ -13,23 +13,71 @@ import (
+- )
 - 
---	if task.MinAmountOut <= 0 {
---		return fmt.Errorf("min amount out must be greater than 0")
--+	// Удаляем проверку MinAmountOut, так как теперь оно может быть нулевым или пустым
--+	// if task.MinAmountOut <= 0 {
--+	//     return fmt.Errorf("min amount out must be greater than 0")
--+	// }
+- // Serialize сериализует данные инструкции свапа
+--// Метод Serialize нужно обновить для корректной работы с uint8
+- func (s *SwapInstructionData) Serialize() ([]byte, error) {
+--	buf := new(bytes.Buffer)
+-+	data := make([]byte, 17)
+- 
+--	// Записываем Instruction как uint8
+--	if err := buf.WriteByte(s.Instruction); err != nil {
+--		return nil, fmt.Errorf("failed to serialize instruction: %w", err)
+-+	// Instruction (1 byte)
+-+	data[0] = s.Instruction
 -+
--+	// Проверяем конфигурацию проскальзывания, если она используется
--+	if task.SlippageConfig.Type != types.SlippageNone {
--+		if task.SlippageConfig.Type == types.SlippagePercent &&
--+			(task.SlippageConfig.Value <= 0 || task.SlippageConfig.Value > 100) {
--+			return fmt.Errorf("slippage percentage must be between 0 and 100")
--+		}
--+		if task.SlippageConfig.Type == types.SlippageFixed && task.SlippageConfig.Value < 0 {
--+			return fmt.Errorf("fixed slippage value cannot be negative")
--+		}
+-+	// AmountIn (8 bytes)
+-+	binary.LittleEndian.PutUint64(data[1:9], s.AmountIn)
+-+
+-+	// MinAmountOut (8 bytes)
+-+	binary.LittleEndian.PutUint64(data[9:17], s.MinAmountOut)
+-+
+-+	return data, nil
+-+}
+-+
+-+// TestSwapInstructionDataSerialization тест для проверки сериализации
+-+func TestSwapInstructionDataSerialization(t *testing.T) {
+-+	inst := &SwapInstructionData{
+-+		Instruction:  1,
+-+		AmountIn:     20000000,
+-+		MinAmountOut: 6,
 - 	}
 - 
-- 	if task.SourceTokenDecimals <= 0 {
--diff --git a/internal/sniping/strategy.go b/internal/sniping/strategy.go
--index 91602f1..aa5b32c 100644
----- a/internal/sniping/strategy.go
--+++ b/internal/sniping/strategy.go
--@@ -60,9 +60,12 @@ func parseTask(record []string) (*types.Task, error) {
-- 		return nil, fmt.Errorf("invalid AmountIn value: %v", err)
+--	// Записываем AmountIn и MinAmountOut как uint64
+--	for _, v := range []uint64{s.AmountIn, s.MinAmountOut} {
+--		if err := binary.Write(buf, binary.LittleEndian, v); err != nil {
+--			return nil, fmt.Errorf("failed to serialize value: %w", err)
+--		}
+-+	data, err := inst.Serialize()
+-+	if err != nil {
+-+		t.Fatalf("Failed to serialize: %v", err)
 - 	}
 - 
---	minAmountOut, err := strconv.ParseFloat(record[10], 64)
+--	return buf.Bytes(), nil
+-+	// Проверяем instruction code
+-+	if data[0] != 1 {
+-+		t.Errorf("Expected instruction 1, got %d", data[0])
+-+	}
+-+
+-+	// Проверяем amountIn
+-+	gotAmountIn := binary.LittleEndian.Uint64(data[1:9])
+-+	if gotAmountIn != 20000000 {
+-+		t.Errorf("Expected amountIn 20000000, got %d", gotAmountIn)
+-+	}
+-+
+-+	// Проверяем minAmountOut
+-+	gotMinAmountOut := binary.LittleEndian.Uint64(data[9:17])
+-+	if gotMinAmountOut != 6 {
+-+		t.Errorf("Expected minAmountOut 6, got %d", gotMinAmountOut)
+-+	}
+-+}
+-+
+-+// Debug выводит шестнадцатеричное представление данных
+-+func (s *SwapInstructionData) Debug(logger *zap.Logger) {
+-+	data, err := s.Serialize()
+-+	if err != nil {
+-+		logger.Error("Failed to serialize for debug", zap.Error(err))
+-+		return
+-+	}
+-+
+-+	// Проверяем данные
+-+	amountIn := binary.LittleEndian.Uint64(data[1:9])
+-+	minAmountOut := binary.LittleEndian.Uint64(data[9:17])
+-+
+-+	logger.Debug("Instruction data debug",
+-+		zap.Uint8("instruction", data[0]),
+-+		zap.Uint64("amount_in_original", s.AmountIn),
+-+		zap.Uint64("amount_in_serialized", amountIn),
+-+		zap.Uint64("min_amount_out_original", s.MinAmountOut),
+-+		zap.Uint64("min_amount_out_serialized", minAmountOut),
+-+		zap.Binary("raw_data", data))
+- }
+- 
+- // validatePublicKey проверяет корректность публичного ключа
+-@@ -74,91 +122,125 @@ func (r *DEX) CreateSwapInstruction(
+- 		return nil, fmt.Errorf("invalid AmmProgramID: %w", err)
+- 	}
+- 
+--	ammID, err := validatePublicKey(poolInfo.AmmID)
 --	if err != nil {
---		return nil, fmt.Errorf("invalid MinAmountOut value: %v", err)
--+	slippageValue := 1.0 // Значение по умолчанию
--+	if record[10] != "" {
--+		slippageValue, err = strconv.ParseFloat(record[10], 64)
--+		if err != nil {
--+			return nil, fmt.Errorf("invalid Slippage value: %v", err)
--+		}
+--		logger.Error("Invalid AmmID", zap.Error(err))
+--		return nil, fmt.Errorf("invalid AmmID: %w", err)
+--	}
+--
+--	// Создаем массив для всех аккаунтов, которые нужно проверить
+--	accountChecks := []struct {
+--		name    string
+--		address string
+--	}{
+--		{"AmmAuthority", poolInfo.AmmAuthority},
+--		{"AmmOpenOrders", poolInfo.AmmOpenOrders},
+--		{"AmmTargetOrders", poolInfo.AmmTargetOrders},
+--		{"PoolCoinTokenAccount", poolInfo.PoolCoinTokenAccount},
+--		{"PoolPcTokenAccount", poolInfo.PoolPcTokenAccount},
+--		{"SerumProgramID", poolInfo.SerumProgramID},
+--		{"SerumMarket", poolInfo.SerumMarket},
+--		{"SerumBids", poolInfo.SerumBids},
+--		{"SerumAsks", poolInfo.SerumAsks},
+--		{"SerumEventQueue", poolInfo.SerumEventQueue},
+--		{"SerumCoinVaultAccount", poolInfo.SerumCoinVaultAccount},
+--		{"SerumPcVaultAccount", poolInfo.SerumPcVaultAccount},
+--		{"SerumVaultSigner", poolInfo.SerumVaultSigner},
+--	}
+--
+--	// Создаем слайс для аккаунтов с предварительно выделенной памятью
+--	accounts := make([]*solana.AccountMeta, 0, len(accountChecks)+7) // +7 для базовых аккаунтов
+--
+--	// Добавляем базовые аккаунты
+--	accounts = append(accounts, []*solana.AccountMeta{
+--		{PublicKey: userSourceTokenAccount, IsSigner: false, IsWritable: true},
+--		{PublicKey: userDestinationTokenAccount, IsSigner: false, IsWritable: true},
+--		{PublicKey: ammID, IsSigner: false, IsWritable: true},
+--	}...)
+--
+--	// Проверяем и добавляем остальные аккаунты
+--	for _, check := range accountChecks {
+--		pubKey, err := validatePublicKey(check.address)
+-+	// Проверяем и создаем все необходимые аккаунты
+-+	requiredAccounts := map[string]string{
+-+		"AmmID":                poolInfo.AmmID,
+-+		"AmmAuthority":         poolInfo.AmmAuthority,
+-+		"AmmOpenOrders":        poolInfo.AmmOpenOrders,
+-+		"AmmTargetOrders":      poolInfo.AmmTargetOrders,
+-+		"PoolCoinTokenAccount": poolInfo.PoolCoinTokenAccount,
+-+		"PoolPcTokenAccount":   poolInfo.PoolPcTokenAccount,
+-+		"SerumProgramID":       poolInfo.SerumProgramID,
+-+		"SerumMarket":          poolInfo.SerumMarket,
+-+		"SerumBids":            poolInfo.SerumBids,
+-+		"SerumAsks":            poolInfo.SerumAsks,
+-+		"SerumEventQueue":      poolInfo.SerumEventQueue,
+-+		"SerumCoinVault":       poolInfo.SerumCoinVaultAccount,
+-+		"SerumPcVault":         poolInfo.SerumPcVaultAccount,
+-+		"SerumVaultSigner":     poolInfo.SerumVaultSigner,
+-+	}
+-+
+-+	accounts := make(map[string]solana.PublicKey)
+-+	for name, address := range requiredAccounts {
+-+		pubKey, err := validatePublicKey(address)
+- 		if err != nil {
+--			logger.Error(fmt.Sprintf("Invalid %s", check.name),
+--				zap.String("address", check.address),
+-+			logger.Error(fmt.Sprintf("Invalid %s", name),
+-+				zap.String("address", address),
+- 				zap.Error(err))
+--			return nil, fmt.Errorf("invalid %s: %w", check.name, err)
+-+			return nil, fmt.Errorf("invalid %s: %w", name, err)
+- 		}
+-+		accounts[name] = pubKey
+-+	}
+- 
+--		isWritable := false
+--		switch check.name {
+--		case "AmmOpenOrders", "AmmTargetOrders", "PoolCoinTokenAccount",
+--			"PoolPcTokenAccount", "SerumMarket", "SerumBids", "SerumAsks",
+--			"SerumEventQueue", "SerumCoinVaultAccount", "SerumPcVaultAccount":
+--			isWritable = true
+--		}
+-+	// Создаем слайс аккаунтов в правильном порядке для Raydium
+-+	metas := make(solana.AccountMetaSlice, 0, 20)
+- 
+--		accounts = append(accounts, &solana.AccountMeta{
+--			PublicKey:  pubKey,
+--			IsSigner:   false,
+--			IsWritable: isWritable,
+--		})
+--	}
+-+	// Токен аккаунты пользователя
+-+	metas = append(metas,
+-+		&solana.AccountMeta{PublicKey: userSourceTokenAccount, IsSigner: false, IsWritable: true},
+-+		&solana.AccountMeta{PublicKey: userDestinationTokenAccount, IsSigner: false, IsWritable: true},
+-+	)
+-+
+-+	// Аккаунты AMM
+-+	metas = append(metas,
+-+		&solana.AccountMeta{PublicKey: accounts["AmmID"], IsSigner: false, IsWritable: true},
+-+		&solana.AccountMeta{PublicKey: accounts["AmmAuthority"], IsSigner: false, IsWritable: false},
+-+		&solana.AccountMeta{PublicKey: accounts["AmmOpenOrders"], IsSigner: false, IsWritable: true},
+-+		&solana.AccountMeta{PublicKey: accounts["AmmTargetOrders"], IsSigner: false, IsWritable: true},
+-+		&solana.AccountMeta{PublicKey: accounts["PoolCoinTokenAccount"], IsSigner: false, IsWritable: true},
+-+		&solana.AccountMeta{PublicKey: accounts["PoolPcTokenAccount"], IsSigner: false, IsWritable: true},
+-+	)
+-+
+-+	// Аккаунты Serum
+-+	metas = append(metas,
+-+		&solana.AccountMeta{PublicKey: accounts["SerumProgramID"], IsSigner: false, IsWritable: false},
+-+		&solana.AccountMeta{PublicKey: accounts["SerumMarket"], IsSigner: false, IsWritable: true},
+-+		&solana.AccountMeta{PublicKey: accounts["SerumBids"], IsSigner: false, IsWritable: true},
+-+		&solana.AccountMeta{PublicKey: accounts["SerumAsks"], IsSigner: false, IsWritable: true},
+-+		&solana.AccountMeta{PublicKey: accounts["SerumEventQueue"], IsSigner: false, IsWritable: true},
+-+		&solana.AccountMeta{PublicKey: accounts["SerumCoinVault"], IsSigner: false, IsWritable: true},
+-+		&solana.AccountMeta{PublicKey: accounts["SerumPcVault"], IsSigner: false, IsWritable: true},
+-+		&solana.AccountMeta{PublicKey: accounts["SerumVaultSigner"], IsSigner: false, IsWritable: false},
+-+	)
+- 
+--	// Добавляем системные аккаунты
+--	accounts = append(accounts, []*solana.AccountMeta{
+--		{PublicKey: userWallet, IsSigner: true, IsWritable: false},
+--		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
+--		{PublicKey: solana.SysVarRentPubkey, IsSigner: false, IsWritable: false},
+--		{PublicKey: solana.SysVarClockPubkey, IsSigner: false, IsWritable: false},
+--	}...)
+-+	// Системные аккаунты
+-+	metas = append(metas,
+-+		&solana.AccountMeta{PublicKey: userWallet, IsSigner: true, IsWritable: false},
+-+		&solana.AccountMeta{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
+-+		&solana.AccountMeta{PublicKey: solana.SysVarRentPubkey, IsSigner: false, IsWritable: false},
+-+		&solana.AccountMeta{PublicKey: solana.SysVarClockPubkey, IsSigner: false, IsWritable: false},
+-+	)
+- 
+- 	// Создание данных инструкции
+--	instructionData := SwapInstructionData{
+-+	instructionData := &SwapInstructionData{
+- 		Instruction:  poolInfo.RaydiumSwapInstructionCode,
+- 		AmountIn:     amountIn,
+- 		MinAmountOut: minAmountOut,
 - 	}
 - 
-- 	autosellPercent, err := strconv.ParseFloat(record[11], 64)
--@@ -107,12 +110,15 @@ func parseTask(record []string) (*types.Task, error) {
-- 		SourceToken:         record[7],
-- 		TargetToken:         record[8],
-- 		AmountIn:            amountIn,
---		MinAmountOut:        minAmountOut,
-- 		AutosellPercent:     autosellPercent,
-- 		AutosellDelay:       autosellDelay,
-- 		AutosellAmount:      autosellAmount,
-- 		TransactionDelay:    transactionDelay,
-- 		AutosellPriorityFee: autosellPriorityFee,
---		DEXName:             dexName, // Устанавливаем имя DEX
--+		DEXName:             dexName,
--+		SlippageConfig: types.SlippageConfig{
--+			Type:  types.SlippagePercent, // Используем процентное проскальзывание по умолчанию
--+			Value: slippageValue,
--+		},
-- 	}, nil
-- }
--diff --git a/internal/types/types.go b/internal/types/types.go
--index babccdd..6b8c246 100644
----- a/internal/types/types.go
--+++ b/internal/types/types.go
--@@ -20,7 +20,6 @@ type Task struct {
-- 	SourceToken                 string
-- 	TargetToken                 string
-- 	AmountIn                    float64
---	MinAmountOut                float64
-- 	AutosellPercent             float64
-- 	AutosellDelay               int
-- 	AutosellAmount              float64
--@@ -31,6 +30,7 @@ type Task struct {
-- 	SourceTokenDecimals         int
-- 	TargetTokenDecimals         int
-- 	DEXName                     string `default:"Raydium"` // Добавляем значение по умолчанию
--+	SlippageConfig              SlippageConfig
+-+	// Добавляем отладочный вывод
+-+	instructionData.Debug(logger)
+-+
+-+	// Сериализация
+- 	data, err := instructionData.Serialize()
+- 	if err != nil {
+--		logger.Error("Failed to serialize instruction data", zap.Error(err))
+-+		logger.Error("Failed to serialize instruction data",
+-+			zap.Error(err),
+-+			zap.Uint8("instruction", instructionData.Instruction),
+-+			zap.Uint64("amount_in", instructionData.AmountIn),
+-+			zap.Uint64("min_amount_out", instructionData.MinAmountOut))
+- 		return nil, fmt.Errorf("failed to serialize instruction data: %w", err)
+- 	}
+- 
+--	instruction := solana.NewInstruction(ammProgramID, accounts, data)
+-+	// Проверка сериализованных данных
+-+	if len(data) != 17 {
+-+		logger.Error("Invalid serialized data length",
+-+			zap.Int("got_length", len(data)),
+-+			zap.Int("expected_length", 17))
+-+		return nil, fmt.Errorf("invalid serialized data length")
+-+	}
+-+
+-+	// Проверяем значения после сериализации
+-+	amountInCheck := binary.LittleEndian.Uint64(data[1:9])
+-+	minAmountOutCheck := binary.LittleEndian.Uint64(data[9:17])
+-+
+-+	logger.Debug("Serialized data check",
+-+		zap.Uint64("amount_in_check", amountInCheck),
+-+		zap.Uint64("min_amount_out_check", minAmountOutCheck))
+-+
+-+	if amountInCheck != amountIn {
+-+		logger.Error("AmountIn mismatch after serialization",
+-+			zap.Uint64("original", amountIn),
+-+			zap.Uint64("serialized", amountInCheck))
+-+		return nil, fmt.Errorf("amountIn mismatch after serialization")
+-+	}
+-+
+-+	instruction := solana.NewInstruction(ammProgramID, metas, data)
+-+
+-+	logger.Debug("Created instruction",
+-+		zap.Int("num_accounts", len(metas)),
+-+		zap.Int("data_len", len(data)))
+- 
+--	logger.Debug("Swap instruction created successfully")
+- 	return instruction, nil
 - }
 - 
-- type DEX interface {
--@@ -41,7 +41,6 @@ type DEX interface {
-- 		sourceToken solana.PublicKey,
-- 		destinationToken solana.PublicKey,
-- 		amountIn uint64,
---		minAmountOut uint64,
-- 		logger *zap.Logger,
-- 	) (solana.Instruction, error)
-- 
--diff --git a/internal/utils/logger/logger.go b/internal/utils/logger/logger.go
--index e5e813c..5b76758 100644
----- a/internal/utils/logger/logger.go
--+++ b/internal/utils/logger/logger.go
--@@ -138,7 +138,8 @@ func (l *Logger) WithTask(task *types.Task) *zap.Logger {
-- 		zap.String("source_token", task.SourceToken),
-- 		zap.String("target_token", task.TargetToken),
-- 		zap.Float64("amount_in", task.AmountIn),
---		zap.Float64("min_amount_out", task.MinAmountOut),
--+		zap.String("slippage_type", string(task.SlippageConfig.Type)),
--+		zap.Float64("slippage_value", task.SlippageConfig.Value),
-- 		zap.Float64("priority_fee", task.PriorityFee),
-- 	)
+-diff --git a/internal/dex/raydium/types.go b/internal/dex/raydium/types.go
+-index cd3089e..4cc1b1e 100644
+---- a/internal/dex/raydium/types.go
+-+++ b/internal/dex/raydium/types.go
+-@@ -27,11 +27,10 @@ type Pool struct {
 - }
+- 
+- // SwapInstructionData представляет данные инструкции свапа
+--// Обновляем также структуру инструкции
+- type SwapInstructionData struct {
+--	Instruction  uint8 // Изменено на uint8
+--	AmountIn     uint64
+--	MinAmountOut uint64
+-+	Instruction  uint8  // Тип инструкции
+-+	AmountIn     uint64 // Входящая сумма
+-+	MinAmountOut uint64 // Минимальная исходящая сумма
+- }
+- type DEX struct {
+- 	client   blockchain.Client // изменяем тип на интерфейс.
+-diff --git a/newdif.txt b/newdif.txt
+-index 073754f..a086373 100644
+---- a/newdif.txt
+-+++ b/newdif.txt
+-@@ -1,436 +0,0 @@
+--diff --git a/configs/tasks.csv b/configs/tasks.csv
+--index e44faa8..33e5da0 100644
+----- a/configs/tasks.csv
+--+++ b/configs/tasks.csv
+--@@ -1,2 +1,2 @@
+-- TaskName,Module,Workers,WalletName,Delta,PriorityFee,AMMID,SourceToken,TargetToken,AmountIn,MinAmountOut,AutosellPercent,AutosellDelay,AutosellAmount,TransactionDelay,AutosellPriorityFee
+---buyTokens,Raydium,1,wallet1,100,0.0001,,So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,0.02,,,,,100,
+--\ No newline at end of file
+--+buyTokens,Raydium,1,wallet1,100,0.0001,,So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,0.02,0,0,0,0,100,0.0003
+--\ No newline at end of file
+--diff --git a/internal/dex/raydium/raydium.go b/internal/dex/raydium/raydium.go
+--index 1703360..bcd26a9 100644
+----- a/internal/dex/raydium/raydium.go
+--+++ b/internal/dex/raydium/raydium.go
+--@@ -4,6 +4,7 @@ package raydium
+-- 
+-- import (
+-- 	"context"
+--+	"encoding/binary"
+-- 	"fmt"
+-- 	"math"
+-- 	"time"
+--@@ -45,6 +46,8 @@ func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wal
+-- 	logger := r.logger.With(
+-- 		zap.String("task", task.TaskName),
+-- 		zap.String("wallet", userWallet.PublicKey.String()),
+--+		zap.String("slippage_type", string(task.SlippageConfig.Type)),
+--+		zap.Float64("slippage_value", task.SlippageConfig.Value),
+-- 	)
+-- 	logger.Info("Starting swap execution")
+-- 
+--@@ -64,11 +67,12 @@ func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wal
+-- 
+-- 	// Подготавливаем amount с учетом decimals
+-- 	amountIn := uint64(task.AmountIn * math.Pow10(task.SourceTokenDecimals))
+---	minAmountOut := uint64(task.MinAmountOut * math.Pow10(task.TargetTokenDecimals))
+-- 
+---	logger.Debug("Prepared swap amounts",
+--+	logger.Debug("Prepared swap amount",
+-- 		zap.Uint64("amount_in", amountIn),
+---		zap.Uint64("min_amount_out", minAmountOut))
+--+		zap.String("slippage_type", string(task.SlippageConfig.Type)),
+--+		zap.Float64("slippage_value", task.SlippageConfig.Value),
+--+	)
+-- 
+-- 	// Создаем инструкции с таймаутом
+-- 	swapCtx, swapCancel := context.WithTimeout(opCtx, txSendTimeout)
+--@@ -81,7 +85,6 @@ func (r *DEX) ExecuteSwap(ctx context.Context, task *types.Task, userWallet *wal
+-- 		sourceATA,
+-- 		targetATA,
+-- 		amountIn,
+---		minAmountOut,
+-- 		task.PriorityFee,
+-- 		logger,
+-- 	)
+--@@ -220,7 +223,8 @@ func (r *DEX) sendATATransaction(ctx context.Context, wallet *wallet.Wallet, ins
+-- 	return fmt.Errorf("failed to send ATA transaction after %d attempts: %w", maxRetries, lastErr)
+-- }
+-- 
+---// Добавляем метод PrepareSwapInstruction для соответствия интерфейсу types.DEX
+--+// internal/dex/raydium/raydium.go
+--+
+-- // PrepareSwapInstructions объединяет все инструкции для свапа
+-- func (r *DEX) PrepareSwapInstructions(
+-- 	ctx context.Context,
+--@@ -228,7 +232,6 @@ func (r *DEX) PrepareSwapInstructions(
+-- 	sourceATA solana.PublicKey,
+-- 	targetATA solana.PublicKey,
+-- 	amountIn uint64,
+---	minAmountOut uint64,
+-- 	priorityFee float64,
+-- 	logger *zap.Logger,
+-- ) ([]solana.Instruction, error) {
+--@@ -247,7 +250,6 @@ func (r *DEX) PrepareSwapInstructions(
+-- 		sourceATA,
+-- 		targetATA,
+-- 		amountIn,
+---		minAmountOut,
+-- 		logger,
+-- 	)
+-- 	if err != nil {
+--@@ -265,7 +267,6 @@ func (r *DEX) PrepareSwapInstruction(
+-- 	sourceATA solana.PublicKey,
+-- 	targetATA solana.PublicKey,
+-- 	amountIn uint64,
+---	minAmountOut uint64,
+-- 	logger *zap.Logger,
+-- ) (solana.Instruction, error) {
+-- 	logger = logger.With(
+--@@ -275,8 +276,34 @@ func (r *DEX) PrepareSwapInstruction(
+-- 	)
+-- 	logger.Debug("Preparing swap instruction")
+-- 
+---	// Создаем инструкцию свапа
+---	instruction, err := r.CreateSwapInstruction(
+--+	// Получаем ожидаемый выход
+--+	sourceMint, err := r.getMintFromATA(ctx, sourceATA)
+--+	if err != nil {
+--+		return nil, fmt.Errorf("failed to get source mint: %w", err)
+--+	}
+--+
+--+	targetMint, err := r.getMintFromATA(ctx, targetATA)
+--+	if err != nil {
+--+		return nil, fmt.Errorf("failed to get target mint: %w", err)
+--+	}
+--+
+--+	expectedOut, err := r.getExpectedOutput(
+--+		ctx,
+--+		amountIn,
+--+		sourceMint,
+--+		targetMint,
+--+		r.poolInfo,
+--+		logger,
+--+	)
+--+	if err != nil {
+--+		return nil, fmt.Errorf("failed to get expected output: %w", err)
+--+	}
+--+
+--+	// Используем безопасное значение minAmountOut по умолчанию (99% от ожидаемого выхода)
+--+	minAmountOut := uint64(float64(expectedOut) * 0.99)
+--+
+--+	// Создаем инструкцию свапа с помощью внутреннего метода createSwapInstruction
+--+	return r.createSwapInstruction(
+-- 		wallet,
+-- 		sourceATA,
+-- 		targetATA,
+--@@ -285,12 +312,52 @@ func (r *DEX) PrepareSwapInstruction(
+-- 		logger,
+-- 		r.poolInfo,
+-- 	)
+--+}
+--+
+--+// createSwapInstruction внутренний метод для создания инструкции свапа
+--+func (r *DEX) createSwapInstruction(
+--+	wallet solana.PublicKey,
+--+	sourceATA solana.PublicKey,
+--+	targetATA solana.PublicKey,
+--+	amountIn uint64,
+--+	minAmountOut uint64,
+--+	logger *zap.Logger,
+--+	poolInfo *Pool,
+--+) (solana.Instruction, error) {
+--+	// Существующая логика из CreateSwapInstruction
+--+	return r.CreateSwapInstruction(
+--+		wallet,
+--+		sourceATA,
+--+		targetATA,
+--+		amountIn,
+--+		minAmountOut,
+--+		logger,
+--+		poolInfo,
+--+	)
+--+}
+--+
+--+// Вспомогательный метод для получения mint address из ATA
+--+func (r *DEX) getMintFromATA(ctx context.Context, ata solana.PublicKey) (solana.PublicKey, error) {
+--+	account, err := r.client.GetAccountInfo(ctx, ata)
+-- 	if err != nil {
+---		return nil, fmt.Errorf("failed to create swap instruction: %w", err)
+--+		return solana.PublicKey{}, fmt.Errorf("failed to get ATA info: %w", err)
+-- 	}
+-- 
+---	logger.Debug("Swap instruction prepared successfully")
+---	return instruction, nil
+--+	if account.Value == nil || len(account.Value.Data.GetBinary()) < 32 {
+--+		return solana.PublicKey{}, fmt.Errorf("invalid ATA account data")
+--+	}
+--+
+--+	data := account.Value.Data.GetBinary()[:32]
+--+	if len(data) != 32 {
+--+		return solana.PublicKey{}, fmt.Errorf("invalid public key length: expected 32 bytes, got %d", len(data))
+--+	}
+--+
+--+	pubkey := solana.PublicKeyFromBytes(data)
+--+	if pubkey.IsZero() {
+--+		return solana.PublicKey{}, fmt.Errorf("invalid zero public key")
+--+	}
+--+
+--+	return pubkey, nil
+-- }
+-- 
+-- func (r *DEX) sendTransactionWithRetry(
+--@@ -376,3 +443,117 @@ func parseTokenAddresses(sourceToken, targetToken string) (solana.PublicKey, sol
+-- 
+-- 	return sourceMint, targetMint, nil
+-- }
+--+
+--+// getExpectedOutput вычисляет ожидаемый выход для свапа
+--+func (r *DEX) getExpectedOutput(
+--+	ctx context.Context,
+--+	amountIn uint64,
+--+	sourceToken, targetToken solana.PublicKey,
+--+	poolInfo *Pool,
+--+	logger *zap.Logger,
+--+) (float64, error) {
+--+	// Создаем контекст с таймаутом
+--+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+--+	defer cancel()
+--+
+--+	logger = logger.With(
+--+		zap.String("source_token", sourceToken.String()),
+--+		zap.String("target_token", targetToken.String()),
+--+		zap.Uint64("amount_in", amountIn),
+--+	)
+--+
+--+	// Получаем состояние пула
+--+	poolState, err := r.getPoolState(ctx, poolInfo)
+--+	if err != nil {
+--+		return 0, fmt.Errorf("failed to get pool state: %w", err)
+--+	}
+--+
+--+	logger.Debug("Pool state retrieved",
+--+		zap.Uint64("token_a_reserve", poolState.TokenAReserve),
+--+		zap.Uint64("token_b_reserve", poolState.TokenBReserve),
+--+		zap.Float64("swap_fee", poolState.SwapFee))
+--+
+--+	// Вычисляем ожидаемый выход с учетом всех факторов
+--+	expectedOut := r.calculateExpectedOutput(amountIn, poolState)
+--+
+--+	logger.Debug("Expected output calculated",
+--+		zap.Float64("expected_out", expectedOut))
+--+
+--+	return expectedOut, nil
+--+}
+--+
+--+// getPoolState получает текущее состояние пула
+--+func (r *DEX) getPoolState(ctx context.Context, poolInfo *Pool) (*PoolState, error) {
+--+	// Получаем аккаунт пула
+--+	poolAccount, err := r.client.GetAccountInfo(ctx, solana.MustPublicKeyFromBase58(poolInfo.AmmID))
+--+	if err != nil {
+--+		return nil, fmt.Errorf("failed to get pool account: %w", err)
+--+	}
+--+
+--+	if poolAccount == nil || poolAccount.Value == nil {
+--+		return nil, fmt.Errorf("pool account not found")
+--+	}
+--+
+--+	// Парсим данные аккаунта
+--+	data := poolAccount.Value.Data.GetBinary()
+--+	if len(data) < 8+32*2 { // Минимальный размер для резервов
+--+		return nil, fmt.Errorf("invalid pool account data size")
+--+	}
+--+
+--+	// Извлекаем резервы из данных аккаунта
+--+	// Обратите внимание: это упрощенная версия, реальная структура данных может отличаться
+--+	tokenAReserve := binary.LittleEndian.Uint64(data[8:16])
+--+	tokenBReserve := binary.LittleEndian.Uint64(data[16:24])
+--+
+--+	// Получаем информацию о комиссии пула
+--+	swapFee := 0.25 // 0.25% это стандартная комиссия Raydium
+--+
+--+	return &PoolState{
+--+		TokenAReserve: tokenAReserve,
+--+		TokenBReserve: tokenBReserve,
+--+		SwapFee:       swapFee,
+--+	}, nil
+--+}
+--+
+--+// calculateExpectedOutput вычисляет ожидаемый выход на основе состояния пула
+--+func (r *DEX) calculateExpectedOutput(amountIn uint64, state *PoolState) float64 {
+--+	// Константа k = x * y, где x и y - резервы токенов
+--+	k := float64(state.TokenAReserve) * float64(state.TokenBReserve)
+--+
+--+	// Вычисляем amount_in после комиссии
+--+	amountInAfterFee := float64(amountIn) * (1 - state.SwapFee/100)
+--+
+--+	// Новый резерв входного токена
+--+	newSourceReserve := float64(state.TokenAReserve) + amountInAfterFee
+--+
+--+	// Вычисляем новый резерв выходного токена используя формулу k = x * y
+--+	newTargetReserve := k / newSourceReserve
+--+
+--+	// Ожидаемый выход это разница между старым и новым резервом
+--+	expectedOut := float64(state.TokenBReserve) - newTargetReserve
+--+
+--+	// Применяем дополнительный запас надежности
+--+	safetyFactor := 0.995 // 0.5% запас для учета изменения цены
+--+	return expectedOut * safetyFactor
+--+}
+--+
+--+// GetAmountOutQuote получает котировку для свапа
+--+func (r *DEX) GetAmountOutQuote(
+--+	ctx context.Context,
+--+	amountIn uint64,
+--+	sourceToken, targetToken solana.PublicKey,
+--+) (float64, error) {
+--+	// Создаем временный пул для получения котировки
+--+	poolInfo := r.poolInfo
+--+	if poolInfo == nil {
+--+		return 0, fmt.Errorf("pool info not configured")
+--+	}
+--+
+--+	// Получаем ожидаемый выход
+--+	expectedOut, err := r.getExpectedOutput(ctx, amountIn, sourceToken, targetToken, poolInfo, r.logger)
+--+	if err != nil {
+--+		return 0, fmt.Errorf("failed to get expected output: %w", err)
+--+	}
+--+
+--+	return expectedOut, nil
+--+}
+--diff --git a/internal/dex/raydium/types.go b/internal/dex/raydium/types.go
+--index dd0f18f..cd3089e 100644
+----- a/internal/dex/raydium/types.go
+--+++ b/internal/dex/raydium/types.go
+--@@ -55,3 +55,10 @@ func (r *Pool) GetTokenAccounts() (string, string) {
+-- func (r *DEX) Name() string {
+-- 	return "Raydium"
+-- }
+--+
+--+// PoolState содержит состояние пула ликвидности
+--+type PoolState struct {
+--+	TokenAReserve uint64
+--+	TokenBReserve uint64
+--+	SwapFee       float64 // в процентах
+--+}
+--diff --git a/internal/dex/raydium/validation.go b/internal/dex/raydium/validation.go
+--index a948715..9267897 100644
+----- a/internal/dex/raydium/validation.go
+--+++ b/internal/dex/raydium/validation.go
+--@@ -1,5 +1,4 @@
+-- // internal/dex/raydium/validation.go
+---
+-- package raydium
+-- 
+-- import (
+--@@ -11,7 +10,6 @@ import (
+-- 
+-- // ValidateTask проверяет корректность параметров задачи
+-- func ValidateTask(task *types.Task) error {
+---
+-- 	if task == nil {
+-- 		return fmt.Errorf("task cannot be nil")
+-- 	}
+--@@ -41,8 +39,20 @@ func ValidateTask(task *types.Task) error {
+-- 		return fmt.Errorf("amount in must be greater than 0")
+-- 	}
+-- 
+---	if task.MinAmountOut <= 0 {
+---		return fmt.Errorf("min amount out must be greater than 0")
+--+	// Удаляем проверку MinAmountOut, так как теперь оно может быть нулевым или пустым
+--+	// if task.MinAmountOut <= 0 {
+--+	//     return fmt.Errorf("min amount out must be greater than 0")
+--+	// }
+--+
+--+	// Проверяем конфигурацию проскальзывания, если она используется
+--+	if task.SlippageConfig.Type != types.SlippageNone {
+--+		if task.SlippageConfig.Type == types.SlippagePercent &&
+--+			(task.SlippageConfig.Value <= 0 || task.SlippageConfig.Value > 100) {
+--+			return fmt.Errorf("slippage percentage must be between 0 and 100")
+--+		}
+--+		if task.SlippageConfig.Type == types.SlippageFixed && task.SlippageConfig.Value < 0 {
+--+			return fmt.Errorf("fixed slippage value cannot be negative")
+--+		}
+-- 	}
+-- 
+-- 	if task.SourceTokenDecimals <= 0 {
+--diff --git a/internal/sniping/strategy.go b/internal/sniping/strategy.go
+--index 91602f1..aa5b32c 100644
+----- a/internal/sniping/strategy.go
+--+++ b/internal/sniping/strategy.go
+--@@ -60,9 +60,12 @@ func parseTask(record []string) (*types.Task, error) {
+-- 		return nil, fmt.Errorf("invalid AmountIn value: %v", err)
+-- 	}
+-- 
+---	minAmountOut, err := strconv.ParseFloat(record[10], 64)
+---	if err != nil {
+---		return nil, fmt.Errorf("invalid MinAmountOut value: %v", err)
+--+	slippageValue := 1.0 // Значение по умолчанию
+--+	if record[10] != "" {
+--+		slippageValue, err = strconv.ParseFloat(record[10], 64)
+--+		if err != nil {
+--+			return nil, fmt.Errorf("invalid Slippage value: %v", err)
+--+		}
+-- 	}
+-- 
+-- 	autosellPercent, err := strconv.ParseFloat(record[11], 64)
+--@@ -107,12 +110,15 @@ func parseTask(record []string) (*types.Task, error) {
+-- 		SourceToken:         record[7],
+-- 		TargetToken:         record[8],
+-- 		AmountIn:            amountIn,
+---		MinAmountOut:        minAmountOut,
+-- 		AutosellPercent:     autosellPercent,
+-- 		AutosellDelay:       autosellDelay,
+-- 		AutosellAmount:      autosellAmount,
+-- 		TransactionDelay:    transactionDelay,
+-- 		AutosellPriorityFee: autosellPriorityFee,
+---		DEXName:             dexName, // Устанавливаем имя DEX
+--+		DEXName:             dexName,
+--+		SlippageConfig: types.SlippageConfig{
+--+			Type:  types.SlippagePercent, // Используем процентное проскальзывание по умолчанию
+--+			Value: slippageValue,
+--+		},
+-- 	}, nil
+-- }
+--diff --git a/internal/types/types.go b/internal/types/types.go
+--index babccdd..6b8c246 100644
+----- a/internal/types/types.go
+--+++ b/internal/types/types.go
+--@@ -20,7 +20,6 @@ type Task struct {
+-- 	SourceToken                 string
+-- 	TargetToken                 string
+-- 	AmountIn                    float64
+---	MinAmountOut                float64
+-- 	AutosellPercent             float64
+-- 	AutosellDelay               int
+-- 	AutosellAmount              float64
+--@@ -31,6 +30,7 @@ type Task struct {
+-- 	SourceTokenDecimals         int
+-- 	TargetTokenDecimals         int
+-- 	DEXName                     string `default:"Raydium"` // Добавляем значение по умолчанию
+--+	SlippageConfig              SlippageConfig
+-- }
+-- 
+-- type DEX interface {
+--@@ -41,7 +41,6 @@ type DEX interface {
+-- 		sourceToken solana.PublicKey,
+-- 		destinationToken solana.PublicKey,
+-- 		amountIn uint64,
+---		minAmountOut uint64,
+-- 		logger *zap.Logger,
+-- 	) (solana.Instruction, error)
+-- 
+--diff --git a/internal/utils/logger/logger.go b/internal/utils/logger/logger.go
+--index e5e813c..5b76758 100644
+----- a/internal/utils/logger/logger.go
+--+++ b/internal/utils/logger/logger.go
+--@@ -138,7 +138,8 @@ func (l *Logger) WithTask(task *types.Task) *zap.Logger {
+-- 		zap.String("source_token", task.SourceToken),
+-- 		zap.String("target_token", task.TargetToken),
+-- 		zap.Float64("amount_in", task.AmountIn),
+---		zap.Float64("min_amount_out", task.MinAmountOut),
+--+		zap.String("slippage_type", string(task.SlippageConfig.Type)),
+--+		zap.Float64("slippage_value", task.SlippageConfig.Value),
+-- 		zap.Float64("priority_fee", task.PriorityFee),
+-- 	)
+-- }
