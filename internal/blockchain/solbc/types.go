@@ -7,6 +7,7 @@ import (
 
 	"go.uber.org/zap"
 
+	solanarpc "github.com/gagliardetto/solana-go/rpc"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc/rpc"
 )
@@ -20,6 +21,7 @@ type TokenMetadataCache struct {
 // Client представляет основной клиент Solana
 type Client struct {
 	rpc     *rpc.RPCClient
+	adapter *solanarpc.Client
 	logger  *zap.Logger
 	metrics *ClientMetrics
 }

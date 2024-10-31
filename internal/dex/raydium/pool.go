@@ -47,15 +47,17 @@ func (pm *PoolManager) InitializePool(ctx context.Context, params *RaydiumPool) 
 
 // PoolCalculator предоставляет методы для расчетов в пуле
 type PoolCalculator struct {
-	pool  *RaydiumPool
-	state *PoolState
+	pool   *RaydiumPool
+	state  *PoolState
+	logger *zap.Logger // Добавляем logger в структуру
 }
 
 // NewPoolCalculator создает новый калькулятор для пула
-func NewPoolCalculator(pool *RaydiumPool, state *PoolState) *PoolCalculator {
+func NewPoolCalculator(pool *RaydiumPool, state *PoolState, logger *zap.Logger) *PoolCalculator {
 	return &PoolCalculator{
-		pool:  pool,
-		state: state,
+		pool:   pool,
+		state:  state,
+		logger: logger.Named("pool-calculator"), // Добавляем префикс для логгера
 	}
 }
 
@@ -83,26 +85,24 @@ func (pc *PoolCalculator) CalculateSwapAmount(
 
 	var amountOut *big.Float
 	if side == SwapSideIn {
-		// dx * y / (x + dx)
 		numerator := new(big.Float).Mul(amountInAfterFee, quoteReserveF)
 		denominator := new(big.Float).Add(baseReserveF, amountInAfterFee)
 		amountOut = new(big.Float).Quo(numerator, denominator)
 	} else {
-		// dx * y / (x + dx)
 		numerator := new(big.Float).Mul(amountInAfterFee, baseReserveF)
 		denominator := new(big.Float).Add(quoteReserveF, amountInAfterFee)
 		amountOut = new(big.Float).Quo(numerator, denominator)
 	}
 
-	// Конвертируем результат обратно в uint64
-	var amountOutU uint64
-	amountOut.Uint64(&amountOutU)
+	// Исправляем конвертацию в uint64
+	amountOutU, _ := amountOut.Uint64()
 
 	// Учитываем слиппаж для минимального выхода
 	slippageMultiplier := new(big.Float).SetFloat64(1 - float64(slippageBps)/10000)
 	minAmountOut := new(big.Float).Mul(new(big.Float).SetUint64(amountOutU), slippageMultiplier)
-	var minAmountOutU uint64
-	minAmountOut.Uint64(&minAmountOutU)
+
+	// Исправляем конвертацию в uint64
+	minAmountOutU, _ := minAmountOut.Uint64()
 
 	return &SwapAmounts{
 		AmountIn:     amountIn,
@@ -140,14 +140,15 @@ func (pc *PoolCalculator) GetOptimalSwapAmount(
 	targetAmount uint64,
 	slippageBps uint16,
 ) (*SwapAmounts, error) {
-	logger := pm.logger.With(
+	// Исправляем pm на pc.pool, так как мы находимся в методе PoolCalculator
+	logger := pc.logger.With(
 		zap.Uint64("available_amount", availableAmount),
 		zap.Uint64("target_amount", targetAmount),
 		zap.Uint16("slippage_bps", slippageBps),
 	)
 	logger.Debug("Calculating optimal swap amount")
 
-	// Используем бинарный поиск для нахождения оптимального количества
+	// Остальной код остается без изменений
 	left := uint64(1)
 	right := availableAmount
 	var bestAmount *SwapAmounts
@@ -269,6 +270,17 @@ func (pc *PoolCalculator) GetMarketPrice() float64 {
 	quoteDecimalAdj := math.Pow10(int(pc.pool.QuoteDecimals))
 
 	return (quoteF / quoteDecimalAdj) / (baseF / baseDecimalAdj)
+}
+
+// Добавить в pool.go:
+type RaydiumV5Pool struct {
+	RaydiumPool
+	PnlOwner    solana.PublicKey
+	ModelDataId solana.PublicKey
+	RecentRoot  *big.Int
+	MaxOrders   uint64
+	OrderStates []*big.Int
+	TickSpacing uint16
 }
 
 // Методы для работы с v5 пулами

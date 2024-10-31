@@ -2,6 +2,7 @@
 package raydium
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -152,7 +153,6 @@ func FindAssociatedTokenAddress(
 			owner, // payer
 			ata,   // ata
 			owner, // owner
-			mint,  // mint
 		).Build()
 
 		instructions = append(instructions, createATAInst)
@@ -271,7 +271,7 @@ func ValidateTokenAccount(
 	}
 
 	var tokenAccount token.Account
-	if err := binary.NewDecoder(info.Value.Data.GetBinary()).Decode(&tokenAccount); err != nil {
+	if err := binary.Read(bytes.NewReader(info.Value.Data.GetBinary()), binary.LittleEndian, &tokenAccount); err != nil {
 		return fmt.Errorf("failed to decode token account: %w", err)
 	}
 

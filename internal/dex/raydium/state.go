@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/gagliardetto/binary"
 	"github.com/gagliardetto/solana-go"
 	"go.uber.org/zap"
 )
@@ -294,16 +293,101 @@ func (d *StateDecoder) CalculateVirtualPrice(layout *Layout) (float64, error) {
 	return 2 * sqrtK / lpAdjusted, nil
 }
 
-// Декодер для v5 состояния
-func (d *StateDecoder) DecodeV5State(data []byte) (*LayoutV5, error) {
-	// ... реализация декодирования v5 состояния
-	// Этот метод будет реализован в следующей части
-	return nil, nil
+// LayoutV5 расширяет базовую структуру Layout дополнительными полями для v5
+type LayoutV5 struct {
+	Layout                       // Встраиваем базовый Layout
+	PnlOwner    solana.PublicKey // Владелец PnL
+	ModelDataId solana.PublicKey // ID модели данных
+	PnlPool     solana.PublicKey // Пул PnL
 }
 
-// Методы миграции
+// DecodeV5State декодирует бинарные данные в структуру состояния версии 5
+func (d *StateDecoder) DecodeV5State(data []byte) (*LayoutV5, error) {
+	logger := d.logger.With(zap.Int("data_length", len(data)))
+	logger.Debug("Starting v5 state decoding")
+
+	// Сначала декодируем базовую структуру
+	baseLayout, err := d.DecodeState(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode base layout: %w", err)
+	}
+
+	// Проверяем версию
+	if baseLayout.Version != uint8(StateV5) {
+		return nil, fmt.Errorf("invalid version for V5 decode: %d", baseLayout.Version)
+	}
+
+	// Создаем V5 структуру
+	layout := &LayoutV5{
+		Layout: *baseLayout,
+	}
+
+	// Вычисляем смещение для дополнительных полей V5
+	offset := d.GetStateSize(StateV4)
+
+	// Проверяем достаточно ли данных для V5 полей
+	if len(data) < int(d.GetStateSize(StateV5)) {
+		return nil, fmt.Errorf("insufficient data for V5 layout: got %d, need %d",
+			len(data), d.GetStateSize(StateV5))
+	}
+
+	// Читаем дополнительные поля V5
+	copy(layout.PnlOwner[:], data[offset:offset+32])
+	offset += 32
+
+	copy(layout.ModelDataId[:], data[offset:offset+32])
+	offset += 32
+
+	copy(layout.PnlPool[:], data[offset:offset+32])
+
+	logger.Debug("V5 state decoded successfully",
+		zap.Stringer("pnl_owner", layout.PnlOwner),
+		zap.Stringer("model_data_id", layout.ModelDataId),
+		zap.Stringer("pnl_pool", layout.PnlPool))
+
+	return layout, nil
+}
+
+// MigrateState выполняет миграцию состояния между версиями
 func (d *StateDecoder) MigrateState(oldState *Layout, newVersion StateVersion) (*Layout, error) {
-	// ... реализация миграции состояния
-	// Этот метод будет реализован в следующей части
-	return nil, nil
+	if oldState == nil {
+		return nil, fmt.Errorf("old state is nil")
+	}
+
+	// Проверяем корректность текущей версии
+	currentVersion := StateVersion(oldState.Version)
+	if currentVersion != StateV4 && currentVersion != StateV5 {
+		return nil, fmt.Errorf("unsupported current version: %d", currentVersion)
+	}
+
+	// Проверяем поддерживается ли миграция на новую версию
+	if newVersion != StateV4 && newVersion != StateV5 {
+		return nil, fmt.Errorf("unsupported target version: %d", newVersion)
+	}
+
+	// Если версии совпадают, возвращаем копию старого состояния
+	if currentVersion == newVersion {
+		newState := *oldState
+		return &newState, nil
+	}
+
+	// Миграция с V4 на V5
+	if currentVersion == StateV4 && newVersion == StateV5 {
+		// При миграции с V4 на V5 мы просто копируем базовые поля
+		// и инициализируем новые поля нулевыми значениями
+		newState := *oldState
+		newState.Version = uint8(StateV5)
+		return &newState, nil
+	}
+
+	// Миграция с V5 на V4
+	if currentVersion == StateV5 && newVersion == StateV4 {
+		// При миграции с V5 на V4 мы просто копируем базовые поля
+		newState := *oldState
+		newState.Version = uint8(StateV4)
+		return &newState, nil
+	}
+
+	return nil, fmt.Errorf("unsupported migration path: %d -> %d",
+		currentVersion, newVersion)
 }

@@ -1,9 +1,12 @@
-// internal/blockchain/solbc/solana.go:
+// internal/blockchain/solbc/solana.go
 package solbc
 
 import (
 	"context"
 	"fmt"
+
+	solanarpc "github.com/gagliardetto/solana-go/rpc"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc/rpc"
 
 	"github.com/gagliardetto/solana-go"
 	"go.uber.org/zap"
@@ -53,4 +56,26 @@ func (s *Blockchain) GetRecentBlockhash(ctx context.Context) (solana.Hash, error
 		return solana.Hash{}, fmt.Errorf("failed to get recent blockhash: %w", err)
 	}
 	return hash, nil
+}
+
+// SimulateTransaction simulates a transaction on the Solana blockchain
+func (c *Client) SimulateTransaction(tx string) (string, error) {
+	// Implement the method logic here
+	return "", nil
+}
+
+func (c *Client) GetRpcClient() *solanarpc.Client {
+	if c.adapter == nil {
+		c.adapter = NewRpcAdapter(c.rpc)
+	}
+	return c.adapter
+}
+
+// RpcAdapter адаптирует наш RPCClient к интерфейсу solana-go/rpc.Client
+type RpcAdapter struct {
+	client *rpc.RPCClient
+}
+
+func NewRpcAdapter(client *rpc.RPCClient) *solanarpc.Client {
+	return solanarpc.New("") // Создаем пустой клиент
 }

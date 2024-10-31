@@ -5,8 +5,10 @@ package raydium
 import (
 	"context"
 	"fmt"
+	"math/big"
 
 	"github.com/gagliardetto/solana-go"
+	"go.uber.org/zap"
 )
 
 // Layout константы для правильного чтения данных из аккаунта пула
@@ -26,6 +28,20 @@ const (
 	// Константы протокола
 	DefaultSwapFeePercent = 0.25
 	MinimumAmountOut      = 1
+)
+
+const (
+	PoolDataSize = 217 // Минимальный размер данных пула
+
+	LayoutAmmProgramID = 2
+	LayoutAuthority    = 34
+	LayoutBaseVault    = 66
+	LayoutQuoteVault   = 98
+	LayoutBaseMint     = 130
+	LayoutQuoteMint    = 162
+	LayoutBaseReserve  = 194
+	LayoutQuoteReserve = 202
+	LayoutFeeRate      = 210
 )
 
 // RaydiumPool представляет собой конфигурацию пула ликвидности Raydium
@@ -69,6 +85,34 @@ type RaydiumPool struct {
 	SwapInstructionIndex uint8
 	DefaultMinimumOutBps uint16 // базовых пунктов (1 bps = 0.01%)
 	DefaultFeeBps        uint16 // комиссия пула в базовых пунктах
+
+	// Статус пула
+	Status uint8
+	Nonce  uint8
+
+	BaseReserve  uint64
+	QuoteReserve uint64
+	FeeRate      uint64
+}
+
+// Добавить в types.go:
+type LiquidityState struct {
+	Status      uint8
+	Nonce       uint8
+	MaxOrder    *big.Int         // Используется для ограничения размера ордера
+	DepthBPS    uint64           // Глубина пула в базисных пунктах
+	PnLOwner    solana.PublicKey // Владелец PnL
+	ModelDataId solana.PublicKey // ID модели данных
+	RecentRoot  *big.Int         // Последний корень для верификации
+	OrderBook   OrderBookState
+}
+
+type OrderBookState struct {
+	Bids       solana.PublicKey
+	Asks       solana.PublicKey
+	EventQueue solana.PublicKey
+	BaseVault  solana.PublicKey
+	QuoteVault solana.PublicKey
 }
 
 // PoolState содержит динамическое состояние пула
@@ -99,6 +143,11 @@ type SwapParams struct {
 	WritableIndexes     []uint8           // Индексы для writable аккаунтов в lookup table
 	ReadonlyIndexes     []uint8           // Индексы для readonly аккаунтов в lookup table
 	Pool                *RaydiumPool      // Информация о пуле
+	Logger              *zap.Logger       // Добавляем поле logger
+
+	// Аккаунты для свапа
+	SourceTokenAccount      solana.PublicKey
+	DestinationTokenAccount solana.PublicKey
 }
 
 // Client представляет интерфейс для взаимодействия с Raydium DEX

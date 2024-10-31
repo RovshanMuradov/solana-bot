@@ -12,9 +12,8 @@ import (
 	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
 	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/gagliardetto/solana-go/rpc/jsonrpc"
-	"go.uber.org/zap"
-
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+	"go.uber.org/zap"
 )
 
 const (
@@ -217,7 +216,8 @@ func (c *RaydiumClient) CreateSwapInstructions(ctx context.Context, params SwapP
 
 // SimulateSwap симулирует выполнение свапа
 func (c *RaydiumClient) SimulateSwap(ctx context.Context, instructions []solana.Instruction) error {
-	logger := c.logger.Debug("Simulating swap transaction")
+	logger := c.logger.With(zap.String("method", "SimulateSwap"))
+	logger.Debug("Starting swap simulation")
 
 	recent, err := c.client.GetRecentBlockhash(ctx)
 	if err != nil {
@@ -246,15 +246,16 @@ func (c *RaydiumClient) SimulateSwap(ctx context.Context, instructions []solana.
 		}
 	}
 
-	if simulation.Value.Err != nil {
+	if simulation.Err != nil {
 		return &SwapError{
 			Stage:   "simulate_swap",
-			Message: fmt.Sprintf("simulation returned error: %v", simulation.Value.Err),
+			Message: fmt.Sprintf("simulation returned error: %v", simulation.Err),
 		}
 	}
 
 	logger.Debug("Swap simulation successful",
-		zap.Uint64("compute_units_used", simulation.Value.UnitsConsumed))
+		zap.Uint64("compute_units_used", simulation.UnitsConsumed),
+		zap.Strings("logs", simulation.Logs))
 
 	return nil
 }
@@ -294,15 +295,112 @@ func (c *RaydiumClient) GetAmountOut(pool *RaydiumPool, state *PoolState, amount
 
 // createSwapInstruction создает инструкцию свапа
 func (c *RaydiumClient) createSwapInstruction(params SwapParams) (solana.Instruction, error) {
-	// ... реализация создания инструкции свапа
-	// Этот метод будет реализован в следующей части
-	return nil, nil
+	// Проверяем входные параметры
+	if params.Pool == nil {
+		return nil, &SwapError{
+			Stage:   "create_swap_instruction",
+			Message: "pool is required",
+		}
+	}
+
+	// Создаем слайс аккаунтов для инструкции
+	accounts := make(solana.AccountMetaSlice, 0)
+
+	// Добавляем основные аккаунты
+	accounts = append(accounts,
+		// Token Program ID
+		solana.Meta(solana.TokenProgramID),
+		// AMM Program ID
+		solana.Meta(params.Pool.AmmProgramID),
+		// User wallet (signer)
+		solana.Meta(params.UserWallet).SIGNER(),
+		// Pool ID
+		solana.Meta(params.Pool.ID),
+		// Pool Authority
+		solana.Meta(params.Pool.Authority),
+		// Source token account
+		solana.Meta(params.SourceTokenAccount).WRITE(),
+		// Destination token account
+		solana.Meta(params.DestinationTokenAccount).WRITE(),
+		// Pool base vault
+		solana.Meta(params.Pool.BaseVault).WRITE(),
+		// Pool quote vault
+		solana.Meta(params.Pool.QuoteVault).WRITE(),
+	)
+
+	// Создаем данные инструкции
+	data := make([]byte, 9)
+	// Команда swap (предположим, что это 1)
+	data[0] = 1
+	// Записываем AmountIn (8 байт, little endian)
+	binary.LittleEndian.PutUint64(data[1:], params.AmountIn)
+
+	// Создаем инструкцию
+	instruction := solana.NewInstruction(
+		params.Pool.AmmProgramID,
+		accounts,
+		data,
+	)
+
+	return instruction, nil
 }
 
 // decodePoolData декодирует данные аккаунта пула
 func (c *RaydiumClient) decodePoolData(data []byte, pool *RaydiumPool) error {
-	// ... реализация декодирования данных пула
-	// Этот метод будет реализован в следующей части
+	if len(data) < PoolDataSize {
+		return &SwapError{
+			Stage:   "decode_pool_data",
+			Message: fmt.Sprintf("invalid data length: got %d, want at least %d", len(data), PoolDataSize),
+		}
+	}
+
+	// Декодируем данные пула используя binary.LittleEndian
+	// Предполагаем следующую структуру данных:
+	offset := 0
+
+	// Status (1 byte)
+	pool.Status = data[offset]
+	offset += 1
+
+	// Nonce (1 byte)
+	pool.Nonce = data[offset]
+	offset += 1
+
+	// AMM Program ID (32 bytes)
+	copy(pool.AmmProgramID[:], data[offset:offset+32])
+	offset += 32
+
+	// Authority (32 bytes)
+	copy(pool.Authority[:], data[offset:offset+32])
+	offset += 32
+
+	// Base Vault (32 bytes)
+	copy(pool.BaseVault[:], data[offset:offset+32])
+	offset += 32
+
+	// Quote Vault (32 bytes)
+	copy(pool.QuoteVault[:], data[offset:offset+32])
+	offset += 32
+
+	// Base Mint (32 bytes)
+	copy(pool.BaseMint[:], data[offset:offset+32])
+	offset += 32
+
+	// Quote Mint (32 bytes)
+	copy(pool.QuoteMint[:], data[offset:offset+32])
+	offset += 32
+
+	// Base Reserve (8 bytes)
+	pool.BaseReserve = binary.LittleEndian.Uint64(data[offset : offset+8])
+	offset += 8
+
+	// Quote Reserve (8 bytes)
+	pool.QuoteReserve = binary.LittleEndian.Uint64(data[offset : offset+8])
+	offset += 8
+
+	// Fee Rate (8 bytes)
+	pool.FeeRate = binary.LittleEndian.Uint64(data[offset : offset+8])
+
 	return nil
 }
 
@@ -334,13 +432,14 @@ func (c *RaydiumClient) CreateVersionedSwapInstructions(
 
 	// Создаем базовое сообщение
 	message := &solana.Message{
+
 		AccountKeys: []solana.PublicKey{params.UserWallet}, // Начинаем с основного кошелька
 		Header: solana.MessageHeader{
 			NumRequiredSignatures:       1, // Минимум одна подпись от кошелька
 			NumReadonlySignedAccounts:   0,
 			NumReadonlyUnsignedAccounts: 0,
 		},
-		RecentBlockhash: recent.Value.Blockhash,
+		RecentBlockhash: recent,
 		Instructions:    make([]solana.CompiledInstruction, 0),
 	}
 
@@ -361,8 +460,15 @@ func (c *RaydiumClient) CreateVersionedSwapInstructions(
 	for _, instruction := range instructions {
 		compiledIx := solana.CompiledInstruction{
 			ProgramIDIndex: uint16(len(message.AccountKeys)), // Индекс программы
-			Data:           instruction.Data(),
-			Accounts:       make([]uint16, len(instruction.Accounts())),
+			Data: func() []byte {
+				data, err := instruction.Data()
+				if err != nil {
+					logger.Error("failed to get instruction data", zap.Error(err))
+					return nil
+				}
+				return data
+			}(),
+			Accounts: make([]uint16, len(instruction.Accounts())),
 		}
 
 		// Добавляем ProgramID в список аккаунтов, если его там еще нет
@@ -427,10 +533,13 @@ func (c *RaydiumClient) GetPoolLookupTable(
 		return nil, fmt.Errorf("failed to derive lookup table address: %w", err)
 	}
 
-	// Получаем данные таблицы
+	// Получаем RPC клиент через GetRpcClient
+	rpcClient := c.client.GetRpcClient()
+
+	// Получаем данные таблицы с помощью RPC клиента
 	lookupTable, err := addresslookuptable.GetAddressLookupTable(
 		ctx,
-		c.client,
+		rpcClient,
 		lookupTableAddr,
 	)
 	if err != nil {
@@ -450,7 +559,6 @@ func (c *RaydiumClient) GetPoolLookupTable(
 		return nil, nil
 	}
 
-	// Проверяем наличие необходимых адресов
 	requiredAddresses := []solana.PublicKey{
 		pool.ID,
 		pool.Authority,
@@ -461,7 +569,6 @@ func (c *RaydiumClient) GetPoolLookupTable(
 		pool.MarketQuoteVault,
 	}
 
-	// Проверяем, что все необходимые адреса есть в таблице
 	for _, addr := range requiredAddresses {
 		found := false
 		for _, tableAddr := range lookupTable.Addresses {
