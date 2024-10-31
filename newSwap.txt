@@ -1,0 +1,1602 @@
+// internal/dex/raydium/client.go
+package raydium
+
+import (
+	"context"
+	"encoding/binary"
+	"fmt"
+	"time"
+
+	"github.com/gagliardetto/solana-go"
+	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
+	"github.com/gagliardetto/solana-go/rpc"
+	"go.uber.org/zap"
+
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+)
+
+const (
+	maxRetries          = 3
+	retryDelay          = 500 * time.Millisecond
+	defaultTimeout      = 15 * time.Second
+	defaultConfirmLevel = rpc.CommitmentConfirmed
+)
+
+// clientOptions содержит опции для настройки клиента
+type clientOptions struct {
+	timeout         time.Duration
+	retries         int
+	commitmentLevel rpc.CommitmentLevel
+}
+
+// ClientOption определяет функцию для настройки клиента
+type ClientOption func(*clientOptions)
+
+// WithTimeout устанавливает таймаут для операций
+func WithTimeout(timeout time.Duration) ClientOption {
+	return func(o *clientOptions) {
+		o.timeout = timeout
+	}
+}
+
+// WithRetries устанавливает количество попыток
+func WithRetries(retries int) ClientOption {
+	return func(o *clientOptions) {
+		o.retries = retries
+	}
+}
+
+// WithCommitmentLevel устанавливает уровень подтверждения
+func WithCommitmentLevel(level rpc.CommitmentLevel) ClientOption {
+	return func(o *clientOptions) {
+		o.commitmentLevel = level
+	}
+}
+
+// getDefaultOptions возвращает опции по умолчанию
+func getDefaultOptions() *clientOptions {
+	return &clientOptions{
+		timeout:         defaultTimeout,
+		retries:         maxRetries,
+		commitmentLevel: defaultConfirmLevel,
+	}
+}
+
+// RaydiumClient реализует взаимодействие с Raydium DEX
+type RaydiumClient struct {
+	client  blockchain.Client
+	logger  *zap.Logger
+	options *clientOptions
+}
+
+// NewRaydiumClient создает новый экземпляр клиента с опциями
+func NewRaydiumClient(client blockchain.Client, logger *zap.Logger, opts ...ClientOption) (*RaydiumClient, error) {
+	if client == nil {
+		return nil, fmt.Errorf("blockchain client cannot be nil")
+	}
+	if logger == nil {
+		return nil, fmt.Errorf("logger cannot be nil")
+	}
+
+	options := getDefaultOptions()
+	for _, opt := range opts {
+		opt(options)
+	}
+
+	return &RaydiumClient{
+		client:  client,
+		logger:  logger.Named("raydium-client"),
+		options: options,
+	}, nil
+}
+
+// GetPool получает информацию о пуле по его ID
+func (c *RaydiumClient) GetPool(ctx context.Context, poolID solana.PublicKey) (*RaydiumPool, error) {
+	logger := c.logger.With(zap.String("pool_id", poolID.String()))
+	logger.Debug("Getting pool information")
+
+	ctx, cancel := context.WithTimeout(ctx, c.options.timeout)
+	defer cancel()
+
+	account, err := c.client.GetAccountInfo(ctx, poolID)
+	if err != nil {
+		return nil, &SwapError{
+			Stage:   "get_pool",
+			Message: "failed to get pool account",
+			Err:     err,
+		}
+	}
+
+	if account.Value == nil || len(account.Value.Data.GetBinary()) == 0 {
+		return nil, &SwapError{
+			Stage:   "get_pool",
+			Message: "pool account not found or empty",
+		}
+	}
+
+	pool := &RaydiumPool{
+		ID: poolID,
+	}
+
+	if err := c.decodePoolData(account.Value.Data.GetBinary(), pool); err != nil {
+		return nil, &SwapError{
+			Stage:   "get_pool",
+			Message: "failed to decode pool data",
+			Err:     err,
+		}
+	}
+
+	logger.Debug("Pool information retrieved successfully")
+	return pool, nil
+}
+
+// GetPoolState получает текущее состояние пула
+func (c *RaydiumClient) GetPoolState(ctx context.Context, pool *RaydiumPool) (*PoolState, error) {
+	logger := c.logger.With(zap.String("pool_id", pool.ID.String()))
+	logger.Debug("Getting pool state")
+
+	ctx, cancel := context.WithTimeout(ctx, c.options.timeout)
+	defer cancel()
+
+	account, err := c.client.GetAccountInfo(ctx, pool.ID)
+	if err != nil {
+		return nil, &SwapError{
+			Stage:   "get_pool_state",
+			Message: "failed to get pool account",
+			Err:     err,
+		}
+	}
+
+	data := account.Value.Data.GetBinary()
+	if len(data) < LayoutQuoteReserveOffset+8 {
+		return nil, &SwapError{
+			Stage: "get_pool_state",
+			Message: fmt.Sprintf("invalid pool data length: got %d, need at least %d",
+				len(data), LayoutQuoteReserveOffset+8),
+		}
+	}
+
+	state := &PoolState{
+		BaseReserve:  binary.LittleEndian.Uint64(data[LayoutBaseReserveOffset : LayoutBaseReserveOffset+8]),
+		QuoteReserve: binary.LittleEndian.Uint64(data[LayoutQuoteReserveOffset : LayoutQuoteReserveOffset+8]),
+		Status:       data[LayoutStatus],
+	}
+
+	logger.Debug("Pool state retrieved",
+		zap.Uint64("base_reserve", state.BaseReserve),
+		zap.Uint64("quote_reserve", state.QuoteReserve))
+
+	return state, nil
+}
+
+// CreateSwapInstructions создает инструкции для свапа
+func (c *RaydiumClient) CreateSwapInstructions(ctx context.Context, params SwapParams) ([]solana.Instruction, error) {
+	logger := c.logger.With(
+		zap.String("user_wallet", params.UserWallet.String()),
+		zap.Uint64("amount_in", params.AmountIn),
+		zap.Uint64("min_amount_out", params.MinAmountOut),
+	)
+	logger.Debug("Creating swap instructions")
+
+	var instructions []solana.Instruction
+
+	// Добавляем инструкцию compute budget
+	if params.ComputeUnits > 0 {
+		computeUnitInstruction := computebudget.NewSetComputeUnitLimitInstruction(
+			params.ComputeUnits,
+		).Build()
+		instructions = append(instructions, computeUnitInstruction)
+	}
+
+	// Добавляем инструкцию priority fee если указана
+	if params.PriorityFeeLamports > 0 {
+		priorityFeeInstruction := computebudget.NewSetComputeUnitPriceInstruction(
+			params.PriorityFeeLamports,
+		).Build()
+		instructions = append(instructions, priorityFeeInstruction)
+	}
+
+	// Создаем инструкцию свапа
+	swapInstruction, err := c.createSwapInstruction(params)
+	if err != nil {
+		return nil, &SwapError{
+			Stage:   "create_instructions",
+			Message: "failed to create swap instruction",
+			Err:     err,
+		}
+	}
+	instructions = append(instructions, swapInstruction)
+
+	logger.Debug("Swap instructions created successfully",
+		zap.Int("instruction_count", len(instructions)))
+
+	return instructions, nil
+}
+
+// SimulateSwap симулирует выполнение свапа
+func (c *RaydiumClient) SimulateSwap(ctx context.Context, instructions []solana.Instruction) error {
+	logger := c.logger.Debug("Simulating swap transaction")
+
+	recent, err := c.client.GetRecentBlockhash(ctx)
+	if err != nil {
+		return &SwapError{
+			Stage:   "simulate_swap",
+			Message: "failed to get recent blockhash",
+			Err:     err,
+		}
+	}
+
+	tx, err := solana.NewTransaction(instructions, recent)
+	if err != nil {
+		return &SwapError{
+			Stage:   "simulate_swap",
+			Message: "failed to create transaction",
+			Err:     err,
+		}
+	}
+
+	simulation, err := c.client.SimulateTransaction(ctx, tx)
+	if err != nil {
+		return &SwapError{
+			Stage:   "simulate_swap",
+			Message: "simulation failed",
+			Err:     err,
+		}
+	}
+
+	if simulation.Value.Err != nil {
+		return &SwapError{
+			Stage:   "simulate_swap",
+			Message: fmt.Sprintf("simulation returned error: %v", simulation.Value.Err),
+		}
+	}
+
+	logger.Debug("Swap simulation successful",
+		zap.Uint64("compute_units_used", simulation.Value.UnitsConsumed))
+
+	return nil
+}
+
+// GetAmountOut вычисляет ожидаемый выход для свапа
+func (c *RaydiumClient) GetAmountOut(pool *RaydiumPool, state *PoolState, amountIn uint64) (uint64, error) {
+	if state.BaseReserve == 0 || state.QuoteReserve == 0 {
+		return 0, &SwapError{
+			Stage:   "get_amount_out",
+			Message: "invalid pool reserves",
+		}
+	}
+
+	// Учитываем комиссию пула
+	amountInWithFee := float64(amountIn) * (1 - DefaultSwapFeePercent/100)
+
+	// Используем формулу: dy = y * dx / (x + dx)
+	numerator := float64(state.QuoteReserve) * amountInWithFee
+	denominator := float64(state.BaseReserve) + amountInWithFee
+
+	expectedOut := uint64(numerator / denominator)
+
+	if expectedOut == 0 {
+		return 0, &SwapError{
+			Stage:   "get_amount_out",
+			Message: "calculated amount out is zero",
+		}
+	}
+
+	c.logger.Debug("Calculated amount out",
+		zap.Uint64("amount_in", amountIn),
+		zap.Uint64("amount_out", expectedOut),
+		zap.Float64("fee_percent", DefaultSwapFeePercent))
+
+	return expectedOut, nil
+}
+
+// createSwapInstruction создает инструкцию свапа
+func (c *RaydiumClient) createSwapInstruction(params SwapParams) (solana.Instruction, error) {
+	// ... реализация создания инструкции свапа
+	// Этот метод будет реализован в следующей части
+	return nil, nil
+}
+
+// decodePoolData декодирует данные аккаунта пула
+func (c *RaydiumClient) decodePoolData(data []byte, pool *RaydiumPool) error {
+	// ... реализация декодирования данных пула
+	// Этот метод будет реализован в следующей части
+	return nil
+}
+// internal/dex/raydium/instruction.go
+package raydium
+
+import (
+	"context"
+	"encoding/binary"
+	"fmt"
+
+	"github.com/gagliardetto/solana-go"
+	token "github.com/gagliardetto/solana-go/programs/token"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+	"go.uber.org/zap"
+)
+
+// InstructionType определяет тип инструкции Raydium
+type InstructionType uint8
+
+const (
+	// Типы инструкций
+	InstructionTypeSwap       InstructionType = 1
+	InstructionTypeInitialize InstructionType = 2
+	InstructionTypeDeposit    InstructionType = 3
+	InstructionTypeWithdraw   InstructionType = 4
+
+	// Размеры данных
+	SwapInstructionSize = 17 // 1 (тип) + 8 (amountIn) + 8 (minAmountOut)
+)
+
+// SwapInstructionBuilder строит инструкции свапа
+type SwapInstructionBuilder struct {
+	client blockchain.Client
+	logger *zap.Logger
+	pool   *RaydiumPool
+}
+
+// NewSwapInstructionBuilder создает новый builder для инструкций
+func NewSwapInstructionBuilder(
+	client blockchain.Client,
+	logger *zap.Logger,
+	pool *RaydiumPool,
+) *SwapInstructionBuilder {
+	return &SwapInstructionBuilder{
+		client: client,
+		logger: logger.Named("swap-instruction-builder"),
+		pool:   pool,
+	}
+}
+
+// SwapInstructionAccounts содержит все необходимые аккаунты для свапа
+type SwapInstructionAccounts struct {
+	// Пользовательские аккаунты
+	UserAuthority   solana.PublicKey
+	UserSourceToken solana.PublicKey
+	UserDestToken   solana.PublicKey
+
+	// Аккаунты пула
+	AmmId           solana.PublicKey
+	AmmAuthority    solana.PublicKey
+	AmmOpenOrders   solana.PublicKey
+	AmmTargetOrders solana.PublicKey
+	PoolSourceVault solana.PublicKey
+	PoolDestVault   solana.PublicKey
+
+	// Serum аккаунты
+	SerumProgram     solana.PublicKey
+	SerumMarket      solana.PublicKey
+	SerumBids        solana.PublicKey
+	SerumAsks        solana.PublicKey
+	SerumEventQueue  solana.PublicKey
+	SerumBaseVault   solana.PublicKey
+	SerumQuoteVault  solana.PublicKey
+	SerumVaultSigner solana.PublicKey
+}
+
+// SwapInstructionData содержит данные для инструкции свапа
+type SwapInstructionData struct {
+	Instruction  InstructionType
+	AmountIn     uint64
+	MinAmountOut uint64
+}
+
+// BuildSwapInstruction создает инструкцию свапа
+func (b *SwapInstructionBuilder) BuildSwapInstruction(
+	ctx context.Context,
+	params SwapParams,
+	accounts SwapInstructionAccounts,
+) (solana.Instruction, error) {
+	logger := b.logger.With(
+		zap.String("user", accounts.UserAuthority.String()),
+		zap.Uint64("amount_in", params.AmountIn),
+		zap.Uint64("min_amount_out", params.MinAmountOut),
+	)
+	logger.Debug("Building swap instruction")
+
+	// Валидация аккаунтов
+	if err := b.validateAccounts(ctx, accounts); err != nil {
+		return nil, fmt.Errorf("invalid accounts: %w", err)
+	}
+
+	// Создаем список аккаунтов в правильном порядке
+	accountMetas := b.buildAccountMetas(accounts)
+
+	// Создаем данные инструкции
+	data, err := b.serializeInstructionData(params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize instruction data: %w", err)
+	}
+
+	// Создаем инструкцию
+	instruction := solana.NewInstruction(
+		b.pool.AmmProgramID,
+		accountMetas,
+		data,
+	)
+
+	logger.Debug("Swap instruction built successfully",
+		zap.Int("num_accounts", len(accountMetas)),
+		zap.Int("data_size", len(data)))
+
+	return instruction, nil
+}
+
+// validateAccounts проверяет все необходимые аккаунты
+func (b *SwapInstructionBuilder) validateAccounts(
+	ctx context.Context,
+	accounts SwapInstructionAccounts,
+) error {
+	// Проверяем основные аккаунты
+	if accounts.UserAuthority.IsZero() {
+		return fmt.Errorf("user authority is required")
+	}
+	if accounts.UserSourceToken.IsZero() || accounts.UserDestToken.IsZero() {
+		return fmt.Errorf("user token accounts are required")
+	}
+	if accounts.AmmId.IsZero() {
+		return fmt.Errorf("AMM ID is required")
+	}
+
+	// Проверяем существование и владельца токен-аккаунтов
+	for _, check := range []struct {
+		account solana.PublicKey
+		name    string
+	}{
+		{accounts.UserSourceToken, "source token"},
+		{accounts.UserDestToken, "destination token"},
+		{accounts.PoolSourceVault, "pool source vault"},
+		{accounts.PoolDestVault, "pool destination vault"},
+	} {
+		info, err := b.client.GetAccountInfo(ctx, check.account)
+		if err != nil {
+			return fmt.Errorf("failed to get %s account info: %w", check.name, err)
+		}
+		if info.Value == nil || !info.Value.Owner.Equals(token.ProgramID) {
+			return fmt.Errorf("invalid %s account", check.name)
+		}
+	}
+
+	return nil
+}
+
+// buildAccountMetas создает список аккаунтов в правильном порядке
+func (b *SwapInstructionBuilder) buildAccountMetas(accounts SwapInstructionAccounts) solana.AccountMetaSlice {
+	return solana.AccountMetaSlice{
+		// User accounts
+		solana.NewAccountMeta(accounts.UserAuthority, true, true),    // Writable, Signer
+		solana.NewAccountMeta(accounts.UserSourceToken, false, true), // Writable
+		solana.NewAccountMeta(accounts.UserDestToken, false, true),   // Writable
+
+		// AMM accounts
+		solana.NewAccountMeta(accounts.AmmId, false, true),           // Writable
+		solana.NewAccountMeta(accounts.AmmAuthority, false, false),   // Not writable
+		solana.NewAccountMeta(accounts.AmmOpenOrders, false, true),   // Writable
+		solana.NewAccountMeta(accounts.AmmTargetOrders, false, true), // Writable
+		solana.NewAccountMeta(accounts.PoolSourceVault, false, true), // Writable
+		solana.NewAccountMeta(accounts.PoolDestVault, false, true),   // Writable
+
+		// Serum accounts
+		solana.NewAccountMeta(accounts.SerumProgram, false, false),     // Not writable
+		solana.NewAccountMeta(accounts.SerumMarket, false, true),       // Writable
+		solana.NewAccountMeta(accounts.SerumBids, false, true),         // Writable
+		solana.NewAccountMeta(accounts.SerumAsks, false, true),         // Writable
+		solana.NewAccountMeta(accounts.SerumEventQueue, false, true),   // Writable
+		solana.NewAccountMeta(accounts.SerumBaseVault, false, true),    // Writable
+		solana.NewAccountMeta(accounts.SerumQuoteVault, false, true),   // Writable
+		solana.NewAccountMeta(accounts.SerumVaultSigner, false, false), // Not writable
+
+		// System accounts
+		solana.NewAccountMeta(solana.TokenProgramID, false, false),   // Not writable
+		solana.NewAccountMeta(solana.SysVarRentPubkey, false, false), // Not writable
+	}
+}
+
+// serializeInstructionData сериализует данные инструкции
+func (b *SwapInstructionBuilder) serializeInstructionData(params SwapParams) ([]byte, error) {
+	data := make([]byte, SwapInstructionSize)
+
+	// Записываем тип инструкции
+	data[0] = byte(InstructionTypeSwap)
+
+	// Записываем amountIn
+	binary.LittleEndian.PutUint64(data[1:9], params.AmountIn)
+
+	// Записываем minAmountOut
+	binary.LittleEndian.PutUint64(data[9:17], params.MinAmountOut)
+
+	return data, nil
+}
+
+// BuildInitializePoolInstruction создает инструкцию инициализации пула
+func (b *SwapInstructionBuilder) BuildInitializePoolInstruction(
+	ctx context.Context,
+	nonce uint8,
+	initialLPSupply uint64,
+) (solana.Instruction, error) {
+	// ... реализация создания инструкции инициализации пула
+	return nil, nil
+}
+
+// BuildDepositInstruction создает инструкцию депозита в пул
+func (b *SwapInstructionBuilder) BuildDepositInstruction(
+	ctx context.Context,
+	maxBaseAmount uint64,
+	maxQuoteAmount uint64,
+) (solana.Instruction, error) {
+	// ... реализация создания инструкции депозита
+	return nil, nil
+}
+
+// BuildWithdrawInstruction создает инструкцию вывода из пула
+func (b *SwapInstructionBuilder) BuildWithdrawInstruction(
+	ctx context.Context,
+	lpAmount uint64,
+) (solana.Instruction, error) {
+	// ... реализация создания инструкции вывода
+	return nil, nil
+}
+
+// GetRequiredAccounts собирает все необходимые аккаунты для свапа
+func (b *SwapInstructionBuilder) GetRequiredAccounts(
+	ctx context.Context,
+	userAuthority solana.PublicKey,
+	sourceMint solana.PublicKey,
+	destMint solana.PublicKey,
+) (*SwapInstructionAccounts, error) {
+	// Находим ATA для пользователя
+	sourceATA, _, err := solana.FindAssociatedTokenAddress(userAuthority, sourceMint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find source ATA: %w", err)
+	}
+
+	destATA, _, err := solana.FindAssociatedTokenAddress(userAuthority, destMint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find destination ATA: %w", err)
+	}
+
+	// Создаем структуру с аккаунтами
+	accounts := &SwapInstructionAccounts{
+		UserAuthority:    userAuthority,
+		UserSourceToken:  sourceATA,
+		UserDestToken:    destATA,
+		AmmId:            b.pool.ID,
+		AmmAuthority:     b.pool.Authority,
+		AmmOpenOrders:    b.pool.OpenOrders,
+		AmmTargetOrders:  b.pool.TargetOrders,
+		PoolSourceVault:  b.pool.BaseVault,
+		PoolDestVault:    b.pool.QuoteVault,
+		SerumProgram:     b.pool.MarketProgramID,
+		SerumMarket:      b.pool.MarketID,
+		SerumBids:        b.pool.MarketBids,
+		SerumAsks:        b.pool.MarketAsks,
+		SerumEventQueue:  b.pool.MarketEventQueue,
+		SerumBaseVault:   b.pool.MarketBaseVault,
+		SerumQuoteVault:  b.pool.MarketQuoteVault,
+		SerumVaultSigner: b.pool.MarketAuthority,
+	}
+
+	return accounts, nil
+}
+// internal/dex/raydium/pool.go
+package raydium
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"math/big"
+
+	"github.com/gagliardetto/solana-go"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+	"go.uber.org/zap"
+)
+
+// PoolManager управляет операциями с пулом ликвидности
+type PoolManager struct {
+	client blockchain.Client
+	logger *zap.Logger
+}
+
+// NewPoolManager создает новый менеджер пула
+func NewPoolManager(client blockchain.Client, logger *zap.Logger) *PoolManager {
+	return &PoolManager{
+		client: client,
+		logger: logger.Named("pool-manager"),
+	}
+}
+
+// InitializePool создает новый пул с заданными параметрами
+func (pm *PoolManager) InitializePool(ctx context.Context, params *RaydiumPool) error {
+	logger := pm.logger.With(
+		zap.String("base_mint", params.BaseMint.String()),
+		zap.String("quote_mint", params.QuoteMint.String()),
+	)
+	logger.Debug("Initializing new pool")
+
+	if err := pm.validatePoolParameters(params); err != nil {
+		return &PoolError{
+			Stage:   "initialize",
+			Message: "invalid pool parameters",
+			Err:     err,
+		}
+	}
+
+	return nil
+}
+
+// PoolCalculator предоставляет методы для расчетов в пуле
+type PoolCalculator struct {
+	pool  *RaydiumPool
+	state *PoolState
+}
+
+// NewPoolCalculator создает новый калькулятор для пула
+func NewPoolCalculator(pool *RaydiumPool, state *PoolState) *PoolCalculator {
+	return &PoolCalculator{
+		pool:  pool,
+		state: state,
+	}
+}
+
+// CalculateSwapAmount вычисляет количество токенов для свапа
+func (pc *PoolCalculator) CalculateSwapAmount(
+	amountIn uint64,
+	slippageBps uint16,
+	side SwapSide,
+) (*SwapAmounts, error) {
+	if amountIn == 0 {
+		return nil, &PoolError{
+			Stage:   "calculate_swap",
+			Message: "amount in cannot be zero",
+		}
+	}
+
+	// Конвертируем в big.Float для точных вычислений
+	amountInF := new(big.Float).SetUint64(amountIn)
+	baseReserveF := new(big.Float).SetUint64(pc.state.BaseReserve)
+	quoteReserveF := new(big.Float).SetUint64(pc.state.QuoteReserve)
+
+	// Вычисляем комиссию
+	feeMultiplier := new(big.Float).SetFloat64(1 - float64(pc.pool.DefaultFeeBps)/10000)
+	amountInAfterFee := new(big.Float).Mul(amountInF, feeMultiplier)
+
+	var amountOut *big.Float
+	if side == SwapSideIn {
+		// dx * y / (x + dx)
+		numerator := new(big.Float).Mul(amountInAfterFee, quoteReserveF)
+		denominator := new(big.Float).Add(baseReserveF, amountInAfterFee)
+		amountOut = new(big.Float).Quo(numerator, denominator)
+	} else {
+		// dx * y / (x + dx)
+		numerator := new(big.Float).Mul(amountInAfterFee, baseReserveF)
+		denominator := new(big.Float).Add(quoteReserveF, amountInAfterFee)
+		amountOut = new(big.Float).Quo(numerator, denominator)
+	}
+
+	// Конвертируем результат обратно в uint64
+	var amountOutU uint64
+	amountOut.Uint64(&amountOutU)
+
+	// Учитываем слиппаж для минимального выхода
+	slippageMultiplier := new(big.Float).SetFloat64(1 - float64(slippageBps)/10000)
+	minAmountOut := new(big.Float).Mul(new(big.Float).SetUint64(amountOutU), slippageMultiplier)
+	var minAmountOutU uint64
+	minAmountOut.Uint64(&minAmountOutU)
+
+	return &SwapAmounts{
+		AmountIn:     amountIn,
+		AmountOut:    amountOutU,
+		MinAmountOut: minAmountOutU,
+		Fee:          pc.calculateFeeAmount(amountIn),
+	}, nil
+}
+
+// SwapAmounts содержит результаты расчета свапа
+type SwapAmounts struct {
+	AmountIn     uint64
+	AmountOut    uint64
+	MinAmountOut uint64
+	Fee          uint64
+}
+
+// PoolError представляет ошибку операций с пулом
+type PoolError struct {
+	Stage   string
+	Message string
+	Err     error
+}
+
+func (e *PoolError) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("pool error at %s: %s: %v", e.Stage, e.Message, e.Err)
+	}
+	return fmt.Sprintf("pool error at %s: %s", e.Stage, e.Message)
+}
+
+// GetOptimalSwapAmount вычисляет оптимальное количество токенов для свапа
+func (pc *PoolCalculator) GetOptimalSwapAmount(
+	availableAmount uint64,
+	targetAmount uint64,
+	slippageBps uint16,
+) (*SwapAmounts, error) {
+	logger := pm.logger.With(
+		zap.Uint64("available_amount", availableAmount),
+		zap.Uint64("target_amount", targetAmount),
+		zap.Uint16("slippage_bps", slippageBps),
+	)
+	logger.Debug("Calculating optimal swap amount")
+
+	// Используем бинарный поиск для нахождения оптимального количества
+	left := uint64(1)
+	right := availableAmount
+	var bestAmount *SwapAmounts
+
+	for left <= right {
+		mid := left + (right-left)/2
+
+		amounts, err := pc.CalculateSwapAmount(mid, slippageBps, SwapSideIn)
+		if err != nil {
+			return nil, &PoolError{
+				Stage:   "optimal_amount",
+				Message: "failed to calculate swap amount",
+				Err:     err,
+			}
+		}
+
+		if amounts.AmountOut == targetAmount {
+			return amounts, nil
+		}
+
+		if amounts.AmountOut < targetAmount {
+			left = mid + 1
+		} else {
+			bestAmount = amounts
+			right = mid - 1
+		}
+	}
+
+	if bestAmount == nil {
+		return nil, &PoolError{
+			Stage:   "optimal_amount",
+			Message: "could not find suitable amount",
+		}
+	}
+
+	return bestAmount, nil
+}
+
+// validatePoolParameters проверяет параметры пула
+func (pm *PoolManager) validatePoolParameters(pool *RaydiumPool) error {
+	if pool == nil {
+		return fmt.Errorf("pool cannot be nil")
+	}
+
+	// Проверяем базовые параметры
+	if pool.BaseMint.IsZero() || pool.QuoteMint.IsZero() {
+		return fmt.Errorf("invalid mint addresses")
+	}
+
+	if pool.BaseDecimals == 0 || pool.QuoteDecimals == 0 {
+		return fmt.Errorf("invalid decimals")
+	}
+
+	if pool.DefaultFeeBps == 0 || pool.DefaultFeeBps > 10000 {
+		return fmt.Errorf("invalid fee bps")
+	}
+
+	// Проверяем параметры AMM
+	if pool.AmmProgramID.IsZero() || pool.SerumProgramID.IsZero() {
+		return fmt.Errorf("invalid program IDs")
+	}
+
+	// Проверяем параметры маркета
+	if pool.MarketID.IsZero() || pool.MarketProgramID.IsZero() {
+		return fmt.Errorf("invalid market parameters")
+	}
+
+	return nil
+}
+
+// calculateFeeAmount вычисляет комиссию для заданной суммы
+func (pc *PoolCalculator) calculateFeeAmount(amount uint64) uint64 {
+	return amount * uint64(pc.pool.DefaultFeeBps) / 10000
+}
+
+// GetTokenAccounts получает или создает токен-аккаунты для пула
+func (pm *PoolManager) GetTokenAccounts(
+	ctx context.Context,
+	owner solana.PublicKey,
+	mint solana.PublicKey,
+) (solana.PublicKey, error) {
+	ata, _, err := solana.FindAssociatedTokenAddress(owner, mint)
+	if err != nil {
+		return solana.PublicKey{}, &PoolError{
+			Stage:   "get_token_accounts",
+			Message: "failed to find ATA",
+			Err:     err,
+		}
+	}
+
+	// Проверяем существование аккаунта
+	account, err := pm.client.GetAccountInfo(ctx, ata)
+	if err != nil {
+		return solana.PublicKey{}, &PoolError{
+			Stage:   "get_token_accounts",
+			Message: "failed to get account info",
+			Err:     err,
+		}
+	}
+
+	// Если аккаунт не существует, возвращаем инструкцию для создания
+	if account == nil || account.Value == nil {
+		return ata, nil
+	}
+
+	return ata, nil
+}
+
+// GetMarketPrice получает текущую цену в пуле
+func (pc *PoolCalculator) GetMarketPrice() float64 {
+	if pc.state.BaseReserve == 0 || pc.state.QuoteReserve == 0 {
+		return 0
+	}
+
+	baseF := float64(pc.state.BaseReserve)
+	quoteF := float64(pc.state.QuoteReserve)
+
+	baseDecimalAdj := math.Pow10(int(pc.pool.BaseDecimals))
+	quoteDecimalAdj := math.Pow10(int(pc.pool.QuoteDecimals))
+
+	return (quoteF / quoteDecimalAdj) / (baseF / baseDecimalAdj)
+}
+// internal/dex/raydium/stage.go
+package raydium
+
+import (
+	"encoding/binary"
+	"fmt"
+	"math"
+
+	"github.com/gagliardetto/binary"
+	"github.com/gagliardetto/solana-go"
+	"go.uber.org/zap"
+)
+
+// StateVersion определяет версию структуры состояния
+type StateVersion uint8
+
+const (
+	StateV4 StateVersion = 4
+	StateV5 StateVersion = 5
+)
+
+// StateStatus определяет статус пула
+type StateStatus uint8
+
+const (
+	StateUninitialized StateStatus = iota
+	StateInitialized
+	StateFrozen
+	StateWithdrawn
+)
+
+// Layout определяет структуру данных состояния пула
+type Layout struct {
+	// Базовая информация
+	Discriminator [8]byte // Уникальный идентификатор программы
+	Version       uint8   // Версия структуры данных
+	Status        uint8   // Статус пула
+	Nonce         uint8   // Nonce для генерации PDA
+
+	// Минты и декодеры
+	BaseMint      solana.PublicKey // Базовый токен
+	QuoteMint     solana.PublicKey // Котируемый токен
+	LPMint        solana.PublicKey // LP токен
+	BaseDecimals  uint8            // Decimal базового токена
+	QuoteDecimals uint8            // Decimal котируемого токена
+	LPDecimals    uint8            // Decimal LP токена
+
+	// Параметры пула
+	BaseReserve        uint64 // Резерв базового токена
+	QuoteReserve       uint64 // Резерв котируемого токена
+	LPSupply           uint64 // Общее количество LP токенов
+	SwapFeeNumerator   uint64 // Числитель комиссии
+	SwapFeeDenominator uint64 // Знаменатель комиссии
+
+	// Аккаунты
+	BaseVault     solana.PublicKey // Vault для базового токена
+	QuoteVault    solana.PublicKey // Vault для котируемого токена
+	WithdrawQueue solana.PublicKey // Очередь вывода средств
+	LPVault       solana.PublicKey // Vault для LP токенов
+	Owner         solana.PublicKey // Владелец пула
+
+	// Serum параметры
+	MarketId         solana.PublicKey // ID рынка Serum
+	OpenOrders       solana.PublicKey // Открытые ордера
+	TargetOrders     solana.PublicKey // Целевые ордера
+	MarketBaseVault  solana.PublicKey // Базовый vault рынка
+	MarketQuoteVault solana.PublicKey // Котируемый vault рынка
+	MarketBids       solana.PublicKey // Биды рынка
+	MarketAsks       solana.PublicKey // Аски рынка
+}
+
+// StateDecoder отвечает за декодирование состояния пула
+type StateDecoder struct {
+	logger *zap.Logger
+}
+
+// NewStateDecoder создает новый декодер состояния
+func NewStateDecoder(logger *zap.Logger) *StateDecoder {
+	return &StateDecoder{
+		logger: logger.Named("state-decoder"),
+	}
+}
+
+// DecodeState декодирует бинарные данные в структуру состояния
+func (d *StateDecoder) DecodeState(data []byte) (*Layout, error) {
+	if len(data) < LayoutBaseSize {
+		return nil, fmt.Errorf("insufficient data length: got %d, need at least %d", len(data), LayoutBaseSize)
+	}
+
+	logger := d.logger.With(zap.Int("data_length", len(data)))
+	logger.Debug("Starting state decoding")
+
+	layout := &Layout{}
+
+	// Читаем базовую информацию
+	copy(layout.Discriminator[:], data[:8])
+	layout.Version = data[8]
+	layout.Status = data[9]
+	layout.Nonce = data[10]
+
+	// Проверяем версию
+	if layout.Version != uint8(StateV4) && layout.Version != uint8(StateV5) {
+		return nil, fmt.Errorf("unsupported state version: %d", layout.Version)
+	}
+
+	// Декодируем публичные ключи и другие данные
+	offset := LayoutBaseSize
+
+	// Функция-помощник для чтения PublicKey
+	readPubKey := func() (solana.PublicKey, error) {
+		if offset+32 > len(data) {
+			return solana.PublicKey{}, fmt.Errorf("insufficient data for public key at offset %d", offset)
+		}
+		var key solana.PublicKey
+		copy(key[:], data[offset:offset+32])
+		offset += 32
+		return key, nil
+	}
+
+	// Функция-помощник для чтения uint64
+	readUint64 := func() (uint64, error) {
+		if offset+8 > len(data) {
+			return 0, fmt.Errorf("insufficient data for uint64 at offset %d", offset)
+		}
+		value := binary.LittleEndian.Uint64(data[offset : offset+8])
+		offset += 8
+		return value, nil
+	}
+
+	// Функция-помощник для чтения uint8
+	readUint8 := func() (uint8, error) {
+		if offset+1 > len(data) {
+			return 0, fmt.Errorf("insufficient data for uint8 at offset %d", offset)
+		}
+		value := data[offset]
+		offset += 1
+		return value, nil
+	}
+
+	var err error
+
+	// Читаем минты
+	if layout.BaseMint, err = readPubKey(); err != nil {
+		return nil, fmt.Errorf("failed to read base mint: %w", err)
+	}
+	if layout.QuoteMint, err = readPubKey(); err != nil {
+		return nil, fmt.Errorf("failed to read quote mint: %w", err)
+	}
+	if layout.LPMint, err = readPubKey(); err != nil {
+		return nil, fmt.Errorf("failed to read LP mint: %w", err)
+	}
+
+	// Читаем decimals
+	if layout.BaseDecimals, err = readUint8(); err != nil {
+		return nil, fmt.Errorf("failed to read base decimals: %w", err)
+	}
+	if layout.QuoteDecimals, err = readUint8(); err != nil {
+		return nil, fmt.Errorf("failed to read quote decimals: %w", err)
+	}
+	if layout.LPDecimals, err = readUint8(); err != nil {
+		return nil, fmt.Errorf("failed to read LP decimals: %w", err)
+	}
+
+	// Читаем резервы и параметры пула
+	if layout.BaseReserve, err = readUint64(); err != nil {
+		return nil, fmt.Errorf("failed to read base reserve: %w", err)
+	}
+	if layout.QuoteReserve, err = readUint64(); err != nil {
+		return nil, fmt.Errorf("failed to read quote reserve: %w", err)
+	}
+	if layout.LPSupply, err = readUint64(); err != nil {
+		return nil, fmt.Errorf("failed to read LP supply: %w", err)
+	}
+	if layout.SwapFeeNumerator, err = readUint64(); err != nil {
+		return nil, fmt.Errorf("failed to read swap fee numerator: %w", err)
+	}
+	if layout.SwapFeeDenominator, err = readUint64(); err != nil {
+		return nil, fmt.Errorf("failed to read swap fee denominator: %w", err)
+	}
+
+	// Читаем аккаунты
+	if layout.BaseVault, err = readPubKey(); err != nil {
+		return nil, fmt.Errorf("failed to read base vault: %w", err)
+	}
+	if layout.QuoteVault, err = readPubKey(); err != nil {
+		return nil, fmt.Errorf("failed to read quote vault: %w", err)
+	}
+	if layout.WithdrawQueue, err = readPubKey(); err != nil {
+		return nil, fmt.Errorf("failed to read withdraw queue: %w", err)
+	}
+	if layout.LPVault, err = readPubKey(); err != nil {
+		return nil, fmt.Errorf("failed to read LP vault: %w", err)
+	}
+	if layout.Owner, err = readPubKey(); err != nil {
+		return nil, fmt.Errorf("failed to read owner: %w", err)
+	}
+
+	// Читаем Serum параметры
+	if layout.MarketId, err = readPubKey(); err != nil {
+		return nil, fmt.Errorf("failed to read market ID: %w", err)
+	}
+	if layout.OpenOrders, err = readPubKey(); err != nil {
+		return nil, fmt.Errorf("failed to read open orders: %w", err)
+	}
+	if layout.TargetOrders, err = readPubKey(); err != nil {
+		return nil, fmt.Errorf("failed to read target orders: %w", err)
+	}
+	if layout.MarketBaseVault, err = readPubKey(); err != nil {
+		return nil, fmt.Errorf("failed to read market base vault: %w", err)
+	}
+	if layout.MarketQuoteVault, err = readPubKey(); err != nil {
+		return nil, fmt.Errorf("failed to read market quote vault: %w", err)
+	}
+	if layout.MarketBids, err = readPubKey(); err != nil {
+		return nil, fmt.Errorf("failed to read market bids: %w", err)
+	}
+	if layout.MarketAsks, err = readPubKey(); err != nil {
+		return nil, fmt.Errorf("failed to read market asks: %w", err)
+	}
+
+	logger.Debug("State decoded successfully",
+		zap.Uint8("version", layout.Version),
+		zap.Uint8("status", layout.Status),
+		zap.Uint64("base_reserve", layout.BaseReserve),
+		zap.Uint64("quote_reserve", layout.QuoteReserve))
+
+	return layout, nil
+}
+
+// GetStateSize возвращает ожидаемый размер состояния для версии
+func (d *StateDecoder) GetStateSize(version StateVersion) uint64 {
+	switch version {
+	case StateV4:
+		return 752
+	case StateV5:
+		return 824
+	default:
+		return 0
+	}
+}
+
+// ValidateState проверяет корректность декодированного состояния
+func (d *StateDecoder) ValidateState(layout *Layout) error {
+	if layout == nil {
+		return fmt.Errorf("layout is nil")
+	}
+
+	// Проверяем базовые параметры
+	if layout.Status > uint8(StateWithdrawn) {
+		return fmt.Errorf("invalid state status: %d", layout.Status)
+	}
+
+	if layout.BaseDecimals > 32 || layout.QuoteDecimals > 32 || layout.LPDecimals > 32 {
+		return fmt.Errorf("invalid decimals")
+	}
+
+	// Проверяем комиссию
+	if layout.SwapFeeDenominator == 0 {
+		return fmt.Errorf("swap fee denominator cannot be zero")
+	}
+
+	feeRate := float64(layout.SwapFeeNumerator) / float64(layout.SwapFeeDenominator)
+	if feeRate > 0.1 { // Максимальная комиссия 10%
+		return fmt.Errorf("swap fee too high: %f", feeRate)
+	}
+
+	// Проверяем публичные ключи
+	if layout.BaseMint.IsZero() || layout.QuoteMint.IsZero() || layout.LPMint.IsZero() {
+		return fmt.Errorf("invalid mint addresses")
+	}
+
+	// Проверяем резервы
+	if layout.Status == uint8(StateInitialized) {
+		if layout.BaseReserve == 0 || layout.QuoteReserve == 0 {
+			return fmt.Errorf("reserves cannot be zero for initialized pool")
+		}
+	}
+
+	return nil
+}
+
+// CalculateVirtualPrice вычисляет виртуальную цену LP токена
+func (d *StateDecoder) CalculateVirtualPrice(layout *Layout) (float64, error) {
+	if layout.LPSupply == 0 {
+		return 0, fmt.Errorf("LP supply is zero")
+	}
+
+	baseAdjusted := float64(layout.BaseReserve) / math.Pow10(int(layout.BaseDecimals))
+	quoteAdjusted := float64(layout.QuoteReserve) / math.Pow10(int(layout.QuoteDecimals))
+	lpAdjusted := float64(layout.LPSupply) / math.Pow10(int(layout.LPDecimals))
+
+	// Вычисляем геометрическое среднее резервов
+	sqrtK := math.Sqrt(baseAdjusted * quoteAdjusted)
+	return 2 * sqrtK / lpAdjusted, nil
+}
+// internal/dex/raydium/types.go
+// Package raydium реализует интеграцию с Raydium DEX на Solana
+package raydium
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/gagliardetto/solana-go"
+)
+
+// Layout константы для правильного чтения данных из аккаунта пула
+const (
+	// Базовые смещения
+	LayoutDiscriminator = 8
+	LayoutStatus        = 1
+	LayoutNonce         = 1
+	LayoutBaseSize      = LayoutDiscriminator + LayoutStatus + LayoutNonce // 10 байт
+
+	// Смещения для резервов и других данных пула
+	LayoutBaseVaultOffset    = LayoutBaseSize + 32 + 32 + 32 // После discriminator, status, nonce и трех pubkeys
+	LayoutQuoteVaultOffset   = LayoutBaseVaultOffset + 32
+	LayoutBaseReserveOffset  = LayoutQuoteVaultOffset + 32 + 8
+	LayoutQuoteReserveOffset = LayoutBaseReserveOffset + 8
+
+	// Константы протокола
+	DefaultSwapFeePercent = 0.25
+	MinimumAmountOut      = 1
+)
+
+// RaydiumPool представляет собой конфигурацию пула ликвидности Raydium
+type RaydiumPool struct {
+	// Программы
+	AmmProgramID   solana.PublicKey
+	SerumProgramID solana.PublicKey
+
+	// AMM конфигурация
+	ID            solana.PublicKey // ID пула
+	Authority     solana.PublicKey
+	OpenOrders    solana.PublicKey
+	TargetOrders  solana.PublicKey
+	BaseVault     solana.PublicKey
+	QuoteVault    solana.PublicKey
+	WithdrawQueue solana.PublicKey
+	LPVault       solana.PublicKey
+
+	// Токены и минты
+	BaseMint      solana.PublicKey
+	QuoteMint     solana.PublicKey
+	LPMint        solana.PublicKey
+	BaseDecimals  uint8
+	QuoteDecimals uint8
+	LPDecimals    uint8
+
+	// Serum Market
+	MarketID         solana.PublicKey
+	MarketProgramID  solana.PublicKey
+	MarketAuthority  solana.PublicKey
+	MarketBaseVault  solana.PublicKey
+	MarketQuoteVault solana.PublicKey
+	MarketBids       solana.PublicKey
+	MarketAsks       solana.PublicKey
+	MarketEventQueue solana.PublicKey
+	MarketVersion    uint8
+	LookupTableID    solana.PublicKey
+
+	// Версионирование и инструкции
+	Version              uint8
+	SwapInstructionIndex uint8
+	DefaultMinimumOutBps uint16 // базовых пунктов (1 bps = 0.01%)
+	DefaultFeeBps        uint16 // комиссия пула в базовых пунктах
+}
+
+// PoolState содержит динамическое состояние пула
+type PoolState struct {
+	BaseReserve        uint64
+	QuoteReserve       uint64
+	SwapFeeNumerator   uint64
+	SwapFeeDenominator uint64
+	Status             uint8
+}
+
+// SwapSide определяет направление свапа
+type SwapSide uint8
+
+const (
+	SwapSideIn SwapSide = iota
+	SwapSideOut
+)
+
+// SwapParams содержит параметры для выполнения свапа
+type SwapParams struct {
+	UserWallet          solana.PublicKey
+	SourceTokenATA      solana.PublicKey
+	DestTokenATA        solana.PublicKey
+	AmountIn            uint64
+	MinAmountOut        uint64
+	SlippageBps         uint16
+	ComputeUnits        uint32
+	PriorityFeeLamports uint64
+}
+
+// Client представляет интерфейс для взаимодействия с Raydium DEX
+type Client interface {
+	// Основные методы пула
+	GetPool(ctx context.Context, poolID solana.PublicKey) (*RaydiumPool, error)
+	GetPoolState(ctx context.Context, pool *RaydiumPool) (*PoolState, error)
+
+	// Методы для свапов
+	CreateSwapInstructions(ctx context.Context, params SwapParams) ([]solana.Instruction, error)
+	SimulateSwap(ctx context.Context, instructions []solana.Instruction) error
+	GetAmountOut(pool *RaydiumPool, state *PoolState, amountIn uint64) (uint64, error)
+}
+
+// ValidationError представляет ошибку валидации
+type ValidationError struct {
+	Field   string
+	Message string
+}
+
+func (e *ValidationError) Error() string {
+	return fmt.Sprintf("validation error for %s: %s", e.Field, e.Message)
+}
+
+// SwapError представляет ошибку при выполнении свапа
+type SwapError struct {
+	Stage   string
+	Message string
+	Err     error
+}
+
+func (e *SwapError) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("swap error at %s: %s: %v", e.Stage, e.Message, e.Err)
+	}
+	return fmt.Sprintf("swap error at %s: %s", e.Stage, e.Message)
+}
+
+func (e *SwapError) Unwrap() error {
+	return e.Err
+}
+// internal/dex/raydium/utils.go
+package raydium
+
+import (
+	"context"
+	"encoding/binary"
+	"fmt"
+	"math"
+	"math/big"
+	"time"
+
+	"github.com/gagliardetto/solana-go"
+	associatedtokenaccount "github.com/gagliardetto/solana-go/programs/associated-token-account"
+	token "github.com/gagliardetto/solana-go/programs/token"
+	"github.com/shopspring/decimal"
+	"go.uber.org/zap"
+
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+)
+
+// TokenAmountConfig содержит конфигурацию для работы с суммами токенов
+type TokenAmountConfig struct {
+	Amount   uint64
+	Decimals uint8
+}
+
+// PriceImpactConfig содержит параметры для расчета влияния на цену
+type PriceImpactConfig struct {
+	AmountIn    uint64
+	ReserveIn   uint64
+	ReserveOut  uint64
+	DecimalsIn  uint8
+	DecimalsOut uint8
+}
+
+// RetryConfig содержит параметры для повторных попыток
+type RetryConfig struct {
+	MaxAttempts int
+	Delay       time.Duration
+	Factor      float64
+}
+
+// DefaultRetryConfig возвращает конфигурацию по умолчанию
+func DefaultRetryConfig() RetryConfig {
+	return RetryConfig{
+		MaxAttempts: 3,
+		Delay:       500 * time.Millisecond,
+		Factor:      1.5,
+	}
+}
+
+// TokenAmountToDecimal конвертирует uint64 в decimal с учетом decimals
+func TokenAmountToDecimal(amount uint64, decimals uint8) decimal.Decimal {
+	multiplier := decimal.New(1, int32(decimals))
+	return decimal.NewFromInt(int64(amount)).Div(multiplier)
+}
+
+// DecimalToTokenAmount конвертирует decimal в uint64
+func DecimalToTokenAmount(amount decimal.Decimal, decimals uint8) uint64 {
+	multiplier := decimal.New(1, int32(decimals))
+	result := amount.Mul(multiplier)
+	if !result.IsInteger() {
+		return 0
+	}
+	return uint64(result.IntPart())
+}
+
+// CalculatePriceImpact вычисляет влияние сделки на цену
+func CalculatePriceImpact(cfg PriceImpactConfig) (decimal.Decimal, error) {
+	if cfg.ReserveIn == 0 || cfg.ReserveOut == 0 {
+		return decimal.Zero, fmt.Errorf("reserves cannot be zero")
+	}
+
+	amountIn := TokenAmountToDecimal(cfg.AmountIn, cfg.DecimalsIn)
+	reserveIn := TokenAmountToDecimal(cfg.ReserveIn, cfg.DecimalsIn)
+	reserveOut := TokenAmountToDecimal(cfg.ReserveOut, cfg.DecimalsOut)
+
+	// Расчет влияния на цену: (new_price - old_price) / old_price * 100
+	oldPrice := reserveOut.Div(reserveIn)
+	newReserveIn := reserveIn.Add(amountIn)
+	newPrice := reserveOut.Div(newReserveIn)
+
+	impact := oldPrice.Sub(newPrice).Div(oldPrice).Mul(decimal.NewFromInt(100))
+	return impact.Abs(), nil
+}
+
+// FormatTokenAmount форматирует сумму токена с учетом decimals
+func FormatTokenAmount(cfg TokenAmountConfig) string {
+	amount := TokenAmountToDecimal(cfg.Amount, cfg.Decimals)
+	return amount.StringFixed(int32(cfg.Decimals))
+}
+
+// WithRetry выполняет функцию с повторными попытками
+func WithRetry[T any](
+	ctx context.Context,
+	operation func(context.Context) (T, error),
+	cfg RetryConfig,
+	logger *zap.Logger,
+) (T, error) {
+	var result T
+	var lastErr error
+
+	for attempt := 0; attempt < cfg.MaxAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return result, ctx.Err()
+		default:
+			if attempt > 0 {
+				delay := time.Duration(float64(cfg.Delay) * math.Pow(cfg.Factor, float64(attempt-1)))
+				logger.Debug("Retrying operation",
+					zap.Int("attempt", attempt+1),
+					zap.Duration("delay", delay))
+				time.Sleep(delay)
+			}
+
+			result, lastErr = operation(ctx)
+			if lastErr == nil {
+				return result, nil
+			}
+
+			logger.Warn("Operation failed",
+				zap.Int("attempt", attempt+1),
+				zap.Error(lastErr))
+		}
+	}
+
+	return result, fmt.Errorf("operation failed after %d attempts: %w", cfg.MaxAttempts, lastErr)
+}
+
+// FindAssociatedTokenAddress находит или создает ATA
+func FindAssociatedTokenAddress(
+	ctx context.Context,
+	client blockchain.Client,
+	owner, mint solana.PublicKey,
+	logger *zap.Logger,
+) (solana.PublicKey, []solana.Instruction, error) {
+	ata, _, err := solana.FindAssociatedTokenAddress(owner, mint)
+	if err != nil {
+		return solana.PublicKey{}, nil, fmt.Errorf("failed to find ATA: %w", err)
+	}
+
+	// Проверяем существование аккаунта
+	account, err := client.GetAccountInfo(ctx, ata)
+	if err != nil {
+		return solana.PublicKey{}, nil, fmt.Errorf("failed to get account info: %w", err)
+	}
+
+	var instructions []solana.Instruction
+	if account == nil || account.Value == nil {
+		// Создаем инструкцию для создания ATA
+		createATAInst := associatedtokenaccount.NewCreateInstruction(
+			owner, // payer
+			ata,   // ata
+			owner, // owner
+			mint,  // mint
+		).Build()
+
+		instructions = append(instructions, createATAInst)
+
+		logger.Debug("ATA creation instruction added",
+			zap.String("ata", ata.String()),
+			zap.String("owner", owner.String()),
+			zap.String("mint", mint.String()))
+	}
+
+	return ata, instructions, nil
+}
+
+// CalculateMinimumReceived вычисляет минимальное количество токенов с учетом проскальзывания
+func CalculateMinimumReceived(amount uint64, slippageBps uint16) uint64 {
+	if slippageBps >= 10000 {
+		return 0
+	}
+
+	slippage := decimal.NewFromInt(int64(slippageBps)).Div(decimal.NewFromInt(10000))
+	amountDec := decimal.NewFromInt(int64(amount))
+	minimum := amountDec.Mul(decimal.NewFromInt(1).Sub(slippage))
+
+	return uint64(minimum.IntPart())
+}
+
+// DecodePDA декодирует Program Derived Address
+func DecodePDA(seeds [][]byte, programID solana.PublicKey) (solana.PublicKey, uint8, error) {
+	if len(seeds) == 0 {
+		return solana.PublicKey{}, 0, fmt.Errorf("empty seeds")
+	}
+
+	for nonce := uint8(0); nonce < 255; nonce++ {
+		nonceBytes := []byte{nonce}
+		allSeeds := append(append([][]byte{}, seeds...), nonceBytes)
+
+		addr, err := solana.CreateProgramAddress(allSeeds, programID)
+		if err == nil {
+			return addr, nonce, nil
+		}
+	}
+
+	return solana.PublicKey{}, 0, fmt.Errorf("could not find valid PDA")
+}
+
+// ValidateAndAdjustSlippage проверяет и корректирует значение проскальзывания
+func ValidateAndAdjustSlippage(slippageBps uint16) uint16 {
+	if slippageBps == 0 {
+		return 50 // 0.5% по умолчанию
+	}
+	if slippageBps > 10000 { // Максимум 100%
+		return 10000
+	}
+	return slippageBps
+}
+
+// EstimateRequiredSOL оценивает необходимое количество SOL для транзакции
+func EstimateRequiredSOL(
+	instructions []solana.Instruction,
+	recentBlockhash solana.Hash,
+	priorityFee uint64,
+) uint64 {
+	// Базовая стоимость транзакции
+	const baseTransactionCost = 5000
+
+	// Стоимость подписи (за каждого подписанта)
+	const signatureCost = 1000
+
+	// Оценка стоимости инструкций (приблизительно)
+	instructionCost := uint64(len(instructions)) * 1000
+
+	// Учитываем приоритетную комиссию
+	totalCost := baseTransactionCost + signatureCost + instructionCost + priorityFee
+
+	// Добавляем запас 10%
+	return uint64(float64(totalCost) * 1.1)
+}
+
+// ParsePoolAddress парсит и проверяет адрес пула
+func ParsePoolAddress(address string) (solana.PublicKey, error) {
+	if address == "" {
+		return solana.PublicKey{}, fmt.Errorf("empty pool address")
+	}
+
+	poolPubkey, err := solana.PublicKeyFromBase58(address)
+	if err != nil {
+		return solana.PublicKey{}, fmt.Errorf("invalid pool address: %w", err)
+	}
+
+	if poolPubkey.IsZero() {
+		return solana.PublicKey{}, fmt.Errorf("zero pool address")
+	}
+
+	return poolPubkey, nil
+}
+
+// ValidateTokenAccount проверяет токен-аккаунт
+func ValidateTokenAccount(
+	ctx context.Context,
+	client blockchain.Client,
+	account solana.PublicKey,
+	expectedMint solana.PublicKey,
+	expectedOwner solana.PublicKey,
+) error {
+	info, err := client.GetAccountInfo(ctx, account)
+	if err != nil {
+		return fmt.Errorf("failed to get account info: %w", err)
+	}
+
+	if info.Value == nil {
+		return fmt.Errorf("account not found")
+	}
+
+	if !info.Value.Owner.Equals(token.ProgramID) {
+		return fmt.Errorf("invalid account owner")
+	}
+
+	var tokenAccount token.Account
+	if err := binary.NewDecoder(info.Value.Data.GetBinary()).Decode(&tokenAccount); err != nil {
+		return fmt.Errorf("failed to decode token account: %w", err)
+	}
+
+	if !tokenAccount.Mint.Equals(expectedMint) {
+		return fmt.Errorf("invalid mint")
+	}
+
+	if !tokenAccount.Owner.Equals(expectedOwner) {
+		return fmt.Errorf("invalid owner")
+	}
+
+	return nil
+}
+
+// ConvertBigFloatToUint64 безопасно конвертирует big.Float в uint64
+func ConvertBigFloatToUint64(value *big.Float) (uint64, error) {
+	if value == nil {
+		return 0, fmt.Errorf("nil value")
+	}
+
+	if value.Sign() < 0 {
+		return 0, fmt.Errorf("negative value")
+	}
+
+	// Проверяем, что значение не превышает максимальное значение uint64
+	maxUint64 := new(big.Float).SetUint64(math.MaxUint64)
+	if value.Cmp(maxUint64) > 0 {
+		return 0, fmt.Errorf("value exceeds uint64 range")
+	}
+
+	result, accuracy := value.Uint64()
+	if accuracy != big.Exact {
+		return 0, fmt.Errorf("value has fractional part or exceeds uint64")
+	}
+
+	return result, nil
+}
