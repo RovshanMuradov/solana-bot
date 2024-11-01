@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
@@ -13,8 +14,14 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/gagliardetto/solana-go/rpc/jsonrpc"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+	"github.com/rovshanmuradov/solana-bot/internal/eventlistener"
 	"go.uber.org/zap"
 )
+
+// TODO: client.go:
+// - Добавить метод для batch-запросов GetMultiplePools
+// - Реализовать интерфейс для работы с WebSocket
+// - Добавить кэширование с TTL для пулов
 
 const (
 	maxRetries          = 3
@@ -28,6 +35,9 @@ type clientOptions struct {
 	timeout         time.Duration
 	retries         int
 	commitmentLevel rpc.CommitmentType
+
+	cacheLifetime time.Duration
+	wsURL         string
 }
 
 // ClientOption определяет функцию для настройки клиента
@@ -68,6 +78,16 @@ type RaydiumClient struct {
 	client  blockchain.Client
 	logger  *zap.Logger
 	options *clientOptions
+
+	// Добавляем поля для кэширования
+	poolCache     map[string]*poolCacheEntry
+	cacheMutex    sync.RWMutex
+	cacheLifetime time.Duration
+
+	// Добавляем поля для WebSocket
+	eventListener *eventlistener.EventListener
+	subscribers   map[string][]chan PoolUpdate
+	subMutex      sync.RWMutex
 }
 
 // NewRaydiumClient создает новый экземпляр клиента с опциями
@@ -84,11 +104,23 @@ func NewRaydiumClient(client blockchain.Client, logger *zap.Logger, opts ...Clie
 		opt(options)
 	}
 
-	return &RaydiumClient{
-		client:  client,
-		logger:  logger.Named("raydium-client"),
-		options: options,
-	}, nil
+	rc := &RaydiumClient{
+		client:        client,
+		logger:        logger.Named("raydium-client"),
+		options:       options,
+		poolCache:     make(map[string]*poolCacheEntry),
+		cacheLifetime: options.cacheLifetime,
+		subscribers:   make(map[string][]chan PoolUpdate),
+	}
+
+	// Инициализируем WebSocket если указан URL
+	if options.wsURL != "" {
+		if err := rc.initWebSocket(options.wsURL); err != nil {
+			return nil, fmt.Errorf("failed to initialize websocket: %w", err)
+		}
+	}
+
+	return rc, nil
 }
 
 // GetPool получает информацию о пуле по его ID
@@ -96,34 +128,37 @@ func (c *RaydiumClient) GetPool(ctx context.Context, poolID solana.PublicKey) (*
 	logger := c.logger.With(zap.String("pool_id", poolID.String()))
 	logger.Debug("Getting pool information")
 
-	ctx, cancel := context.WithTimeout(ctx, c.options.timeout)
-	defer cancel()
+	// Проверяем кэш первым делом
+	if entry, ok := c.getCached(poolID.String()); ok {
+		logger.Debug("Pool found in cache")
+		return entry.pool, nil
+	}
 
-	account, err := c.client.GetAccountInfo(ctx, poolID)
+	// Если нет в кэше, получаем из блокчейна
+	pool, err := c.fetchPoolFromChain(ctx, poolID)
 	if err != nil {
-		return nil, &SwapError{
-			Stage:   "get_pool",
-			Message: "failed to get pool account",
-			Err:     err,
-		}
+		return nil, err
 	}
 
-	if account.Value == nil || len(account.Value.Data.GetBinary()) == 0 {
-		return nil, &SwapError{
-			Stage:   "get_pool",
-			Message: "pool account not found or empty",
-		}
+	// Получаем актуальное состояние
+	state, err := c.GetPoolState(ctx, pool)
+	if err != nil {
+		logger.Warn("Failed to get pool state", zap.Error(err))
+		// Продолжаем без состояния
+	} else {
+		// Обновляем кэш с состоянием
+		c.updateCache(poolID.String(), pool, state)
 	}
 
-	pool := &RaydiumPool{
-		ID: poolID,
-	}
+	// Подписываемся на обновления пула через WebSocket, если есть слушатель
+	if c.eventListener != nil {
+		if _, exists := c.subscribers[poolID.String()]; !exists {
+			updates := make(chan PoolUpdate, 100)
+			c.subMutex.Lock()
+			c.subscribers[poolID.String()] = append(c.subscribers[poolID.String()], updates)
+			c.subMutex.Unlock()
 
-	if err := c.decodePoolData(account.Value.Data.GetBinary(), pool); err != nil {
-		return nil, &SwapError{
-			Stage:   "get_pool",
-			Message: "failed to decode pool data",
-			Err:     err,
+			logger.Debug("Subscribed to pool updates via WebSocket")
 		}
 	}
 
@@ -591,4 +626,113 @@ func (c *RaydiumClient) GetPoolLookupTable(
 		zap.Int("num_addresses", len(lookupTable.Addresses)))
 
 	return result, nil
+}
+
+// Реализуем метод для получения множества пулов
+func (c *RaydiumClient) GetMultiplePools(ctx context.Context, poolIDs []solana.PublicKey) ([]*RaydiumPool, error) {
+	logger := c.logger.With(zap.Int("pool_count", len(poolIDs)))
+	logger.Debug("Getting multiple pools")
+
+	type poolResult struct {
+		pool *RaydiumPool
+		err  error
+		idx  int
+	}
+
+	// Создаем каналы для результатов и ошибок
+	results := make(chan poolResult, len(poolIDs))
+	semaphore := make(chan struct{}, 10) // Ограничиваем параллельные запросы
+
+	// Запускаем горутины для получения пулов
+	for i, poolID := range poolIDs {
+		go func(index int, id solana.PublicKey) {
+			semaphore <- struct{}{}        // Захватываем слот
+			defer func() { <-semaphore }() // Освобождаем слот
+
+			// Проверяем кэш
+			if entry, ok := c.getCached(id.String()); ok {
+				results <- poolResult{pool: entry.pool, idx: index}
+				return
+			}
+
+			// Если нет в кэше, получаем из блокчейна
+			pool, err := c.fetchPoolFromChain(ctx, id)
+			results <- poolResult{pool: pool, err: err, idx: index}
+		}(i, poolID)
+	}
+
+	// Собираем результаты
+	pools := make([]*RaydiumPool, len(poolIDs))
+	var errors []error
+
+	for i := 0; i < len(poolIDs); i++ {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case result := <-results:
+			if result.err != nil {
+				errors = append(errors, fmt.Errorf("pool %s: %w", poolIDs[result.idx], result.err))
+				continue
+			}
+			pools[result.idx] = result.pool
+
+			// Получаем состояние и обновляем кэш асинхронно
+			go func(p *RaydiumPool) {
+				if state, err := c.GetPoolState(ctx, p); err == nil {
+					c.updateCache(p.ID.String(), p, state)
+				}
+			}(result.pool)
+		}
+	}
+
+	// Если есть ошибки, но получили хотя бы один пул
+	if len(errors) > 0 && len(errors) < len(poolIDs) {
+		logger.Warn("Some pools failed to load",
+			zap.Int("error_count", len(errors)),
+			zap.Errors("errors", errors))
+	} else if len(errors) == len(poolIDs) {
+		// Если все запросы завершились с ошибкой
+		return nil, fmt.Errorf("all pool requests failed: %v", errors)
+	}
+
+	logger.Debug("Successfully retrieved pools",
+		zap.Int("success_count", len(poolIDs)-len(errors)))
+
+	return pools, nil
+}
+
+// Реализуем вспомогательный метод для получения пула из блокчейна
+func (c *RaydiumClient) fetchPoolFromChain(ctx context.Context, poolID solana.PublicKey) (*RaydiumPool, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.options.timeout)
+	defer cancel()
+
+	account, err := c.client.GetAccountInfo(ctx, poolID)
+	if err != nil {
+		return nil, &SwapError{
+			Stage:   "get_pool",
+			Message: "failed to get pool account",
+			Err:     err,
+		}
+	}
+
+	if account.Value == nil || len(account.Value.Data.GetBinary()) == 0 {
+		return nil, &SwapError{
+			Stage:   "get_pool",
+			Message: "pool account not found or empty",
+		}
+	}
+
+	pool := &RaydiumPool{
+		ID: poolID,
+	}
+
+	if err := c.decodePoolData(account.Value.Data.GetBinary(), pool); err != nil {
+		return nil, &SwapError{
+			Stage:   "get_pool",
+			Message: "failed to decode pool data",
+			Err:     err,
+		}
+	}
+
+	return pool, nil
 }

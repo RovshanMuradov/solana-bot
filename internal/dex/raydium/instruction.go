@@ -12,6 +12,10 @@ import (
 	"go.uber.org/zap"
 )
 
+//TODO:instruction.go:
+//- Упростить BuildSwapInstruction, вынести часть логики в отдельные методы
+// - Добавить поддержку batch-инструкций
+
 // InstructionType определяет тип инструкции Raydium
 type InstructionType uint8
 

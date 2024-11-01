@@ -6,12 +6,18 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"time"
 
 	"github.com/gagliardetto/solana-go"
 	addresslookuptable "github.com/gagliardetto/solana-go/programs/address-lookup-table"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"go.uber.org/zap"
 )
+
+// TODO: pool.go
+// - Добавить поддержку новых типов пулов
+// - Реализовать методы для работы с concentrated liquidity
+// - Добавить методы для анализа ликвидности
 
 // PoolManager управляет операциями с пулом ликвидности
 type PoolManager struct {
@@ -346,4 +352,30 @@ func (pm *PoolManager) InitializeV5Pool(ctx context.Context, params *RaydiumPool
 func (pm *PoolManager) GetLPTokenBalance(ctx context.Context, owner solana.PublicKey) (uint64, error) {
 	// TODO: implement
 	return 0, nil
+}
+
+// Улучшить кэширование в pool.go:
+type PoolCache struct {
+	pool      *RaydiumPool
+	state     *PoolState
+	updatedAt time.Time
+	ttl       time.Duration
+}
+
+// Добавить методы для анализа ликвидности:
+
+func (p *PoolManager) GetLiquidityDepth(ctx context.Context, pool *RaydiumPool) (*LiquidityDepth, error) {
+	// TODO: реализовать
+	return nil, nil
+}
+
+// Реализовать concentrated liquidity:
+
+type ConcentratedLiquidityPool struct {
+	// TODO: определить структуру
+}
+
+func (p *PoolManager) InitializeConcentratedPool(ctx context.Context, params *ConcentratedPoolParams) error {
+	// TODO: реализовать
+	return nil
 }

@@ -13,6 +13,10 @@ import (
 	"go.uber.org/zap"
 )
 
+// TODO: order_book.go:
+// - Упростить структуру, использовать более эффективные структуры данных
+// - Добавить методы для работы с orderbook snapshots
+
 // Константы для Serum OrderBook
 const (
 	ORDER_BOOK_LAYOUT_SIZE = 5132

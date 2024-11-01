@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gagliardetto/solana-go"
+	addresslookuptable "github.com/gagliardetto/solana-go/programs/address-lookup-table"
 	associatedtokenaccount "github.com/gagliardetto/solana-go/programs/associated-token-account"
 	token "github.com/gagliardetto/solana-go/programs/token"
 	"github.com/shopspring/decimal"
@@ -18,6 +19,10 @@ import (
 
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 )
+
+// TODO: utils.go
+// - Добавить больше helpers для работы с числами
+// - Оптимизировать конвертации между типами
 
 // TokenAmountConfig содержит конфигурацию для работы с суммами токенов
 type TokenAmountConfig struct {
@@ -311,14 +316,110 @@ func ConvertBigFloatToUint64(value *big.Float) (uint64, error) {
 }
 
 // Утилиты для версионированных транзакций
-// TODO: Implement the method logic
-func CreateVersionedTransaction(instructions []solana.Instruction, lookupTables []solana.AddressLookupTable) (*solana.VersionedTransaction, error) {
-	// Создаем транзакцию
-	return nil, nil
+// В начале файла добавим структуру для V5 комиссий
+type V5FeeParams struct {
+	BaseFee     uint64 // Базовая комиссия
+	MaxFee      uint64 // Максимальная комиссия
+	AmmFee      uint16 // Комиссия AMM в базовых пунктах
+	PriceImpact uint16 // Максимальное влияние на цену в базовых пунктах
 }
 
-// Утилиты для работы с новыми комиссиями
-// TODO: Implement the method logic
+// CreateVersionedTransaction создает транзакцию с поддержкой lookup tables
+func CreateVersionedTransaction(
+	instructions []solana.Instruction,
+	lookupTables map[solana.PublicKey]solana.PublicKeySlice,
+) (*solana.Transaction, error) {
+	if len(instructions) == 0 {
+		return nil, fmt.Errorf("no instructions provided")
+	}
+
+	// Создаем билдер транзакции
+	tx := solana.NewTransactionBuilder()
+
+	// Добавляем все инструкции
+	for _, instruction := range instructions {
+		tx.AddInstruction(instruction)
+	}
+
+	// Если есть lookup tables, добавляем их через опцию
+	if len(lookupTables) > 0 {
+		tx.WithOpt(solana.TransactionAddressTables(lookupTables))
+	}
+
+	// Строим транзакцию
+	transaction, err := tx.Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build transaction: %w", err)
+	}
+
+	return transaction, nil
+}
+
+// CalculateV5Fees вычисляет комиссии для V5 пулов
 func CalculateV5Fees(amount uint64, feeParams V5FeeParams) uint64 {
-	return 0
+	// Базовая комиссия всегда взимается
+	totalFee := feeParams.BaseFee
+
+	// Добавляем комиссию AMM
+	ammFee := new(big.Float).SetUint64(amount)
+	ammFee = ammFee.Mul(ammFee, new(big.Float).SetFloat64(float64(feeParams.AmmFee)/10000.0))
+	ammFeeUint, _ := ammFee.Uint64()
+	totalFee += ammFeeUint
+
+	// Добавляем влияние на цену, если оно есть
+	if feeParams.PriceImpact > 0 {
+		priceImpactFee := new(big.Float).SetUint64(amount)
+		priceImpactFee = priceImpactFee.Mul(priceImpactFee, new(big.Float).SetFloat64(float64(feeParams.PriceImpact)/10000.0))
+		priceImpactFeeUint, _ := priceImpactFee.Uint64()
+		totalFee += priceImpactFeeUint
+	}
+
+	// Проверяем, не превышает ли общая комиссия максимальную
+	if totalFee > feeParams.MaxFee {
+		return feeParams.MaxFee
+	}
+
+	return totalFee
+}
+
+// Вспомогательная функция для получения состояния lookup table
+func GetAddressLookupTableState(
+	ctx context.Context,
+	client blockchain.Client,
+	tableAddress solana.PublicKey,
+) (*addresslookuptable.AddressLookupTableState, error) {
+	// Получаем RPC клиент из blockchain.Client
+	rpcClient := client.GetRpcClient()
+
+	// Получаем состояние lookup table
+	state, err := addresslookuptable.GetAddressLookupTable(
+		ctx,
+		rpcClient,
+		tableAddress,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get lookup table state: %w", err)
+	}
+
+	return state, nil
+}
+
+// Вспомогательная функция для подготовки lookup tables к транзакции
+func PrepareLookupTables(
+	ctx context.Context,
+	client blockchain.Client,
+	tableAddresses []solana.PublicKey,
+) (map[solana.PublicKey]solana.PublicKeySlice, error) {
+	lookupTables := make(map[solana.PublicKey]solana.PublicKeySlice)
+
+	for _, tableAddr := range tableAddresses {
+		state, err := GetAddressLookupTableState(ctx, client, tableAddr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to prepare lookup table %s: %w", tableAddr, err)
+		}
+
+		lookupTables[tableAddr] = state.Addresses
+	}
+
+	return lookupTables, nil
 }
