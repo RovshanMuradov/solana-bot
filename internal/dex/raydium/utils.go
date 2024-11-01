@@ -311,12 +311,14 @@ func ConvertBigFloatToUint64(value *big.Float) (uint64, error) {
 }
 
 // Утилиты для версионированных транзакций
+// TODO: Implement the method logic
 func CreateVersionedTransaction(instructions []solana.Instruction, lookupTables []solana.AddressLookupTable) (*solana.VersionedTransaction, error) {
 	// Создаем транзакцию
 	return nil, nil
 }
 
 // Утилиты для работы с новыми комиссиями
+// TODO: Implement the method logic
 func CalculateV5Fees(amount uint64, feeParams V5FeeParams) uint64 {
 	return 0
 }

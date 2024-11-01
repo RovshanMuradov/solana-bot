@@ -508,7 +508,7 @@ func (b *SwapInstructionBuilder) BuildVersionedSwapInstruction(
 	ctx context.Context,
 	params SwapParams,
 	accounts SwapInstructionAccounts,
-) (*solana.VersionedTransaction, error) {
+) (*solana.Transaction, error) {
 	logger := b.logger.With(
 		zap.String("user", accounts.UserAuthority.String()),
 		zap.Uint64("amount_in", params.AmountIn),
@@ -522,32 +522,35 @@ func (b *SwapInstructionBuilder) BuildVersionedSwapInstruction(
 		return nil, fmt.Errorf("failed to build swap instruction: %w", err)
 	}
 
-	// Создаем message для транзакции
-	message := solana.NewMessage(
-		solana.MessageV0, // используем версию 0 для версионированных транзакций
-		[]solana.Instruction{instruction},
-		accounts.UserAuthority, // fee payer
-	)
+	// Создаем новый транзакционный билдер
+	tx := solana.NewTransactionBuilder()
 
-	// Если есть lookup table, добавляем её
+	// Добавляем instruction
+	tx.AddInstruction(instruction)
+
+	// Устанавливаем fee payer
+	tx.SetFeePayer(accounts.UserAuthority)
+
+	// Если у нас есть lookup table, добавляем её через TransactionAddressTables option
 	if !b.pool.LookupTableID.IsZero() {
-		addressLookupTable := &solana.MessageAddressTableLookup{
-			AccountKey:      b.pool.LookupTableID,
-			WritableIndexes: []uint8{}, // заполнить необходимыми индексами
-			ReadonlyIndexes: []uint8{}, // заполнить необходимыми индексами
-		}
-		message.AddressTableLookups = append(message.AddressTableLookups, addressLookupTable)
+		// Создаем мапу с адресами для lookup table
+		addressTables := make(map[solana.PublicKey]solana.PublicKeySlice)
+
+		// Получаем адреса lookup table из пула и добавляем их в мапу
+		addressTables[b.pool.LookupTableID] = b.pool.LookupTableAddresses
+
+		// Добавляем опцию с address tables
+		tx.WithOpt(solana.TransactionAddressTables(addressTables))
 	}
 
-	// Создаем версионированную транзакцию
-	tx := &solana.VersionedTransaction{
-		Message:    message,
-		Signatures: make([]solana.Signature, message.Header.NumRequiredSignatures),
+	// Строим транзакцию
+	transaction, err := tx.Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build transaction: %w", err)
 	}
 
 	logger.Debug("Versioned swap transaction built successfully")
-
-	return tx, nil
+	return transaction, nil
 }
 
 // DepositInstructionAccounts аккаунты, необходимые для депозита

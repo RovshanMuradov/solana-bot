@@ -8,6 +8,7 @@ import (
 	"math/big"
 
 	"github.com/gagliardetto/solana-go"
+	addresslookuptable "github.com/gagliardetto/solana-go/programs/address-lookup-table"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"go.uber.org/zap"
 )
@@ -26,7 +27,46 @@ func NewPoolManager(client blockchain.Client, logger *zap.Logger) *PoolManager {
 	}
 }
 
-// InitializePool создает новый пул с заданными параметрами
+// Добавляем метод для загрузки состояния lookup table в PoolManager
+func (pm *PoolManager) LoadPoolLookupTable(
+	ctx context.Context,
+	pool *RaydiumPool,
+) error {
+	if pool.LookupTableID.IsZero() {
+		return nil
+	}
+
+	logger := pm.logger.With(
+		zap.String("lookup_table_id", pool.LookupTableID.String()),
+	)
+	logger.Debug("Loading lookup table")
+
+	// Загружаем состояние lookup table
+	rpcClient := pm.client.GetRpcClient()
+	lookupTable, err := addresslookuptable.GetAddressLookupTable(
+		ctx,
+		rpcClient,
+		pool.LookupTableID,
+	)
+	if err != nil {
+		return &PoolError{
+			Stage:   "load_lookup_table",
+			Message: "failed to load lookup table",
+			Err:     err,
+		}
+	}
+
+	// Сохраняем адреса
+	pool.LookupTableAddresses = lookupTable.Addresses
+
+	logger.Debug("Lookup table loaded successfully",
+		zap.Int("addresses_count", len(pool.LookupTableAddresses)),
+	)
+
+	return nil
+}
+
+// Модифицируем существующий метод инициализации пула
 func (pm *PoolManager) InitializePool(ctx context.Context, params *RaydiumPool) error {
 	logger := pm.logger.With(
 		zap.String("base_mint", params.BaseMint.String()),
@@ -40,6 +80,11 @@ func (pm *PoolManager) InitializePool(ctx context.Context, params *RaydiumPool) 
 			Message: "invalid pool parameters",
 			Err:     err,
 		}
+	}
+
+	// Добавляем загрузку lookup table после валидации параметров
+	if err := pm.LoadPoolLookupTable(ctx, params); err != nil {
+		return err
 	}
 
 	return nil
@@ -216,6 +261,14 @@ func (pm *PoolManager) validatePoolParameters(pool *RaydiumPool) error {
 		return fmt.Errorf("invalid market parameters")
 	}
 
+	// Если указан lookup table ID, проверяем что он валидный
+	if !pool.LookupTableID.IsZero() {
+		// Проверка существования lookup table будет выполнена при загрузке
+		logger := pm.logger.With(
+			zap.String("lookup_table_id", pool.LookupTableID.String()),
+		)
+		logger.Debug("Pool has lookup table configuration")
+	}
 	return nil
 }
 

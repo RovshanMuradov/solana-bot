@@ -78,7 +78,10 @@ type RaydiumPool struct {
 	MarketAsks       solana.PublicKey
 	MarketEventQueue solana.PublicKey
 	MarketVersion    uint8
-	LookupTableID    solana.PublicKey
+
+	// Lookup Table конфигурация
+	LookupTableID        solana.PublicKey
+	LookupTableAddresses solana.PublicKeySlice // добавляем это поле
 
 	// Версионирование и инструкции
 	Version              uint8
