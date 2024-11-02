@@ -3,13 +3,16 @@ package raydium
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"math/big"
+	"strconv"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
 	addresslookuptable "github.com/gagliardetto/solana-go/programs/address-lookup-table"
+	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"go.uber.org/zap"
 )
@@ -23,6 +26,7 @@ import (
 type PoolManager struct {
 	client blockchain.Client
 	logger *zap.Logger
+	pool   *RaydiumV5Pool // Текущий активный пул
 }
 
 // NewPoolManager создает новый менеджер пула
@@ -30,6 +34,7 @@ func NewPoolManager(client blockchain.Client, logger *zap.Logger) *PoolManager {
 	return &PoolManager{
 		client: client,
 		logger: logger.Named("pool-manager"),
+		pool:   nil,
 	}
 }
 
@@ -331,27 +336,349 @@ func (pc *PoolCalculator) GetMarketPrice() float64 {
 	return (quoteF / quoteDecimalAdj) / (baseF / baseDecimalAdj)
 }
 
-// Добавить в pool.go:
+// RaydiumV5Pool представляет пул Raydium версии 5
 type RaydiumV5Pool struct {
-	RaydiumPool
-	PnlOwner    solana.PublicKey
-	ModelDataId solana.PublicKey
-	RecentRoot  *big.Int
-	MaxOrders   uint64
-	OrderStates []*big.Int
-	TickSpacing uint16
+	RaydiumPool // Встраиваем базовую структуру пула
+
+	// Основные параметры V5
+	PnlOwner    solana.PublicKey // Владелец PnL (Profit and Loss)
+	ModelDataId solana.PublicKey // ID модели данных пула
+	RecentRoot  *big.Int         // Последний корневой хеш состояния пула
+	MaxOrders   uint64           // Максимальное количество ордеров
+	OrderStates []*big.Int       // Состояния ордеров
+	TickSpacing uint16           // Шаг тиков цены
+
+	// Дополнительные параметры V5
+	LPMint       solana.PublicKey    // Минт LP токенов
+	AdminKey     solana.PublicKey    // Ключ администратора пула
+	ConfigParams V5ConfigParams      // Параметры конфигурации
+	FeeAccounts  V5FeeAccounts       // Аккаунты для комиссий
+	PoolState    V5PoolState         // Состояние пула
+	PriceHistory []PriceHistoryPoint // История цен
 }
 
-// Методы для работы с v5 пулами
-func (pm *PoolManager) InitializeV5Pool(ctx context.Context, params *RaydiumPoolV5) error {
-	// TODO: implement
+// V5ConfigParams содержит параметры конфигурации пула V5
+type V5ConfigParams struct {
+	MinPriceRatio  *big.Int // Минимальное соотношение цен
+	MaxPriceRatio  *big.Int // Максимальное соотношение цен
+	MinBaseAmount  uint64   // Минимальное количество базового токена
+	MinQuoteAmount uint64   // Минимальное количество котируемого токена
+	MaxSlippageBps uint16   // Максимальный проскальзывание в базисных пунктах
+	MaxLeverage    uint16   // Максимальное плечо
+	ProtocolFee    uint16   // Комиссия протокола в базисных пунктах
+	MinOrderSize   uint64   // Минимальный размер ордера
+}
+
+// V5FeeAccounts содержит аккаунты для комиссий
+type V5FeeAccounts struct {
+	ProtocolFeeAccount solana.PublicKey // Аккаунт для комиссий протокола
+	TraderFeeAccount   solana.PublicKey // Аккаунт для комиссий трейдера
+	LPFeeAccount       solana.PublicKey // Аккаунт для комиссий провайдеров ликвидности
+}
+
+// V5PoolState содержит текущее состояние пула
+type V5PoolState struct {
+	BaseReserve     uint64     // Резерв базового токена
+	QuoteReserve    uint64     // Резерв котируемого токена
+	LPSupply        uint64     // Общее предложение LP токенов
+	LastUpdateSlot  uint64     // Слот последнего обновления
+	SwapEnabled     bool       // Включен ли свап
+	PriceMultiplier *big.Int   // Мультипликатор цены
+	CurrentPrice    *big.Float // Текущая цена
+	TVL             *big.Float // Total Value Locked
+}
+
+// PriceHistoryPoint представляет точку в истории цен
+type PriceHistoryPoint struct {
+	Timestamp time.Time  // Временная метка
+	Price     *big.Float // Цена
+	Volume    uint64     // Объем
+}
+
+// Методы для работы с V5Pool
+
+// NewRaydiumV5Pool создает новый экземпляр V5 пула
+func NewRaydiumV5Pool(baseParams *RaydiumPool) *RaydiumV5Pool {
+	return &RaydiumV5Pool{
+		RaydiumPool: *baseParams,
+		ConfigParams: V5ConfigParams{
+			MinPriceRatio: new(big.Int),
+			MaxPriceRatio: new(big.Int),
+		},
+		PoolState: V5PoolState{
+			PriceMultiplier: new(big.Int),
+			CurrentPrice:    new(big.Float),
+			TVL:             new(big.Float),
+		},
+		PriceHistory: make([]PriceHistoryPoint, 0),
+	}
+}
+
+// GetCurrentState возвращает текущее состояние пула
+func (p *RaydiumV5Pool) GetCurrentState() V5PoolState {
+	return p.PoolState
+}
+
+// UpdateState обновляет состояние пула
+func (p *RaydiumV5Pool) UpdateState(newState V5PoolState) {
+	p.PoolState = newState
+	// Добавляем точку в историю цен
+	p.PriceHistory = append(p.PriceHistory, PriceHistoryPoint{
+		Timestamp: time.Now(),
+		Price:     newState.CurrentPrice,
+		Volume:    0, // Нужно добавить расчет объема
+	})
+}
+
+// GetFeeAccounts возвращает аккаунты для комиссий
+func (p *RaydiumV5Pool) GetFeeAccounts() V5FeeAccounts {
+	return p.FeeAccounts
+}
+
+// IsSwapEnabled проверяет, включен ли свап в пуле
+func (p *RaydiumV5Pool) IsSwapEnabled() bool {
+	return p.PoolState.SwapEnabled
+}
+
+// GetTVL возвращает Total Value Locked
+func (p *RaydiumV5Pool) GetTVL() *big.Float {
+	return p.PoolState.TVL
+}
+
+// Вспомогательный метод для валидации model data
+func (pm *PoolManager) validateModelData(ctx context.Context, modelDataId solana.PublicKey) error {
+	if modelDataId.IsZero() {
+		return fmt.Errorf("model data ID cannot be zero")
+	}
+
+	// Проверяем существование аккаунта
+	account, err := pm.client.GetAccountInfo(ctx, modelDataId)
+	if err != nil {
+		return fmt.Errorf("failed to get model data account: %w", err)
+	}
+
+	if account == nil || account.Value == nil {
+		return fmt.Errorf("model data account not found")
+	}
+
+	// Здесь можно добавить дополнительную валидацию данных модели
+	// в зависимости от требований
+
 	return nil
 }
 
+// SetPool устанавливает текущий активный пул
+func (pm *PoolManager) SetPool(pool *RaydiumV5Pool) {
+	pm.pool = pool
+}
+
+// GetPool возвращает текущий активный пул
+func (pm *PoolManager) GetPool() *RaydiumV5Pool {
+	return pm.pool
+}
+
+// InitializeV5Pool инициализирует пул версии 5 Raydium
+func (pm *PoolManager) InitializeV5Pool(ctx context.Context, params *RaydiumV5Pool) error {
+	logger := pm.logger.With(
+		zap.String("base_mint", params.BaseMint.String()),
+		zap.String("quote_mint", params.QuoteMint.String()),
+		zap.String("pnl_owner", params.PnlOwner.String()),
+	)
+	logger.Debug("Initializing new V5 pool")
+
+	// Проверяем базовые параметры пула
+	if err := pm.validatePoolParameters(&params.RaydiumPool); err != nil {
+		return &PoolError{
+			Stage:   "initialize_v5",
+			Message: "invalid pool parameters",
+			Err:     err,
+		}
+	}
+
+	// Дополнительная валидация параметров V5
+	if err := pm.validateV5Parameters(params); err != nil {
+		return &PoolError{
+			Stage:   "initialize_v5",
+			Message: "invalid v5 specific parameters",
+			Err:     err,
+		}
+	}
+
+	// Загружаем lookup table если она указана
+	if err := pm.LoadPoolLookupTable(ctx, &params.RaydiumPool); err != nil {
+		return err
+	}
+
+	// Проверяем наличие и валидность model data account
+	if err := pm.validateModelData(ctx, params.ModelDataId); err != nil {
+		return &PoolError{
+			Stage:   "initialize_v5",
+			Message: "invalid model data account",
+			Err:     err,
+		}
+	}
+
+	return nil
+}
+
+// validateV5Parameters проверяет специфичные для V5 параметры
+func (pm *PoolManager) validateV5Parameters(pool *RaydiumV5Pool) error {
+	if pool.PnlOwner.IsZero() {
+		return fmt.Errorf("pnl owner cannot be zero")
+	}
+
+	if pool.ModelDataId.IsZero() {
+		return fmt.Errorf("model data id cannot be zero")
+	}
+
+	if pool.MaxOrders == 0 {
+		return fmt.Errorf("max orders must be greater than zero")
+	}
+
+	if pool.TickSpacing == 0 {
+		return fmt.Errorf("tick spacing must be greater than zero")
+	}
+
+	return nil
+}
+
+// UiTokenAmount представляет количество токенов с учетом десятичных знаков
+type UiTokenAmount struct {
+	// Точное количество токенов в виде строки для предотвращения потери точности
+	Amount string `json:"amount"`
+
+	// Количество десятичных знаков токена
+	Decimals uint8 `json:"decimals"`
+
+	// Форматированное количество токенов с учетом десятичных знаков
+	UiAmount float64 `json:"uiAmount"`
+
+	// Форматированное количество в виде строки
+	UiAmountString string `json:"uiAmountString"`
+}
+
+// NewUiTokenAmount создает новый UiTokenAmount
+func NewUiTokenAmount(amount uint64, decimals uint8) *UiTokenAmount {
+	// Конвертируем amount в float64 с учетом decimals
+	uiAmount := float64(amount) / math.Pow10(int(decimals))
+
+	return &UiTokenAmount{
+		Amount:         strconv.FormatUint(amount, 10),
+		Decimals:       decimals,
+		UiAmount:       uiAmount,
+		UiAmountString: fmt.Sprintf("%f", uiAmount),
+	}
+}
+
+// ToUint64 конвертирует UiAmount обратно в uint64
+func (u *UiTokenAmount) ToUint64() (uint64, error) {
+	return strconv.ParseUint(u.Amount, 10, 64)
+}
+
+// String возвращает строковое представление количества токенов
+func (u *UiTokenAmount) String() string {
+	return u.UiAmountString
+}
+
+// FromDecimals создает UiTokenAmount из количества и decimals
+func FromDecimals(amount uint64, decimals uint8) *UiTokenAmount {
+	return NewUiTokenAmount(amount, decimals)
+}
+
+// Parse парсит значение из JSON
+func (u *UiTokenAmount) UnmarshalJSON(data []byte) error {
+	// Временная структура для парсинга
+	type Alias UiTokenAmount
+	aux := &struct {
+		Amount         string  `json:"amount"`
+		Decimals       uint8   `json:"decimals"`
+		UiAmount       float64 `json:"uiAmount"`
+		UiAmountString string  `json:"uiAmountString"`
+	}{}
+
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	// Просто присваиваем строковые значения
+	u.Amount = aux.Amount
+	u.Decimals = aux.Decimals
+	u.UiAmount = aux.UiAmount
+	u.UiAmountString = aux.UiAmountString
+
+	return nil
+}
+
+// MarshalJSON конвертирует в JSON
+func (u UiTokenAmount) MarshalJSON() ([]byte, error) {
+	// Временная структура для маршалинга
+	return json.Marshal(&struct {
+		Amount         string  `json:"amount"`
+		Decimals       uint8   `json:"decimals"`
+		UiAmount       float64 `json:"uiAmount"`
+		UiAmountString string  `json:"uiAmountString"`
+	}{
+		Amount:         u.Amount,
+		Decimals:       u.Decimals,
+		UiAmount:       u.UiAmount,
+		UiAmountString: u.UiAmountString,
+	})
+}
+
 // Методы для работы с LP токенами
+// GetLPTokenBalance получает баланс LP токенов для указанного владельца
 func (pm *PoolManager) GetLPTokenBalance(ctx context.Context, owner solana.PublicKey) (uint64, error) {
-	// TODO: implement
-	return 0, nil
+	if pm.pool == nil {
+		return 0, &PoolError{
+			Stage:   "get_lp_balance",
+			Message: "no active pool set",
+		}
+	}
+
+	logger := pm.logger.With(
+		zap.String("owner", owner.String()),
+		zap.String("lp_mint", pm.pool.LPMint.String()),
+	)
+	logger.Debug("Getting LP token balance")
+
+	// Получаем associated token address для LP токенов
+	lpTokenATA, _, err := solana.FindAssociatedTokenAddress(owner, pm.pool.LPMint)
+	if err != nil {
+		return 0, &PoolError{
+			Stage:   "get_lp_balance",
+			Message: "failed to find LP token ATA",
+			Err:     err,
+		}
+	}
+
+	balance, err := pm.client.GetTokenAccountBalance(
+		ctx,
+		lpTokenATA,
+		rpc.CommitmentConfirmed,
+	)
+	if err != nil {
+		return 0, &PoolError{
+			Stage:   "get_lp_balance",
+			Message: "failed to get token balance",
+			Err:     err,
+		}
+	}
+
+	if balance == nil || balance.Value == nil {
+		return 0, nil
+	}
+
+	// Конвертируем строковое значение в uint64
+	amount, err := strconv.ParseUint(balance.Value.Amount, 10, 64)
+	if err != nil {
+		return 0, &PoolError{
+			Stage:   "get_lp_balance",
+			Message: "failed to parse token amount",
+			Err:     err,
+		}
+	}
+
+	return amount, nil
 }
 
 // Улучшить кэширование в pool.go:

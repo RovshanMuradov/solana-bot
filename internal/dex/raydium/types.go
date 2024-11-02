@@ -197,11 +197,6 @@ func (e *SwapError) Unwrap() error {
 	return e.Err
 }
 
-// Типы для v5 пулов
-type RaydiumPoolV5 struct {
-	// Новые поля v5
-}
-
 // Типы для маркет-мейкинга
 type MarketMakingParams struct {
 	// Параметры для MM
