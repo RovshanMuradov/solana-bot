@@ -1,4 +1,4 @@
-// inernal/dex/raydium - это пакет, который содержит в себе реализацию работы с декстерами Raydium
+// inernal/dex/raydium/types.go - это пакет, который содержит в себе реализацию работы с декстерами Raydium
 package raydium
 
 import "github.com/gagliardetto/solana-go"

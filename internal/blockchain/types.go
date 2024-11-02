@@ -47,6 +47,5 @@ type Client interface {
 	GetSignatureStatuses(ctx context.Context, signatures ...solana.Signature) (*rpc.GetSignatureStatusesResult, error)
 	SendTransactionWithOpts(ctx context.Context, tx *solana.Transaction, opts TransactionOptions) (solana.Signature, error)
 	SimulateTransaction(ctx context.Context, tx *solana.Transaction) (*SimulationResult, error)
-	GetRpcClient() *rpc.Client
 	GetTokenAccountBalance(ctx context.Context, account solana.PublicKey, commitment rpc.CommitmentType) (*rpc.GetTokenAccountBalanceResult, error)
 }
