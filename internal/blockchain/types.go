@@ -3,7 +3,6 @@ package blockchain
 
 import (
 	"context"
-	"encoding/base64"
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
@@ -21,22 +20,6 @@ type SimulationResult struct {
 	Err           interface{}
 	Logs          []string
 	UnitsConsumed uint64
-	ReturnData    *Base64Data
-}
-
-// Base64Data представляет данные в формате Base64
-type Base64Data struct {
-	Data string
-}
-
-// EncodeBase64 кодирует данные в Base64
-func (b *Base64Data) EncodeBase64(data []byte) {
-	b.Data = base64.StdEncoding.EncodeToString(data)
-}
-
-// DecodeBase64 декодирует данные из Base64
-func (b *Base64Data) DecodeBase64() ([]byte, error) {
-	return base64.StdEncoding.DecodeString(b.Data)
 }
 
 // Client определяет общий интерфейс для клиентов блокчейна
@@ -48,4 +31,7 @@ type Client interface {
 	SendTransactionWithOpts(ctx context.Context, tx *solana.Transaction, opts TransactionOptions) (solana.Signature, error)
 	SimulateTransaction(ctx context.Context, tx *solana.Transaction) (*SimulationResult, error)
 	GetTokenAccountBalance(ctx context.Context, account solana.PublicKey, commitment rpc.CommitmentType) (*rpc.GetTokenAccountBalanceResult, error)
+
+	// Добавляем новый метод для получения программных аккаунтов
+	GetProgramAccounts(ctx context.Context, program solana.PublicKey, opts rpc.GetProgramAccountsOpts) ([]rpc.KeyedAccount, error)
 }

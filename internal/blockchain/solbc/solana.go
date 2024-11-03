@@ -54,9 +54,3 @@ func (s *Blockchain) GetRecentBlockhash(ctx context.Context) (solana.Hash, error
 	}
 	return hash, nil
 }
-
-// SimulateTransaction simulates a transaction on the Solana blockchain
-func (c *Client) SimulateTransaction(tx string) (string, error) {
-	// Implement the method logic here
-	return "", nil
-}

@@ -4,6 +4,7 @@ package solbc
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/gagliardetto/solana-go"
 	solanarpc "github.com/gagliardetto/solana-go/rpc"
@@ -49,7 +50,6 @@ func (c *Client) GetRecentBlockhash(ctx context.Context) (solana.Hash, error) {
 	return result.Value.Blockhash, nil
 }
 
-// SendTransaction отправляет транзакцию
 // SendTransaction отправляет транзакцию с улучшенной обработкой ошибок
 func (c *Client) SendTransaction(ctx context.Context, tx *solana.Transaction) (solana.Signature, error) {
 	signature, err := c.rpc.SendTransaction(ctx, tx)
@@ -79,4 +79,79 @@ func (c *Client) Close() error {
 }
 func (c *Client) GetSignatureStatuses(ctx context.Context, signatures ...solana.Signature) (*solanarpc.GetSignatureStatusesResult, error) {
 	return c.rpc.GetSignatureStatuses(ctx, signatures...)
+}
+
+// GetProgramAccounts получает аккаунты программы по заданным фильтрам
+func (c *Client) GetProgramAccounts(
+	ctx context.Context,
+	program solana.PublicKey,
+	opts solanarpc.GetProgramAccountsOpts,
+) ([]solanarpc.KeyedAccount, error) {
+	c.logger.Debug("getting program accounts",
+		zap.String("program", program.String()),
+	)
+
+	accounts, err := c.rpc.GetProgramAccounts(ctx, program, opts)
+	if err != nil {
+		c.metrics.IncrementFailedRequests()
+		c.metrics.LastError = err
+		c.metrics.LastErrorTime = time.Now()
+		return nil, fmt.Errorf("failed to get program accounts: %w", err)
+	}
+
+	c.metrics.IncrementProgramAccountRequests()
+	return accounts, nil
+}
+
+// GetTokenAccountBalance получает баланс токен-аккаунта
+func (c *Client) GetTokenAccountBalance(
+	ctx context.Context,
+	account solana.PublicKey,
+	commitment solanarpc.CommitmentType,
+) (*solanarpc.GetTokenAccountBalanceResult, error) {
+	c.logger.Debug("getting token account balance",
+		zap.String("account", account.String()),
+		zap.String("commitment", string(commitment)),
+	)
+
+	result, err := c.rpc.GetTokenAccountBalance(ctx, account, commitment)
+	if err != nil {
+		c.metrics.FailedRequests++
+		c.metrics.LastError = err
+		c.metrics.LastErrorTime = time.Now()
+		return nil, fmt.Errorf("failed to get token account balance: %w", err)
+	}
+
+	return result, nil
+}
+
+// SimulateTransaction симулирует выполнение транзакции
+func (c *Client) SimulateTransaction(
+	ctx context.Context,
+	tx *solana.Transaction,
+) (*blockchain.SimulationResult, error) {
+	c.logger.Debug("simulating transaction")
+
+	result, err := c.rpc.SimulateTransaction(ctx, tx)
+	if err != nil {
+		c.metrics.FailedRequests++
+		c.metrics.LastError = err
+		c.metrics.LastErrorTime = time.Now()
+		return nil, fmt.Errorf("failed to simulate transaction: %w", err)
+	}
+
+	// Обработаем возможный nil в UnitsConsumed
+	var unitsConsumed uint64
+	if result.Value.UnitsConsumed != nil {
+		unitsConsumed = *result.Value.UnitsConsumed
+	}
+
+	// Преобразуем результат в нужный формат
+	simulationResult := &blockchain.SimulationResult{
+		Err:           result.Value.Err,
+		Logs:          result.Value.Logs,
+		UnitsConsumed: unitsConsumed,
+	}
+
+	return simulationResult, nil
 }

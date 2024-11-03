@@ -184,3 +184,86 @@ func (c *RPCClient) GetSignatureStatuses(ctx context.Context, signatures ...sola
 
 // Close закрывает клиент
 func (c *RPCClient) Close() {}
+
+// GetProgramAccounts получает все аккаунты для заданной программы
+func (c *RPCClient) GetProgramAccounts(
+	ctx context.Context,
+	program solana.PublicKey,
+	opts solanarpc.GetProgramAccountsOpts,
+) ([]solanarpc.KeyedAccount, error) {
+	var accounts []solanarpc.KeyedAccount
+
+	err := c.ExecuteWithRetry(ctx, func(client *solanarpc.Client) error {
+		result, err := client.GetProgramAccountsWithOpts(
+			ctx,
+			program,
+			&opts,
+		)
+		if err != nil {
+			return err
+		}
+
+		// Преобразуем []*KeyedAccount в []KeyedAccount
+		accounts = make([]solanarpc.KeyedAccount, len(result))
+		for i, acc := range result {
+			accounts[i] = *acc
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get program accounts: %w", err)
+	}
+
+	return accounts, nil
+}
+
+// GetTokenAccountBalance получает баланс токен-аккаунта
+func (c *RPCClient) GetTokenAccountBalance(
+	ctx context.Context,
+	account solana.PublicKey,
+	commitment solanarpc.CommitmentType,
+) (*solanarpc.GetTokenAccountBalanceResult, error) {
+	var result *solanarpc.GetTokenAccountBalanceResult
+
+	err := c.ExecuteWithRetry(ctx, func(client *solanarpc.Client) error {
+		var err error
+		result, err = client.GetTokenAccountBalance(
+			ctx,
+			account,
+			commitment,
+		)
+		return err
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get token account balance: %w", err)
+	}
+
+	return result, nil
+}
+
+// SimulateTransaction симулирует выполнение транзакции
+func (c *RPCClient) SimulateTransaction(
+	ctx context.Context,
+	tx *solana.Transaction,
+) (*solanarpc.SimulateTransactionResponse, error) {
+	var result *solanarpc.SimulateTransactionResponse
+
+	err := c.ExecuteWithRetry(ctx, func(client *solanarpc.Client) error {
+		var err error
+		result, err = client.SimulateTransactionWithOpts(ctx, tx, &solanarpc.SimulateTransactionOpts{
+			SigVerify:              false,
+			Commitment:             solanarpc.CommitmentConfirmed,
+			ReplaceRecentBlockhash: false,
+		})
+		return err
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to simulate transaction: %w", err)
+	}
+
+	return result, nil
+}

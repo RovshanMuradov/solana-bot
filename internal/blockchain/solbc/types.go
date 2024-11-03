@@ -3,6 +3,7 @@ package solbc
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -27,11 +28,22 @@ type Client struct {
 }
 
 type ClientMetrics struct {
-	AccountInfoRequests uint64
-	TransactionRequests uint64
-	FailedRequests      uint64
-	LastError           error
-	LastErrorTime       time.Time
+	AccountInfoRequests    uint64
+	TransactionRequests    uint64
+	FailedRequests         uint64
+	ProgramAccountRequests uint64 // Добавляем новое поле
+	LastError              error
+	LastErrorTime          time.Time
+}
+
+// IncrementProgramAccountRequests атомарно увеличивает счетчик запросов
+func (m *ClientMetrics) IncrementProgramAccountRequests() {
+	atomic.AddUint64(&m.ProgramAccountRequests, 1)
+}
+
+// IncrementFailedRequests атомарно увеличивает счетчик ошибок
+func (m *ClientMetrics) IncrementFailedRequests() {
+	atomic.AddUint64(&m.FailedRequests, 1)
 }
 
 // Проверяем, что Client реализует blockchain.Client интерфейс

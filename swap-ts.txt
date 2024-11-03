@@ -1,0 +1,623 @@
+// config.ts
+import dotenv from 'dotenv';
+import https from 'https';
+dotenv.config();
+
+if (!process.env.QUICKNODE_URL) {
+  throw new Error('QUICKNODE_URL is not set in the environment variables');
+}
+
+if (!process.env.WALLET_SECRET_KEY) {
+  throw new Error('WALLET_SECRET_KEY is not set in the environment variables');
+}
+
+interface PriorityFeeResponse {
+  jsonrpc: string;
+  result: {
+    per_compute_unit: {
+      extreme: number;
+      medium: number;
+    };
+  };
+  id: number;
+}
+
+function httpsRequest(url: string, options: https.RequestOptions, data: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, options, (res) => {
+      let body = '';
+      res.on('data', (chunk) => body += chunk.toString());
+      res.on('end', () => resolve(body));
+    });
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+async function fetchPriorityFee(): Promise<number> {
+  if (!process.env.QUICKNODE_URL) {
+    throw new Error('QUICKNODE_URL is not set in the environment variables');
+  }
+
+  const url = new URL(process.env.QUICKNODE_URL);
+  const options: https.RequestOptions = {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  };
+
+  const requestBody = JSON.stringify({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'qn_estimatePriorityFees',
+    params: {
+      last_n_blocks: 100,
+      account: '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8',
+      api_version: 2
+    }
+  });
+
+  const response = await httpsRequest(url.href, options, requestBody);
+  const data: unknown = JSON.parse(response);
+  
+  if (!isPriorityFeeResponse(data)) {
+    throw new Error('Unexpected response format from priority fee API');
+  }
+  
+  // Using the 'extreme' priority fee from 'per_compute_unit'
+  const extremePriorityFeePerCU = data.result.per_compute_unit.extreme;
+  
+  // Estimate compute units for the transaction (this is an approximation)
+  const estimatedComputeUnits = 300000; // Adjust this based on your typical transaction
+  
+  // Calculate total priority fee in micro-lamports
+  const totalPriorityFeeInMicroLamports = extremePriorityFeePerCU * estimatedComputeUnits;
+  
+  // Convert to SOL (1 SOL = 1e9 lamports = 1e15 micro-lamports)
+  const priorityFeeInSOL = totalPriorityFeeInMicroLamports / 1e15;
+  
+  // Ensure the fee is not less than 0.000001 SOL (minimum fee)
+  return Math.max(priorityFeeInSOL, 0.000001);
+}
+
+function isPriorityFeeResponse(data: unknown): data is PriorityFeeResponse {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'jsonrpc' in data &&
+    'result' in data &&
+    typeof data.result === 'object' &&
+    data.result !== null &&
+    'per_compute_unit' in data.result &&
+    typeof data.result.per_compute_unit === 'object' &&
+    data.result.per_compute_unit !== null &&
+    'extreme' in data.result.per_compute_unit &&
+    typeof data.result.per_compute_unit.extreme === 'number'
+  );
+}
+
+export const CONFIG = {
+  RPC_URL: process.env.QUICKNODE_URL,
+  WALLET_SECRET_KEY: process.env.WALLET_SECRET_KEY,
+  BASE_MINT: 'So11111111111111111111111111111111111111112', // SOLANA mint address
+  QUOTE_MINT: 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', // BONK mint address
+  TOKEN_A_AMOUNT: 0.000001,
+  EXECUTE_SWAP: true,
+  USE_VERSIONED_TRANSACTION: false,
+  SLIPPAGE: 5,
+  getPriorityFee: fetchPriorityFee,
+};
+
+// main.ts
+
+import { RaydiumSwap } from './raydium-swap';
+import { CONFIG } from './config';
+import { 
+  PublicKey,
+  LAMPORTS_PER_SOL,
+  Transaction,
+  VersionedTransaction,
+} from '@solana/web3.js';
+
+async function getTokenBalance(raydiumSwap: RaydiumSwap, mint: string): Promise<number> {
+  const userTokenAccounts = await raydiumSwap.getOwnerTokenAccounts();
+  const tokenAccount = userTokenAccounts.find(account => 
+    account.accountInfo.mint.equals(new PublicKey(mint))
+  );
+  if (tokenAccount) {
+    const balance = await raydiumSwap.connection.getTokenAccountBalance(tokenAccount.pubkey);
+    return balance.value.uiAmount || 0;
+  }
+  return 0;
+}
+
+async function swap() {
+  console.log('Starting swap process...');
+  const raydiumSwap = new RaydiumSwap(CONFIG.RPC_URL, CONFIG.WALLET_SECRET_KEY);
+
+  await raydiumSwap.loadPoolKeys();
+  let poolInfo = raydiumSwap.findPoolInfoForTokens(CONFIG.BASE_MINT, CONFIG.QUOTE_MINT) 
+    || await raydiumSwap.findRaydiumPoolInfo(CONFIG.BASE_MINT, CONFIG.QUOTE_MINT);
+
+  if (!poolInfo) {
+    throw new Error("Couldn't find the pool info");
+  }
+
+  await raydiumSwap.createWrappedSolAccountInstruction(CONFIG.TOKEN_A_AMOUNT);
+
+  console.log('Fetching current priority fee...');
+  const priorityFee = await CONFIG.getPriorityFee();
+  console.log(`Current priority fee: ${priorityFee} SOL`);
+
+  console.log('Creating swap transaction...');
+  const swapTx = await raydiumSwap.getSwapTransaction(
+    CONFIG.QUOTE_MINT,
+    CONFIG.TOKEN_A_AMOUNT,
+    poolInfo,
+    CONFIG.USE_VERSIONED_TRANSACTION,
+    CONFIG.SLIPPAGE
+  );
+
+  console.log(`Using priority fee: ${priorityFee} SOL`);
+  console.log(`Transaction signed with payer: ${raydiumSwap.wallet.publicKey.toBase58()}`);
+
+  console.log(`Swapping ${CONFIG.TOKEN_A_AMOUNT} SOL for BONK`);
+
+  if (CONFIG.EXECUTE_SWAP) {
+    try {
+      let txid: string;
+      if (CONFIG.USE_VERSIONED_TRANSACTION) {
+        if (!(swapTx instanceof VersionedTransaction)) {
+          throw new Error('Expected a VersionedTransaction but received a different type');
+        }
+        const latestBlockhash = await raydiumSwap.connection.getLatestBlockhash();
+        txid = await raydiumSwap.sendVersionedTransaction(
+          swapTx,
+          latestBlockhash.blockhash,
+          latestBlockhash.lastValidBlockHeight
+        );
+      } else {
+        if (!(swapTx instanceof Transaction)) {
+          throw new Error('Expected a Transaction but received a different type');
+        }
+        txid = await raydiumSwap.sendLegacyTransaction(swapTx);
+      }
+      console.log(`Transaction sent, signature: ${txid}`);
+      console.log(`Transaction executed: https://explorer.solana.com/tx/${txid}`);
+      
+      console.log('Transaction confirmed successfully');
+
+      // Fetch and display token balances
+      const solBalance = await raydiumSwap.connection.getBalance(raydiumSwap.wallet.publicKey) / LAMPORTS_PER_SOL;
+      const bonkBalance = await getTokenBalance(raydiumSwap, CONFIG.QUOTE_MINT);
+
+      console.log('\nToken Balances After Swap:');
+      console.log(`SOL: ${solBalance.toFixed(6)} SOL`);
+      console.log(`BONK: ${bonkBalance.toFixed(2)} BONK`);
+    } catch (error) {
+      console.error('Error executing transaction:', error);
+    }
+  } else {
+    console.log('Simulating transaction (dry run)');
+    try {
+      let simulationResult;
+      if (CONFIG.USE_VERSIONED_TRANSACTION) {
+        if (!(swapTx instanceof VersionedTransaction)) {
+          throw new Error('Expected a VersionedTransaction but received a different type');
+        }
+        simulationResult = await raydiumSwap.simulateVersionedTransaction(swapTx);
+      } else {
+        if (!(swapTx instanceof Transaction)) {
+          throw new Error('Expected a Transaction but received a different type');
+        }
+        simulationResult = await raydiumSwap.simulateLegacyTransaction(swapTx);
+      }
+      console.log('Simulation successful');
+      console.log('Simulated transaction details:');
+      console.log(`Logs:`, simulationResult.logs);
+      console.log(`Units consumed:`, simulationResult.unitsConsumed);
+      if (simulationResult.returnData) {
+        console.log(`Return data:`, simulationResult.returnData);
+      }
+    } catch (error) {
+      console.error('Error simulating transaction:', error);
+    }
+  }
+}
+
+swap().catch((error) => {
+  console.error('An error occurred during the swap process:');
+  console.error(error);
+});
+
+// raydium-swap.ts
+import {
+  Connection,
+  PublicKey,
+  Keypair,
+  Transaction,
+  VersionedTransaction,
+  TransactionMessage,
+  GetProgramAccountsResponse,
+  TransactionInstruction,
+  LAMPORTS_PER_SOL,
+  SystemProgram,
+  SimulatedTransactionResponse,
+  TransactionConfirmationStrategy,  // Add this line
+} from '@solana/web3.js';
+import {
+  Liquidity,
+  LiquidityPoolKeys,
+  jsonInfo2PoolKeys,
+  TokenAccount,
+  Token,
+  TokenAmount,
+  TOKEN_PROGRAM_ID,
+  Percent,
+  SPL_ACCOUNT_LAYOUT,
+  LIQUIDITY_STATE_LAYOUT_V4,
+  MARKET_STATE_LAYOUT_V3,
+  Market,
+} from '@raydium-io/raydium-sdk';
+import { Wallet } from '@project-serum/anchor';
+import base58 from 'bs58';
+import { existsSync } from 'fs';
+import { readFile } from 'fs/promises';
+import { 
+  NATIVE_MINT,
+  createInitializeAccountInstruction, 
+  createCloseAccountInstruction,
+  getMinimumBalanceForRentExemptAccount,
+  createSyncNativeInstruction,
+} from '@solana/spl-token';
+import { CONFIG } from './config';
+
+type SwapSide = "in" | "out";
+
+export class RaydiumSwap {
+  static RAYDIUM_V4_PROGRAM_ID = '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8';
+
+  allPoolKeysJson: any[] = [];
+  connection: Connection;
+  wallet: Wallet;
+
+  constructor(RPC_URL: string, WALLET_SECRET_KEY: string) {
+    if (!RPC_URL.startsWith('http://') && !RPC_URL.startsWith('https://')) {
+      throw new Error('Invalid RPC URL. Must start with http:// or https://');
+    }
+    this.connection = new Connection(RPC_URL, 'confirmed');
+
+    try {
+      if (!WALLET_SECRET_KEY) {
+        throw new Error('WALLET_SECRET_KEY is not provided');
+      }
+      const secretKey = base58.decode(WALLET_SECRET_KEY);
+      if (secretKey.length !== 64) {
+        throw new Error('Invalid secret key length. Expected 64 bytes.');
+      }
+      this.wallet = new Wallet(Keypair.fromSecretKey(secretKey));
+      console.log('Wallet initialized with public key:', this.wallet.publicKey.toBase58());
+    } catch (error) {
+      if (error instanceof Error) {
+        throw new Error(`Failed to create wallet: ${error.message}`);
+      } else {
+        throw new Error('Failed to create wallet: Unknown error');
+      }
+    }
+  }
+
+  async loadPoolKeys() {
+    try {
+      if (existsSync('mainnet.json')) {
+        const data = JSON.parse((await readFile('mainnet.json')).toString());
+        this.allPoolKeysJson = data.official;
+        return;
+      }
+      throw new Error('mainnet.json file not found');
+    } catch (error) {
+      this.allPoolKeysJson = [];
+    }
+  }
+
+  findPoolInfoForTokens(mintA: string, mintB: string): LiquidityPoolKeys | null {
+    const poolData = this.allPoolKeysJson.find(
+      (i) => (i.baseMint === mintA && i.quoteMint === mintB) || (i.baseMint === mintB && i.quoteMint === mintA)
+    );
+    return poolData ? jsonInfo2PoolKeys(poolData) as LiquidityPoolKeys : null;
+  }
+
+  async getProgramAccounts(baseMint: string, quoteMint: string): Promise<GetProgramAccountsResponse> {
+    const layout = LIQUIDITY_STATE_LAYOUT_V4;
+    return this.connection.getProgramAccounts(new PublicKey(RaydiumSwap.RAYDIUM_V4_PROGRAM_ID), {
+      filters: [
+        { dataSize: layout.span },
+        {
+          memcmp: {
+            offset: layout.offsetOf('baseMint'),
+            bytes: new PublicKey(baseMint).toBase58(),
+          },
+        },
+        {
+          memcmp: {
+            offset: layout.offsetOf('quoteMint'),
+            bytes: new PublicKey(quoteMint).toBase58(),
+          },
+        },
+      ],
+    });
+  }
+
+  async findRaydiumPoolInfo(baseMint: string, quoteMint: string): Promise<LiquidityPoolKeys | null> {
+    const layout = LIQUIDITY_STATE_LAYOUT_V4;
+    const programData = await this.getProgramAccounts(baseMint, quoteMint);
+    const collectedPoolResults = programData
+      .map((info) => ({
+        id: new PublicKey(info.pubkey),
+        version: 4,
+        programId: new PublicKey(RaydiumSwap.RAYDIUM_V4_PROGRAM_ID),
+        ...layout.decode(info.account.data),
+      }))
+      .flat();
+
+    const pool = collectedPoolResults[0];
+    if (!pool) return null;
+
+    const market = await this.connection.getAccountInfo(pool.marketId).then((item) => {
+      if (!item) {
+        throw new Error('Market account not found');
+      }
+      return {
+        programId: item.owner,
+        ...MARKET_STATE_LAYOUT_V3.decode(item.data),
+      };
+    });
+
+    const authority = Liquidity.getAssociatedAuthority({
+      programId: new PublicKey(RaydiumSwap.RAYDIUM_V4_PROGRAM_ID),
+    }).publicKey;
+
+    const marketProgramId = market.programId;
+
+    return {
+      id: pool.id,
+      baseMint: pool.baseMint,
+      quoteMint: pool.quoteMint,
+      lpMint: pool.lpMint,
+      baseDecimals: Number.parseInt(pool.baseDecimal.toString()),
+      quoteDecimals: Number.parseInt(pool.quoteDecimal.toString()),
+      lpDecimals: Number.parseInt(pool.baseDecimal.toString()),
+      version: pool.version,
+      programId: pool.programId,
+      openOrders: pool.openOrders,
+      targetOrders: pool.targetOrders,
+      baseVault: pool.baseVault,
+      quoteVault: pool.quoteVault,
+      marketVersion: 3,
+      authority: authority,
+      marketProgramId,
+      marketId: market.ownAddress,
+      marketAuthority: Market.getAssociatedAuthority({
+        programId: marketProgramId,
+        marketId: market.ownAddress,
+      }).publicKey,
+      marketBaseVault: market.baseVault,
+      marketQuoteVault: market.quoteVault,
+      marketBids: market.bids,
+      marketAsks: market.asks,
+      marketEventQueue: market.eventQueue,
+      withdrawQueue: pool.withdrawQueue,
+      lpVault: pool.lpVault,
+      lookupTableAccount: PublicKey.default,
+    } as LiquidityPoolKeys;
+  }
+
+  async getOwnerTokenAccounts() {
+    const walletTokenAccount = await this.connection.getTokenAccountsByOwner(this.wallet.publicKey, {
+      programId: TOKEN_PROGRAM_ID,
+    });
+    return walletTokenAccount.value.map((i) => ({
+      pubkey: i.pubkey,
+      programId: i.account.owner,
+      accountInfo: SPL_ACCOUNT_LAYOUT.decode(i.account.data),
+    }));
+  }
+
+  private getSwapSide(
+    poolKeys: LiquidityPoolKeys,
+    wantFrom: PublicKey,
+    wantTo: PublicKey,
+  ): SwapSide {
+    if (poolKeys.baseMint.equals(wantFrom) && poolKeys.quoteMint.equals(wantTo)) {
+      return "in";
+    } else if (poolKeys.baseMint.equals(wantTo) && poolKeys.quoteMint.equals(wantFrom)) {
+      return "out";
+    } else {
+      throw new Error("Not suitable pool fetched. Can't determine swap side");
+    }
+  }
+
+  async getSwapTransaction(
+    toToken: string,
+    amount: number,
+    poolKeys: LiquidityPoolKeys,
+    useVersionedTransaction = true,
+    slippage: number = 5
+  ): Promise<Transaction | VersionedTransaction> {
+    const poolInfo = await Liquidity.fetchInfo({ connection: this.connection, poolKeys });
+    
+    const fromToken = poolKeys.baseMint.toString() === NATIVE_MINT.toString() ? NATIVE_MINT.toString() : poolKeys.quoteMint.toString();
+    const swapSide = this.getSwapSide(poolKeys, new PublicKey(fromToken), new PublicKey(toToken));
+
+    const baseToken = new Token(TOKEN_PROGRAM_ID, poolKeys.baseMint, poolInfo.baseDecimals);
+    const quoteToken = new Token(TOKEN_PROGRAM_ID, poolKeys.quoteMint, poolInfo.quoteDecimals);
+
+    const currencyIn = swapSide === "in" ? baseToken : quoteToken;
+    const currencyOut = swapSide === "in" ? quoteToken : baseToken;
+
+    const amountIn = new TokenAmount(currencyIn, amount, false);
+    const slippagePercent = new Percent(slippage, 100);
+
+    const { amountOut, minAmountOut } = Liquidity.computeAmountOut({
+      poolKeys,
+      poolInfo,
+      amountIn,
+      currencyOut,
+      slippage: slippagePercent,
+    });
+
+    const userTokenAccounts = await this.getOwnerTokenAccounts();
+
+    const priorityFee = await CONFIG.getPriorityFee();
+    console.log(`Using priority fee: ${priorityFee} SOL`);
+
+    const swapTransaction = await Liquidity.makeSwapInstructionSimple({
+      connection: this.connection,
+      makeTxVersion: useVersionedTransaction ? 0 : 1,
+      poolKeys: {
+        ...poolKeys,
+      },
+      userKeys: {
+        tokenAccounts: userTokenAccounts,
+        owner: this.wallet.publicKey,
+      },
+      amountIn,
+      amountOut: minAmountOut,
+      fixedSide: swapSide,
+      config: {
+        bypassAssociatedCheck: false,
+      },
+      computeBudgetConfig: {
+        units: 300000,
+        microLamports: Math.floor(priorityFee * LAMPORTS_PER_SOL),
+      },
+    });
+
+    const recentBlockhashForSwap = await this.connection.getLatestBlockhash();
+    const instructions = swapTransaction.innerTransactions[0].instructions.filter(
+      (instruction): instruction is TransactionInstruction => Boolean(instruction)
+    );
+
+    if (useVersionedTransaction) {
+      const versionedTransaction = new VersionedTransaction(
+        new TransactionMessage({
+          payerKey: this.wallet.publicKey,
+          recentBlockhash: recentBlockhashForSwap.blockhash,
+          instructions: instructions,
+        }).compileToV0Message()
+      );
+      versionedTransaction.sign([this.wallet.payer]);
+      console.log('Versioned transaction signed with payer:', this.wallet.payer.publicKey.toBase58());
+      return versionedTransaction;
+    }
+
+    const legacyTransaction = new Transaction({
+      blockhash: recentBlockhashForSwap.blockhash,
+      lastValidBlockHeight: recentBlockhashForSwap.lastValidBlockHeight,
+      feePayer: this.wallet.publicKey,
+    });
+    legacyTransaction.add(...instructions);
+    console.log('Legacy transaction signed with payer:', this.wallet.payer.publicKey.toBase58());
+    return legacyTransaction;
+  }
+
+  async sendLegacyTransaction(tx: Transaction): Promise<string> {
+    const signature = await this.connection.sendTransaction(tx, [this.wallet.payer], {
+      skipPreflight: true,
+      preflightCommitment: 'confirmed',
+    });
+    console.log('Legacy transaction sent, signature:', signature);
+    const latestBlockhash = await this.connection.getLatestBlockhash();
+const confirmationStrategy: TransactionConfirmationStrategy = {
+  signature: signature,
+  blockhash: latestBlockhash.blockhash,
+  lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+};
+const confirmation = await this.connection.confirmTransaction(confirmationStrategy, 'confirmed'); // Increase timeout to 60 seconds
+    if (confirmation.value.err) {
+      throw new Error(`Transaction failed: ${confirmation.value.err.toString()}`);
+    }
+    return signature;
+  }
+
+  async sendVersionedTransaction(
+    tx: VersionedTransaction,
+    blockhash: string,
+    lastValidBlockHeight: number
+  ): Promise<string> {
+    const rawTransaction = tx.serialize();
+    const signature = await this.connection.sendRawTransaction(rawTransaction, {
+      skipPreflight: true,
+      preflightCommitment: 'confirmed',
+    });
+    console.log('Versioned transaction sent, signature:', signature);
+  
+    const confirmationStrategy: TransactionConfirmationStrategy = {
+      signature: signature,
+      blockhash: blockhash,
+      lastValidBlockHeight: lastValidBlockHeight,
+    };
+  
+    const confirmation = await this.connection.confirmTransaction(confirmationStrategy, 'confirmed');
+    if (confirmation.value.err) {
+      throw new Error(`Transaction failed: ${confirmation.value.err.toString()}`);
+    }
+    return signature;
+  }
+
+  async simulateLegacyTransaction(tx: Transaction): Promise<SimulatedTransactionResponse> {
+    const { value } = await this.connection.simulateTransaction(tx);
+    return value;
+  }
+
+  async simulateVersionedTransaction(tx: VersionedTransaction): Promise<SimulatedTransactionResponse> {
+    const { value } = await this.connection.simulateTransaction(tx);
+    return value;
+  }
+
+  getTokenAccountByOwnerAndMint(mint: PublicKey) {
+    return {
+      programId: TOKEN_PROGRAM_ID,
+      pubkey: PublicKey.default,
+      accountInfo: {
+        mint: mint,
+        amount: 0,
+      },
+    } as unknown as TokenAccount;
+  }
+
+  async createWrappedSolAccountInstruction(amount: number): Promise<{
+    transaction: Transaction;
+    wrappedSolAccount: Keypair;
+  }> {
+    const lamports = amount * LAMPORTS_PER_SOL;
+    const wrappedSolAccount = Keypair.generate();
+    const transaction = new Transaction();
+
+    const rentExemptBalance = await getMinimumBalanceForRentExemptAccount(this.connection);
+
+    transaction.add(
+      SystemProgram.createAccount({
+        fromPubkey: this.wallet.publicKey,
+        newAccountPubkey: wrappedSolAccount.publicKey,
+        lamports: rentExemptBalance,
+        space: 165,
+        programId: TOKEN_PROGRAM_ID,
+      }),
+      createInitializeAccountInstruction(
+        wrappedSolAccount.publicKey,
+        NATIVE_MINT,
+        this.wallet.publicKey
+      ),
+      SystemProgram.transfer({
+        fromPubkey: this.wallet.publicKey,
+        toPubkey: wrappedSolAccount.publicKey,
+        lamports,
+      }),
+      createSyncNativeInstruction(wrappedSolAccount.publicKey)
+    );
+
+    return { transaction, wrappedSolAccount };
+  }
+}
