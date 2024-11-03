@@ -23,13 +23,14 @@ type PoolState struct {
 }
 
 type SwapParams struct {
-	UserWallet              solana.PublicKey // Публичный ключ кошелька пользователя
-	AmountIn                uint64           // Количество входного токена для обмена
-	MinAmountOut            uint64           // Минимальное количество выходного токена, которое пользователь готов принять
-	Pool                    *RaydiumPool     // Указатель на пул, в котором происходит обмен
-	SourceTokenAccount      solana.PublicKey // Публичный ключ аккаунта исходного токена
-	DestinationTokenAccount solana.PublicKey // Публичный ключ аккаунта целевого токена
-	PriorityFeeLamports     uint64           // Приоритетная комиссия в лампортах
+	UserWallet              solana.PublicKey   // Публичный ключ кошелька пользователя
+	PrivateKey              *solana.PrivateKey // Приватный ключ для подписания транзакции
+	AmountIn                uint64             // Количество входного токена для обмена
+	MinAmountOut            uint64             // Минимальное количество выходного токена
+	Pool                    *RaydiumPool       // Указатель на пул для обмена
+	SourceTokenAccount      solana.PublicKey   // Аккаунт исходного токена
+	DestinationTokenAccount solana.PublicKey   // Аккаунт целевого токена
+	PriorityFeeLamports     uint64             // Приоритетная комиссия в лампортах
 }
 
 // Основные ошибки

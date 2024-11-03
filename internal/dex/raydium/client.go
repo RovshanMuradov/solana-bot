@@ -363,8 +363,13 @@ func validateSwapParams(params *SwapParams) error {
 }
 
 // SimulateSwap выполняет симуляцию транзакции свапа
-func (c *RaydiumClient) SimulateSwap(params *SwapParams) error {
-	c.logger.Debug("simulating swap transaction")
+func (c *RaydiumClient) SimulateSwap(ctx context.Context, params *SwapParams) error {
+	c.logger.Debug("simulating swap transaction",
+		zap.String("userWallet", params.UserWallet.String()),
+		zap.Uint64("amountIn", params.AmountIn),
+		zap.Uint64("minAmountOut", params.MinAmountOut),
+		zap.String("pool", params.Pool.ID.String()),
+	)
 
 	// Получаем инструкции для свапа
 	instructions, err := c.CreateSwapInstructions(params)
@@ -372,40 +377,53 @@ func (c *RaydiumClient) SimulateSwap(params *SwapParams) error {
 		return fmt.Errorf("failed to create swap instructions: %w", err)
 	}
 
-	// Создаем транзакцию
-	recent, err := c.client.GetRecentBlockhash()
+	// Получаем последний блокхеш
+	recent, err := c.client.GetRecentBlockhash(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get recent blockhash: %w", err)
 	}
 
-	tx := solana.NewTransaction(
+	// Создаем транзакцию
+	tx, err := solana.NewTransaction(
 		instructions,
-		recent.Value.Blockhash,
+		recent,
 		solana.TransactionPayer(params.UserWallet),
 	)
+	if err != nil {
+		return fmt.Errorf("failed to create transaction: %w", err)
+	}
+
+	// Подписываем транзакцию если есть приватный ключ
+	if params.PrivateKey != nil {
+		tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+			if key.Equals(params.UserWallet) {
+				return params.PrivateKey
+			}
+			return nil
+		})
+	}
 
 	// Симулируем транзакцию
-	sim, err := c.client.SimulateTransaction(tx, &rpc.SimulateTransactionOpts{
-		SigVerify:              false,
-		Commitment:             c.options.commitment,
-		ReplaceRecentBlockhash: true,
-	})
+	simResult, err := c.client.SimulateTransaction(ctx, tx)
 	if err != nil {
 		return fmt.Errorf("failed to simulate transaction: %w", err)
 	}
 
 	// Проверяем результат симуляции
-	if sim.Value.Err != nil {
-		return fmt.Errorf("simulation failed: %s", sim.Value.Err)
+	if simResult.Err != nil {
+		return fmt.Errorf("simulation failed: %s", simResult.Err)
 	}
 
 	// Анализируем логи симуляции
-	for _, log := range sim.Value.Logs {
+	for _, log := range simResult.Logs {
 		c.logger.Debug("simulation log", zap.String("log", log))
 	}
 
 	c.logger.Info("swap simulation successful",
-		zap.Uint64("unitsConsumed", sim.Value.UnitsConsumed),
+		zap.Uint64("unitsConsumed", simResult.UnitsConsumed),
+		zap.String("sourceToken", params.SourceTokenAccount.String()),
+		zap.String("destinationToken", params.DestinationTokenAccount.String()),
+		zap.Uint64("priorityFee", params.PriorityFeeLamports),
 	)
 
 	return nil
