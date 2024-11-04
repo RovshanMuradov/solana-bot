@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/rovshanmuradov/solana-bot/internal/dex/raydium"
 	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -144,15 +143,15 @@ func (l *Logger) WithTask(task *types.Task) *zap.Logger {
 	)
 }
 
-// WithPool логирует информацию о пуле
-func (l *Logger) WithPool(pool *raydium.Pool) *zap.Logger {
-	return l.With(
-		zap.String("pool_id", pool.AmmID),
-		zap.String("program_id", pool.AmmProgramID),
-		zap.String("pool_token_a", pool.PoolCoinTokenAccount),
-		zap.String("pool_token_b", pool.PoolPcTokenAccount),
-	)
-}
+// // WithPool логирует информацию о пуле
+// func (l *Logger) WithPool(pool *raydium.Pool) *zap.Logger {
+// 	return l.With(
+// 		zap.String("pool_id", pool.AmmID),
+// 		zap.String("program_id", pool.AmmProgramID),
+// 		zap.String("pool_token_a", pool.PoolCoinTokenAccount),
+// 		zap.String("pool_token_b", pool.PoolPcTokenAccount),
+// 	)
+// }
 
 // TrackPerformance отслеживает производительность операции
 func (l *Logger) TrackPerformance(operation string) (end func()) {

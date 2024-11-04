@@ -523,3 +523,8 @@ func (c *RaydiumClient) logUpdatedBalances(params *SwapParams) error {
 
 	return nil
 }
+
+// GetBaseClient возвращает базовый blockchain.Client
+func (c *RaydiumClient) GetBaseClient() blockchain.Client {
+	return c.client
+}

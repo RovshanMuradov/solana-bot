@@ -179,3 +179,21 @@ func (c *Client) GetBalance(
 	c.metrics.BalanceRequests++
 	return result.Value, nil
 }
+
+// GetRPCEndpoint возвращает текущий активный RPC endpoint
+func (c *Client) GetRPCEndpoint() string {
+	if c.rpc == nil {
+		return ""
+	}
+
+	// Получаем текущий индекс и URLs из RPC клиента
+	// Добавляем метод для получения текущего URL в RPCClient
+	return c.rpc.GetCurrentURL()
+}
+
+// GetWalletKey возвращает приватный ключ кошелька
+func (c *Client) GetWalletKey() (solana.PrivateKey, error) {
+	// Реализация получения ключа из конфигурации клиента
+	// Это зависит от того, как у вас хранится ключ
+	return nil, fmt.Errorf("not implemented")
+}

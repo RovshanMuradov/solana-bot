@@ -1,11 +1,13 @@
+// internal/dex/dex.go
 package dex
 
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
-	"github.com/rovshanmuradov/solana-bot/internal/dex/pumpfun"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/dex/raydium"
 	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"go.uber.org/zap"
@@ -33,7 +35,7 @@ func GetDEXByName(name string, client blockchain.Client, logger *zap.Logger) (ty
 	case "raydium":
 		return initializeRaydiumDEX(client, logger)
 	case "pump.fun":
-		return initializePumpFunDEX(client, logger)
+		return nil /*initializePumpFunDEX(client, logger)*/, nil
 	default:
 		logger.Error("Unsupported DEX requested", zap.String("name", name))
 		return nil, fmt.Errorf("unsupported DEX: %s", name)
@@ -41,39 +43,65 @@ func GetDEXByName(name string, client blockchain.Client, logger *zap.Logger) (ty
 }
 
 // initializeRaydiumDEX инициализирует Raydium DEX
+// internal/dex/dex.go
 func initializeRaydiumDEX(client blockchain.Client, logger *zap.Logger) (types.DEX, error) {
-	logger.Debug("Initializing Raydium DEX")
-
-	if raydium.DefaultPoolConfig == nil {
-		logger.Error("Default pool configuration is missing")
-		return nil, fmt.Errorf("raydium default pool config is nil")
+	// Проверяем и приводим клиент к нужному типу
+	solClient, ok := client.(*solbc.Client)
+	if !ok {
+		return nil, fmt.Errorf("invalid client type")
 	}
 
-	logger.Debug("Creating Raydium DEX instance",
-		zap.String("pool_id", raydium.DefaultPoolConfig.AmmID),
-		zap.String("program_id", raydium.DefaultPoolConfig.AmmProgramID))
-
-	dex := raydium.NewDEX(client, logger, raydium.DefaultPoolConfig)
-	if dex == nil {
-		logger.Error("Failed to create Raydium DEX instance")
-		return nil, fmt.Errorf("failed to create Raydium DEX instance")
+	// Получаем RPC endpoint
+	endpoint := solClient.GetRPCEndpoint()
+	if endpoint == "" {
+		return nil, fmt.Errorf("empty RPC endpoint")
 	}
 
-	logger.Info("Raydium DEX initialized successfully")
-	return dex, nil
+	// Получаем приватный ключ
+	walletKey, err := solClient.GetWalletKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get wallet key: %w", err)
+	}
+
+	// Создаем Raydium клиент
+	raydiumClient, err := raydium.NewRaydiumClient(
+		endpoint,
+		walletKey,
+		logger.Named("raydium"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Raydium client: %w", err)
+	}
+
+	// Создаем конфигурацию снайпера
+	config := &raydium.SniperConfig{
+		MaxSlippageBps:   500,        // 5%
+		MinAmountSOL:     100000,     // 0.0001 SOL
+		MaxAmountSOL:     1000000000, // 1 SOL
+		PriorityFee:      1000,
+		WaitConfirmation: true,
+		MonitorInterval:  time.Second,
+		MaxRetries:       3,
+	}
+
+	return &raydiumDEX{
+		client: raydiumClient,
+		logger: logger,
+		config: config,
+	}, nil
 }
 
-// initializePumpFunDEX инициализирует Pump.fun DEX
-func initializePumpFunDEX(_ blockchain.Client, logger *zap.Logger) (types.DEX, error) {
-	logger.Debug("Initializing Pump.fun DEX")
+// // initializePumpFunDEX инициализирует Pump.fun DEX
+// func initializePumpFunDEX(_ blockchain.Client, logger *zap.Logger) (types.DEX, error) {
+// 	logger.Debug("Initializing Pump.fun DEX")
 
-	// Создаем новый экземпляр Pump.fun DEX
-	dex := pumpfun.NewDEX()
-	if dex == nil {
-		logger.Error("Failed to create Pump.fun DEX instance")
-		return nil, fmt.Errorf("failed to create Pump.fun DEX instance")
-	}
+// 	// Создаем новый экземпляр Pump.fun DEX
+// 	dex := pumpfun.NewDEX()
+// 	if dex == nil {
+// 		logger.Error("Failed to create Pump.fun DEX instance")
+// 		return nil, fmt.Errorf("failed to create Pump.fun DEX instance")
+// 	}
 
-	logger.Info("Pump.fun DEX initialized successfully")
-	return dex, nil
-}
+// 	logger.Info("Pump.fun DEX initialized successfully")
+// 	return dex, nil
+// }

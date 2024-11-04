@@ -290,3 +290,16 @@ func (c *RPCClient) GetBalance(
 
 	return result, nil
 }
+
+// GetCurrentURL возвращает текущий активный URL
+func (c *RPCClient) GetCurrentURL() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if len(c.urls) == 0 {
+		return ""
+	}
+
+	// Возвращаем текущий активный URL
+	return c.urls[c.current]
+}
