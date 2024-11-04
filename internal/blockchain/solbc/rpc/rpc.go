@@ -267,3 +267,26 @@ func (c *RPCClient) SimulateTransaction(
 
 	return result, nil
 }
+
+func (c *RPCClient) GetBalance(
+	ctx context.Context,
+	pubkey solana.PublicKey,
+	commitment solanarpc.CommitmentType,
+) (*solanarpc.GetBalanceResult, error) {
+	var result *solanarpc.GetBalanceResult
+
+	err := c.ExecuteWithRetry(ctx, func(client *solanarpc.Client) error {
+		var err error
+		result, err = client.GetBalance(ctx, pubkey, commitment)
+		if err != nil {
+			return fmt.Errorf("RPC GetBalance failed: %w", err)
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get balance after retries: %w", err)
+	}
+
+	return result, nil
+}

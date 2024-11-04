@@ -84,13 +84,6 @@ const (
 	MINT_ACCOUNT_SIZE  = 82  // Добавлено
 )
 
-// RaydiumError represents a custom error type
-type RaydiumError struct {
-	Code    string
-	Message string
-	Details map[string]interface{}
-}
-
 func (e *RaydiumError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }

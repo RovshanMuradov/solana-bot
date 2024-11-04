@@ -10,37 +10,11 @@ import (
 
 	"github.com/gagliardetto/solana-go"
 	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
-	"github.com/gagliardetto/solana-go/rpc"
+	solanarpc "github.com/gagliardetto/solana-go/rpc"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"go.uber.org/zap"
 )
-
-type RaydiumClient struct {
-	client  blockchain.Client
-	logger  *zap.Logger
-	options *clientOptions // Базовые настройки таймаутов и retry
-}
-type clientOptions struct {
-	timeout     time.Duration      // Таймаут для операций
-	retries     int                // Количество повторных попыток
-	priorityFee uint64             // Приоритетная комиссия в лампортах
-	commitment  rpc.CommitmentType // Уровень подтверждения транзакций
-}
-
-// Вспомогательные структуры для инструкций
-type ComputeBudgetInstruction struct {
-	Units         uint32
-	MicroLamports uint64
-}
-
-type SwapInstruction struct {
-	Amount     *uint64
-	MinimumOut *uint64
-
-	// Slice для хранения аккаунтов, следуя паттерну из SDK
-	solana.AccountMetaSlice `bin:"-" borsh_skip:"true"`
-}
 
 // NewRaydiumClient создает новый экземпляр клиента Raydium
 func NewRaydiumClient(rpcEndpoint string, wallet solana.PrivateKey, logger *zap.Logger) (*RaydiumClient, error) {
@@ -56,7 +30,7 @@ func NewRaydiumClient(rpcEndpoint string, wallet solana.PrivateKey, logger *zap.
 		timeout:     30 * time.Second,
 		retries:     3,
 		priorityFee: 1000,
-		commitment:  rpc.CommitmentConfirmed,
+		commitment:  solanarpc.CommitmentConfirmed,
 	}
 
 	return &RaydiumClient{
@@ -65,9 +39,6 @@ func NewRaydiumClient(rpcEndpoint string, wallet solana.PrivateKey, logger *zap.
 		options: opts,
 	}, nil
 }
-
-// GetPool получает информацию о пуле по базовому и котируемому токенам
-// internal/dex/raydium/client.go
 
 // GetPool получает информацию о пуле по базовому и котируемому токенам
 func (c *RaydiumClient) GetPool(ctx context.Context, baseMint, quoteMint solana.PublicKey) (*RaydiumPool, error) {
@@ -80,19 +51,19 @@ func (c *RaydiumClient) GetPool(ctx context.Context, baseMint, quoteMint solana.
 	accounts, err := c.client.GetProgramAccounts(
 		ctx,
 		solana.MustPublicKeyFromBase58(RAYDIUM_V4_PROGRAM_ID),
-		rpc.GetProgramAccountsOpts{
-			Filters: []rpc.RPCFilter{
+		solanarpc.GetProgramAccountsOpts{
+			Filters: []solanarpc.RPCFilter{
 				{
 					DataSize: 388, // Размер данных аккаунта пула
 				},
 				{
-					Memcmp: &rpc.RPCFilterMemcmp{
+					Memcmp: &solanarpc.RPCFilterMemcmp{
 						Offset: 8,
 						Bytes:  baseMint.Bytes(),
 					},
 				},
 				{
-					Memcmp: &rpc.RPCFilterMemcmp{
+					Memcmp: &solanarpc.RPCFilterMemcmp{
 						Offset: 40,
 						Bytes:  quoteMint.Bytes(),
 					},
@@ -242,13 +213,7 @@ func (inst *SwapInstruction) Validate() error {
 	return nil
 }
 
-// Build создает инструкцию
-// RaydiumSwapInstruction реализует интерфейс solana.Instruction
-type RaydiumSwapInstruction struct {
-	programID solana.PublicKey
-	accounts  []*solana.AccountMeta
-	data      []byte
-}
+// Build создает инструкци
 
 // ProgramID возвращает ID программы Raydium
 func (i *RaydiumSwapInstruction) ProgramID() solana.PublicKey {
@@ -439,40 +404,61 @@ func (c *RaydiumClient) SimulateSwap(ctx context.Context, params *SwapParams) er
 
 // ExecuteSwap выполняет свап и возвращает signature транзакции
 func (c *RaydiumClient) ExecuteSwap(params *SwapParams) (string, error) {
-	c.logger.Debug("executing swap",
+	c.logger.Debug("starting swap execution",
 		zap.String("userWallet", params.UserWallet.String()),
 		zap.Uint64("amountIn", params.AmountIn),
 		zap.Uint64("minAmountOut", params.MinAmountOut),
+		zap.String("pool", params.Pool.ID.String()),
+		zap.Uint64("priorityFee", params.PriorityFeeLamports),
 	)
 
-	// Сначала симулируем транзакцию
-	if err := c.SimulateSwap(params); err != nil {
-		return "", fmt.Errorf("swap simulation failed: %w", err)
+	// Базовая валидация параметров
+	if err := validateSwapParams(params); err != nil {
+		return "", fmt.Errorf("invalid swap parameters: %w", err)
 	}
 
-	// Получаем инструкции для свапа
+	// Проверяем баланс кошелька
+	ctx := context.Background()
+	balance, err := c.client.GetBalance(ctx, params.UserWallet, solanarpc.CommitmentConfirmed)
+	if err != nil {
+		return "", fmt.Errorf("failed to get wallet balance: %w", err)
+	}
+
+	// Учитываем приоритетную комиссию и обычную комиссию транзакции
+	requiredBalance := params.AmountIn + params.PriorityFeeLamports + 5000
+	if balance < requiredBalance {
+		return "", fmt.Errorf("insufficient balance: required %d, got %d", requiredBalance, balance)
+	}
+
+	// Создаем все необходимые инструкции для свапа
 	instructions, err := c.CreateSwapInstructions(params)
 	if err != nil {
 		return "", fmt.Errorf("failed to create swap instructions: %w", err)
 	}
 
-	// Получаем последний блокхэш
-	recent, err := c.client.GetRecentBlockhash()
+	// Получаем последний блокхеш
+	recent, err := c.client.GetRecentBlockhash(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to get recent blockhash: %w", err)
 	}
 
 	// Создаем транзакцию
-	tx := solana.NewTransaction(
+	tx, err := solana.NewTransaction(
 		instructions,
-		recent.Value.Blockhash,
+		recent,
 		solana.TransactionPayer(params.UserWallet),
 	)
+	if err != nil {
+		return "", fmt.Errorf("failed to create transaction: %w", err)
+	}
 
 	// Подписываем транзакцию
 	_, err = tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
 		if key.Equals(params.UserWallet) {
-			return &c.client.PrivateKey
+			if params.PrivateKey != nil {
+				return params.PrivateKey
+			}
+			return &c.privateKey
 		}
 		return nil
 	})
@@ -481,7 +467,7 @@ func (c *RaydiumClient) ExecuteSwap(params *SwapParams) (string, error) {
 	}
 
 	// Отправляем транзакцию
-	sig, err := c.client.SendTransaction(tx, &rpc.SendTransactionOpts{
+	sig, err := c.client.SendTransactionWithOpts(ctx, tx, blockchain.TransactionOptions{
 		SkipPreflight:       true,
 		PreflightCommitment: c.options.commitment,
 	})
@@ -489,49 +475,23 @@ func (c *RaydiumClient) ExecuteSwap(params *SwapParams) (string, error) {
 		return "", fmt.Errorf("failed to send transaction: %w", err)
 	}
 
-	// Ждем подтверждения транзакции
-	confirmationStrategy := rpc.TransactionConfirmationStrategy{
-		Signature:            sig,
-		Commitment:           c.options.commitment,
-		LastValidBlockHeight: recent.Value.LastValidBlockHeight,
-	}
-
-	startTime := time.Now()
-	confirmation, err := c.client.ConfirmTransaction(
-		confirmationStrategy,
-		&rpc.ConfirmTransactionOpts{
-			MaxRetries: c.options.retries,
-			Timeout:    c.options.timeout,
-		},
-	)
-	if err != nil {
-		return sig, fmt.Errorf("failed to confirm transaction: %w", err)
-	}
-
-	// Проверяем статус подтверждения
-	if confirmation.Value.Err != nil {
-		return sig, fmt.Errorf("transaction confirmed with error: %v", confirmation.Value.Err)
-	}
-
 	c.logger.Info("swap executed successfully",
-		zap.String("signature", sig),
-		zap.Duration("duration", time.Since(startTime)),
+		zap.String("signature", sig.String()),
+		zap.String("explorer", fmt.Sprintf("https://explorer.solana.com/tx/%s", sig.String())),
 	)
 
-	// Опционально: получаем и логируем новые балансы
-	if err := c.logUpdatedBalances(params); err != nil {
-		c.logger.Warn("failed to get updated balances", zap.Error(err))
-	}
-
-	return sig, nil
+	return sig.String(), nil
 }
 
 // logUpdatedBalances вспомогательный метод для логирования балансов после свапа
 func (c *RaydiumClient) logUpdatedBalances(params *SwapParams) error {
+	ctx := context.Background()
+
 	// Получаем баланс SOL
 	solBalance, err := c.client.GetBalance(
+		ctx,
 		params.UserWallet,
-		rpc.CommitmentConfirmed,
+		solanarpc.CommitmentConfirmed,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to get SOL balance: %w", err)
@@ -539,15 +499,16 @@ func (c *RaydiumClient) logUpdatedBalances(params *SwapParams) error {
 
 	// Получаем баланс токена
 	tokenBalance, err := c.client.GetTokenAccountBalance(
+		ctx,
 		params.DestinationTokenAccount,
-		rpc.CommitmentConfirmed,
+		solanarpc.CommitmentConfirmed,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to get token balance: %w", err)
 	}
 
 	c.logger.Info("updated balances",
-		zap.Float64("solBalance", float64(solBalance.Value)/float64(solana.LAMPORTS_PER_SOL)),
+		zap.Float64("solBalance", float64(solBalance)/float64(solana.LAMPORTS_PER_SOL)),
 		zap.String("tokenBalance", tokenBalance.Value.UiAmountString),
 	)
 

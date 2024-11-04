@@ -11,26 +11,6 @@ import (
 	"go.uber.org/zap"
 )
 
-type Sniper struct {
-	client *RaydiumClient
-	logger *zap.Logger
-	config *SniperConfig // Конфигурация снайпинга
-}
-type SniperConfig struct {
-	// Существующие поля
-	maxSlippageBps   uint16
-	minAmountSOL     float64
-	maxAmountSOL     float64
-	priorityFee      uint64
-	waitConfirmation bool
-	monitorInterval  time.Duration
-	maxRetries       int
-
-	// Добавляем новые необходимые поля
-	baseMint  solana.PublicKey // Mint address базового токена
-	quoteMint solana.PublicKey // Mint address котируемого токена
-}
-
 // TODO: можно добавить:
 
 // 1. Проверку цены перед свапом

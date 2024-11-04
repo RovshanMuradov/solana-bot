@@ -155,3 +155,27 @@ func (c *Client) SimulateTransaction(
 
 	return simulationResult, nil
 }
+
+// TODO: Этот метод реализован в sdk solana-go, надо переписать
+// GetBalance реализует интерфейс blockchain.Client
+func (c *Client) GetBalance(
+	ctx context.Context,
+	pubkey solana.PublicKey,
+	commitment solanarpc.CommitmentType,
+) (uint64, error) {
+	c.logger.Debug("getting balance",
+		zap.String("pubkey", pubkey.String()),
+		zap.String("commitment", string(commitment)),
+	)
+
+	result, err := c.rpc.GetBalance(ctx, pubkey, commitment)
+	if err != nil {
+		c.metrics.FailedRequests++
+		c.metrics.LastError = err
+		c.metrics.LastErrorTime = time.Now()
+		return 0, fmt.Errorf("failed to get balance: %w", err)
+	}
+
+	c.metrics.BalanceRequests++
+	return result.Value, nil
+}

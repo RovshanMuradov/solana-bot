@@ -34,4 +34,7 @@ type Client interface {
 
 	// Добавляем новый метод для получения программных аккаунтов
 	GetProgramAccounts(ctx context.Context, program solana.PublicKey, opts rpc.GetProgramAccountsOpts) ([]rpc.KeyedAccount, error)
+
+	// Добавляем новый метод для получения баланса
+	GetBalance(ctx context.Context, pubkey solana.PublicKey, commitment rpc.CommitmentType) (uint64, error)
 }

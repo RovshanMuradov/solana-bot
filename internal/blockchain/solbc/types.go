@@ -34,6 +34,7 @@ type ClientMetrics struct {
 	ProgramAccountRequests uint64 // Добавляем новое поле
 	LastError              error
 	LastErrorTime          time.Time
+	BalanceRequests        uint64
 }
 
 // IncrementProgramAccountRequests атомарно увеличивает счетчик запросов
@@ -44,6 +45,9 @@ func (m *ClientMetrics) IncrementProgramAccountRequests() {
 // IncrementFailedRequests атомарно увеличивает счетчик ошибок
 func (m *ClientMetrics) IncrementFailedRequests() {
 	atomic.AddUint64(&m.FailedRequests, 1)
+}
+func (m *ClientMetrics) IncrementBalanceRequests() {
+	atomic.AddUint64(&m.BalanceRequests, 1)
 }
 
 // Проверяем, что Client реализует blockchain.Client интерфейс

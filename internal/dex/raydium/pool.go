@@ -10,18 +10,6 @@ import (
 	"go.uber.org/zap"
 )
 
-type SwapAmounts struct {
-	AmountIn     uint64 // Количество входных токенов
-	AmountOut    uint64 // Ожидаемое количество выходных токенов
-	MinAmountOut uint64 // Минимальное количество выходных токенов с учетом проскальзывания
-}
-
-type PoolManager struct {
-	client blockchain.Client
-	logger *zap.Logger
-	pool   *RaydiumPool
-}
-
 // NewPoolManager создает новый менеджер пула
 func NewPoolManager(client blockchain.Client, logger *zap.Logger, pool *RaydiumPool) *PoolManager {
 	return &PoolManager{
