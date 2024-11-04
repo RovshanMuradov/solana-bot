@@ -16,7 +16,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// NewRaydiumClient создает новый экземпляр клиента Raydium
+// NewRaydiumClient создает новый экземпляр клиента Raydium с дефолтными настройками
 func NewRaydiumClient(rpcEndpoint string, wallet solana.PrivateKey, logger *zap.Logger) (*RaydiumClient, error) {
 	logger = logger.Named("raydium-client")
 
@@ -26,17 +26,15 @@ func NewRaydiumClient(rpcEndpoint string, wallet solana.PrivateKey, logger *zap.
 		return nil, fmt.Errorf("failed to create solana client: %w", err)
 	}
 
-	opts := &clientOptions{
+	// Создаем клиент с дефолтными настройками
+	return &RaydiumClient{
+		client:      solClient,
+		logger:      logger,
+		privateKey:  wallet,
 		timeout:     30 * time.Second,
 		retries:     3,
 		priorityFee: 1000,
 		commitment:  solanarpc.CommitmentConfirmed,
-	}
-
-	return &RaydiumClient{
-		client:  solClient,
-		logger:  logger,
-		options: opts,
 	}, nil
 }
 
@@ -195,6 +193,12 @@ func (inst *SwapInstruction) SetAccounts(
 	return inst
 }
 
+// Добавляем метод для установки направления
+func (inst *SwapInstruction) SetDirection(direction SwapDirection) *SwapInstruction {
+	inst.Direction = &direction
+	return inst
+}
+
 // Validate проверяет все необходимые параметры
 func (inst *SwapInstruction) Validate() error {
 	if inst.Amount == nil {
@@ -202,6 +206,9 @@ func (inst *SwapInstruction) Validate() error {
 	}
 	if inst.MinimumOut == nil {
 		return errors.New("MinimumOut is not set")
+	}
+	if inst.Direction == nil {
+		return errors.New("Direction is not set")
 	}
 
 	// Проверка всех аккаунтов
@@ -212,8 +219,6 @@ func (inst *SwapInstruction) Validate() error {
 	}
 	return nil
 }
-
-// Build создает инструкци
 
 // ProgramID возвращает ID программы Raydium
 func (i *RaydiumSwapInstruction) ProgramID() solana.PublicKey {
@@ -237,11 +242,15 @@ func (inst *SwapInstruction) Build() (solana.Instruction, error) {
 	}
 
 	// Сериализация данных инструкции
-	data := make([]byte, 16)
+	data := make([]byte, 17) // 16 байт для amount и minimumOut + 1 байт для direction
 	binary.LittleEndian.PutUint64(data[0:8], *inst.Amount)
 	binary.LittleEndian.PutUint64(data[8:16], *inst.MinimumOut)
+	if *inst.Direction == SwapDirectionIn {
+		data[16] = 0
+	} else {
+		data[16] = 1
+	}
 
-	// Создаем новую инструкцию, реализующую интерфейс
 	instruction := &RaydiumSwapInstruction{
 		programID: solana.MustPublicKeyFromBase58(RAYDIUM_V4_PROGRAM_ID),
 		accounts:  inst.AccountMetaSlice,
@@ -469,7 +478,7 @@ func (c *RaydiumClient) ExecuteSwap(params *SwapParams) (string, error) {
 	// Отправляем транзакцию
 	sig, err := c.client.SendTransactionWithOpts(ctx, tx, blockchain.TransactionOptions{
 		SkipPreflight:       true,
-		PreflightCommitment: c.options.commitment,
+		PreflightCommitment: c.commitment, // используем commitment напрямую из клиента
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to send transaction: %w", err)

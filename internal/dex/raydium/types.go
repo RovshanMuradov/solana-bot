@@ -21,6 +21,9 @@ type RaydiumPool struct {
 	QuoteDecimals uint8            // Количество десятичных знаков котируемого токена
 	DefaultFeeBps uint16           // Комиссия по умолчанию в базисных пунктах (bps)
 	// Только необходимые поля для V4
+
+	Version PoolVersion
+	State   PoolState // встроенное состояние
 }
 
 type PoolState struct {
@@ -38,6 +41,10 @@ type SwapParams struct {
 	SourceTokenAccount      solana.PublicKey   // Аккаунт исходного токена
 	DestinationTokenAccount solana.PublicKey   // Аккаунт целевого токена
 	PriorityFeeLamports     uint64             // Приоритетная комиссия в лампортах
+
+	Direction   SwapDirection
+	SlippageBps uint16
+	Deadline    time.Time // таймаут для транзакции
 }
 
 // Основные ошибки
@@ -48,27 +55,26 @@ type SwapError struct {
 }
 
 type RaydiumClient struct {
-	client     blockchain.Client
-	logger     *zap.Logger
-	options    *clientOptions // Базовые настройки таймаутов и retry
-	privateKey solana.PrivateKey
-}
-type clientOptions struct {
-	timeout     time.Duration      // Таймаут для операций
-	retries     int                // Количество повторных попыток
-	priorityFee uint64             // Приоритетная комиссия в лампортах
-	commitment  rpc.CommitmentType // Уровень подтверждения транзакций
+	client      blockchain.Client
+	logger      *zap.Logger
+	privateKey  solana.PrivateKey
+	timeout     time.Duration
+	retries     int
+	priorityFee uint64
+	commitment  rpc.CommitmentType
 }
 
-// Вспомогательные структуры для инструкций
-type ComputeBudgetInstruction struct {
-	Units         uint32
-	MicroLamports uint64
-}
+// type clientOptions struct {
+// 	timeout     time.Duration      // Таймаут для операций
+// 	retries     int                // Количество повторных попыток
+// 	priorityFee uint64             // Приоритетная комиссия в лампортах
+// 	commitment  rpc.CommitmentType // Уровень подтверждения транзакций
+// }
 
 type SwapInstruction struct {
 	Amount     *uint64
 	MinimumOut *uint64
+	Direction  *SwapDirection // добавляем как указатель для консистентности
 
 	// Slice для хранения аккаунтов, следуя паттерну из SDK
 	solana.AccountMetaSlice `bin:"-" borsh_skip:"true"`
@@ -107,15 +113,37 @@ type Sniper struct {
 }
 type SniperConfig struct {
 	// Существующие поля
-	maxSlippageBps   uint16
-	minAmountSOL     float64
-	maxAmountSOL     float64
-	priorityFee      uint64
-	waitConfirmation bool
-	monitorInterval  time.Duration
-	maxRetries       int
+	MaxSlippageBps   uint16 // экспортируемые поля
+	MinAmountSOL     uint64 // использовать lamports вместо float64
+	MaxAmountSOL     uint64
+	PriorityFee      uint64
+	WaitConfirmation bool
+	MonitorInterval  time.Duration
+	MaxRetries       int
 
 	// Добавляем новые необходимые поля
-	baseMint  solana.PublicKey // Mint address базового токена
-	quoteMint solana.PublicKey // Mint address котируемого токена
+	BaseMint  solana.PublicKey // Mint address базового токена
+	QuoteMint solana.PublicKey // Mint address котируемого токена
 }
+
+// Нужно добавить
+type TokenAmount struct {
+	Raw      uint64
+	Decimals uint8
+}
+
+// Нужно добавить
+type SwapDirection string
+
+const (
+	SwapDirectionIn  SwapDirection = "in"
+	SwapDirectionOut SwapDirection = "out"
+)
+
+// Нужно добавить
+type PoolVersion uint8
+
+const (
+	PoolVersionV4 PoolVersion = 4
+	PoolVersionV3 PoolVersion = 3
+)

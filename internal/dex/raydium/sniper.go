@@ -29,7 +29,7 @@ func (s *Sniper) ExecuteSnipe() error {
 	}
 
 	// 2. Получение информации о пуле и проверка его состояния
-	pool, err := s.client.GetPool(context.Background(), s.config.baseMint, s.config.quoteMint)
+	pool, err := s.client.GetPool(context.Background(), s.config.BaseMint, s.config.QuoteMint)
 	if err != nil {
 		return fmt.Errorf("failed to get pool: %w", err)
 	}
@@ -51,7 +51,7 @@ func (s *Sniper) ExecuteSnipe() error {
 		AmountIn:            amounts.AmountIn,
 		MinAmountOut:        amounts.MinAmountOut,
 		Pool:                pool,
-		PriorityFeeLamports: s.config.priorityFee,
+		PriorityFeeLamports: s.config.PriorityFee,
 		// Здесь нужно добавить source и destination token accounts
 	}
 
@@ -83,20 +83,20 @@ func (s *Sniper) ValidateAndPrepare() error {
 	s.logger.Debug("validating and preparing snipe parameters")
 
 	// Проверяем базовые параметры конфигурации
-	if s.config.maxSlippageBps == 0 || s.config.maxSlippageBps > 10000 { // 10000 = 100%
+	if s.config.MaxSlippageBps == 0 || s.config.MaxSlippageBps > 10000 { // 10000 = 100%
 		return fmt.Errorf("invalid slippage: must be between 0 and 10000")
 	}
 
-	if s.config.minAmountSOL <= 0 || s.config.maxAmountSOL <= 0 {
+	if s.config.MinAmountSOL <= 0 || s.config.MaxAmountSOL <= 0 {
 		return fmt.Errorf("invalid amount parameters")
 	}
 
-	if s.config.maxAmountSOL < s.config.minAmountSOL {
+	if s.config.MaxAmountSOL < s.config.MinAmountSOL {
 		return fmt.Errorf("maxAmount cannot be less than minAmount")
 	}
 
 	// Проверяем mint addresses
-	if s.config.baseMint.IsZero() || s.config.quoteMint.IsZero() {
+	if s.config.BaseMint.IsZero() || s.config.QuoteMint.IsZero() {
 		return fmt.Errorf("invalid mint addresses")
 	}
 
@@ -110,16 +110,16 @@ func (s *Sniper) ValidateAndPrepare() error {
 		return fmt.Errorf("failed to get wallet balance: %w", err)
 	}
 
-	if float64(balance)/float64(solana.LAMPORTS_PER_SOL) < s.config.minAmountSOL {
+	if balance/solana.LAMPORTS_PER_SOL < s.config.MinAmountSOL {
 		return fmt.Errorf("insufficient balance")
 	}
 
 	// Проверяем параметры мониторинга
-	if s.config.monitorInterval < time.Second {
+	if s.config.MonitorInterval < time.Second {
 		return fmt.Errorf("monitor interval too small")
 	}
 
-	if s.config.maxRetries < 1 {
+	if s.config.MaxRetries < 1 {
 		return fmt.Errorf("invalid max retries value")
 	}
 
@@ -136,11 +136,11 @@ func (s *Sniper) ValidateAndPrepare() error {
 func (s *Sniper) MonitorPoolChanges() error {
 	s.logger.Debug("starting pool monitoring")
 
-	ticker := time.NewTicker(s.config.monitorInterval)
+	ticker := time.NewTicker(s.config.MonitorInterval)
 	defer ticker.Stop()
 
 	// Получаем начальное состояние пула
-	pool, err := s.client.GetPool(context.Background(), s.config.baseMint, s.config.quoteMint)
+	pool, err := s.client.GetPool(context.Background(), s.config.BaseMint, s.config.QuoteMint)
 	if err != nil {
 		return fmt.Errorf("failed to get initial pool state: %w", err)
 	}
@@ -163,7 +163,7 @@ func (s *Sniper) MonitorPoolChanges() error {
 					zap.Error(err),
 					zap.Int("retry", retryCount),
 				)
-				if retryCount >= s.config.maxRetries {
+				if retryCount >= s.config.MaxRetries {
 					return fmt.Errorf("max retries exceeded while monitoring pool")
 				}
 				continue
