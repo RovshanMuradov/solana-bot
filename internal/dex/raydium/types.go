@@ -10,6 +10,28 @@ import (
 	"go.uber.org/zap"
 )
 
+// Нужно добавить
+type TokenAmount struct {
+	Raw      uint64
+	Decimals uint8
+}
+
+// Нужно добавить
+type SwapDirection string
+
+const (
+	SwapDirectionIn  SwapDirection = "in"
+	SwapDirectionOut SwapDirection = "out"
+)
+
+// Нужно добавить
+type PoolVersion uint8
+
+const (
+	PoolVersionV4 PoolVersion = 4
+	PoolVersionV3 PoolVersion = 3
+)
+
 type RaydiumPool struct {
 	ID            solana.PublicKey // Идентификатор пула
 	Authority     solana.PublicKey // Публичный ключ, который имеет полномочия управлять пулом
@@ -45,13 +67,6 @@ type SwapParams struct {
 	Direction   SwapDirection
 	SlippageBps uint16
 	Deadline    time.Time // таймаут для транзакции
-}
-
-// Основные ошибки
-type SwapError struct {
-	Stage   string // Этап, на котором произошла ошибка
-	Message string // Сообщение об ошибке
-	Err     error  // Вложенная ошибка
 }
 
 type RaydiumClient struct {
@@ -91,7 +106,9 @@ type RaydiumSwapInstruction struct {
 type RaydiumError struct {
 	Code    string
 	Message string
+	Stage   string
 	Details map[string]interface{}
+	Err     error
 }
 
 type SwapAmounts struct {
@@ -125,25 +142,3 @@ type SniperConfig struct {
 	BaseMint  solana.PublicKey // Mint address базового токена
 	QuoteMint solana.PublicKey // Mint address котируемого токена
 }
-
-// Нужно добавить
-type TokenAmount struct {
-	Raw      uint64
-	Decimals uint8
-}
-
-// Нужно добавить
-type SwapDirection string
-
-const (
-	SwapDirectionIn  SwapDirection = "in"
-	SwapDirectionOut SwapDirection = "out"
-)
-
-// Нужно добавить
-type PoolVersion uint8
-
-const (
-	PoolVersionV4 PoolVersion = 4
-	PoolVersionV3 PoolVersion = 3
-)
