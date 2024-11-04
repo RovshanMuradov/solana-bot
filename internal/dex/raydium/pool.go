@@ -2,6 +2,7 @@
 package raydium
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 
@@ -26,31 +27,44 @@ func NewPoolManager(client blockchain.Client, logger *zap.Logger, pool *RaydiumP
 // 4. Улучшить обработку ошибок и логирование
 
 // GetPoolState получает актуальное состояние пула
-func (pm *PoolManager) GetPoolState() (*PoolState, error) {
+func (pm *PoolManager) GetPoolState(ctx context.Context) (*PoolState, error) {
 	pm.logger.Debug("getting pool state",
 		zap.String("poolId", pm.pool.ID.String()),
 	)
 
 	// Получаем данные аккаунта пула
-	account, err := pm.client.GetAccountInfo(pm.pool.ID)
+	account, err := pm.client.GetAccountInfo(ctx, pm.pool.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pool account: %w", err)
 	}
 
+	// Проверяем что аккаунт существует и содержит данные
+	if account == nil || account.Value == nil || account.Value.Data.GetBinary() == nil {
+		return nil, fmt.Errorf("pool account data is empty")
+	}
+
+	// Получаем бинарные данные аккаунта
+	data := account.Value.Data.GetBinary()
+
+	// Проверяем достаточную длину данных
+	if len(data) < 89 { // минимальная длина для наших полей
+		return nil, fmt.Errorf("invalid pool data length: %d", len(data))
+	}
+
 	// Парсим данные в структуру состояния
 	state := &PoolState{
-		BaseReserve:  binary.LittleEndian.Uint64(account.Data[64:72]), // резервы base токена
-		QuoteReserve: binary.LittleEndian.Uint64(account.Data[72:80]), // резервы quote токена
-		Status:       account.Data[88],                                // статус пула
+		BaseReserve:  binary.LittleEndian.Uint64(data[64:72]), // резервы base токена
+		QuoteReserve: binary.LittleEndian.Uint64(data[72:80]), // резервы quote токена
+		Status:       data[88],                                // статус пула
 	}
 
 	return state, nil
 }
 
 // CalculateAmounts рассчитывает количество выходных токенов и минимальный выход
-func (pm *PoolManager) CalculateAmounts() (*SwapAmounts, error) {
+func (pm *PoolManager) CalculateAmounts(ctx context.Context) (*SwapAmounts, error) {
 	// Получаем текущее состояние пула
-	state, err := pm.GetPoolState()
+	state, err := pm.GetPoolState(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pool state: %w", err)
 	}
@@ -77,7 +91,7 @@ func (pm *PoolManager) CalculateAmounts() (*SwapAmounts, error) {
 }
 
 // ValidatePool проверяет валидность параметров пула
-func (pm *PoolManager) ValidatePool() error {
+func (pm *PoolManager) ValidatePool(ctx context.Context) error {
 	// Проверяем существование всех необходимых аккаунтов
 	accounts := []solana.PublicKey{
 		pm.pool.ID,
@@ -95,7 +109,7 @@ func (pm *PoolManager) ValidatePool() error {
 	}
 
 	// Проверяем состояние пула
-	state, err := pm.GetPoolState()
+	state, err := pm.GetPoolState(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get pool state: %w", err)
 	}
