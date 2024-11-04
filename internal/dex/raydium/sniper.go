@@ -2,12 +2,13 @@
 package raydium
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
+	solanarpc "github.com/gagliardetto/solana-go/rpc"
 	"go.uber.org/zap"
 )
 
@@ -28,31 +29,30 @@ func (s *Sniper) ExecuteSnipe() error {
 	}
 
 	// 2. Получение информации о пуле и проверка его состояния
-	pool, err := s.client.GetPool(s.config.baseMint, s.config.quoteMint)
+	pool, err := s.client.GetPool(context.Background(), s.config.baseMint, s.config.quoteMint)
 	if err != nil {
 		return fmt.Errorf("failed to get pool: %w", err)
 	}
 
 	poolManager := NewPoolManager(s.client.client, s.logger, pool)
-	if err := poolManager.ValidatePool(); err != nil {
+	if err := poolManager.ValidatePool(context.Background()); err != nil {
 		return fmt.Errorf("pool validation failed: %w", err)
 	}
 
 	// 3. Расчет параметров свапа
-	amounts, err := poolManager.CalculateAmounts()
+	amounts, err := poolManager.CalculateAmounts(context.Background())
 	if err != nil {
 		return fmt.Errorf("failed to calculate swap amounts: %w", err)
 	}
 
 	// 4. Подготовка параметров для свапа
 	swapParams := &SwapParams{
-		UserWallet:          s.client.client.PrivateKey.PublicKey(),
+		UserWallet:          s.client.privateKey.PublicKey(),
 		AmountIn:            amounts.AmountIn,
 		MinAmountOut:        amounts.MinAmountOut,
 		Pool:                pool,
 		PriorityFeeLamports: s.config.priorityFee,
-		// Здесь нужно добавить source и destination token accounts,
-		// которые должны быть получены или созданы заранее
+		// Здесь нужно добавить source и destination token accounts
 	}
 
 	// 5. Выполнение свапа
@@ -102,14 +102,15 @@ func (s *Sniper) ValidateAndPrepare() error {
 
 	// Проверяем наличие достаточного баланса
 	balance, err := s.client.client.GetBalance(
-		s.client.client.PrivateKey.PublicKey(),
-		rpc.CommitmentConfirmed,
+		context.Background(),
+		s.client.privateKey.PublicKey(),
+		solanarpc.CommitmentConfirmed,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to get wallet balance: %w", err)
 	}
 
-	if float64(balance.Value)/float64(solana.LAMPORTS_PER_SOL) < s.config.minAmountSOL {
+	if float64(balance)/float64(solana.LAMPORTS_PER_SOL) < s.config.minAmountSOL {
 		return fmt.Errorf("insufficient balance")
 	}
 
@@ -139,13 +140,13 @@ func (s *Sniper) MonitorPoolChanges() error {
 	defer ticker.Stop()
 
 	// Получаем начальное состояние пула
-	pool, err := s.client.GetPool(s.config.baseMint, s.config.quoteMint)
+	pool, err := s.client.GetPool(context.Background(), s.config.baseMint, s.config.quoteMint)
 	if err != nil {
 		return fmt.Errorf("failed to get initial pool state: %w", err)
 	}
 
 	poolManager := NewPoolManager(s.client.client, s.logger, pool)
-	initialState, err := poolManager.GetPoolState()
+	initialState, err := poolManager.GetPoolState(context.Background())
 	if err != nil {
 		return fmt.Errorf("failed to get initial pool state: %w", err)
 	}
@@ -155,7 +156,7 @@ func (s *Sniper) MonitorPoolChanges() error {
 		select {
 		case <-ticker.C:
 			// Получаем текущее состояние пула
-			currentState, err := poolManager.GetPoolState()
+			currentState, err := poolManager.GetPoolState(context.Background())
 			if err != nil {
 				retryCount++
 				s.logger.Error("failed to get current pool state",
