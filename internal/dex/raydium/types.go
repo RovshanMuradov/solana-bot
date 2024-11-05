@@ -32,7 +32,7 @@ const (
 	PoolVersionV3 PoolVersion = 3
 )
 
-type RaydiumPool struct {
+type Pool struct {
 	ID            solana.PublicKey // Идентификатор пула
 	Authority     solana.PublicKey // Публичный ключ, который имеет полномочия управлять пулом
 	BaseMint      solana.PublicKey // Публичный ключ базового токена
@@ -59,7 +59,7 @@ type SwapParams struct {
 	PrivateKey              *solana.PrivateKey // Приватный ключ для подписания транзакции
 	AmountIn                uint64             // Количество входного токена для обмена
 	MinAmountOut            uint64             // Минимальное количество выходного токена
-	Pool                    *RaydiumPool       // Указатель на пул для обмена
+	Pool                    *Pool              // Указатель на пул для обмена
 	SourceTokenAccount      solana.PublicKey   // Аккаунт исходного токена
 	DestinationTokenAccount solana.PublicKey   // Аккаунт целевого токена
 	PriorityFeeLamports     uint64             // Приоритетная комиссия в лампортах
@@ -69,7 +69,7 @@ type SwapParams struct {
 	Deadline    time.Time // таймаут для транзакции
 }
 
-type RaydiumClient struct {
+type Client struct {
 	client      blockchain.Client
 	logger      *zap.Logger
 	privateKey  solana.PrivateKey
@@ -96,14 +96,14 @@ type SwapInstruction struct {
 }
 
 // RaydiumSwapInstruction реализует интерфейс solana.Instruction
-type RaydiumSwapInstruction struct {
+type ExecutableSwapInstruction struct {
 	programID solana.PublicKey
 	accounts  []*solana.AccountMeta
 	data      []byte
 }
 
 // RaydiumError represents a custom error type
-type RaydiumError struct {
+type Error struct {
 	Code    string
 	Message string
 	Stage   string
@@ -120,11 +120,11 @@ type SwapAmounts struct {
 type PoolManager struct {
 	client blockchain.Client
 	logger *zap.Logger
-	pool   *RaydiumPool
+	pool   *Pool
 }
 
 type Sniper struct {
-	client *RaydiumClient
+	client *Client
 	logger *zap.Logger
 	config *SniperConfig // Конфигурация снайпинга
 }

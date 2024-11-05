@@ -48,7 +48,7 @@ func (c *RaydiumClient) GetPool(ctx context.Context, baseMint, quoteMint solana.
 	// Получаем программные аккаунты через интерфейс
 	accounts, err := c.client.GetProgramAccounts(
 		ctx,
-		solana.MustPublicKeyFromBase58(RAYDIUM_V4_PROGRAM_ID),
+		solana.MustPublicKeyFromBase58(RaydiumV4ProgramID),
 		solanarpc.GetProgramAccountsOpts{
 			Filters: []solanarpc.RPCFilter{
 				{
@@ -84,7 +84,7 @@ func (c *RaydiumClient) GetPool(ctx context.Context, baseMint, quoteMint solana.
 	// Получаем authority пула через PDA
 	authority, _, err := solana.FindProgramAddress(
 		[][]byte{[]byte("amm_authority")},
-		solana.MustPublicKeyFromBase58(RAYDIUM_V4_PROGRAM_ID),
+		solana.MustPublicKeyFromBase58(RaydiumV4ProgramID),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to derive authority: %w", err)
@@ -107,8 +107,8 @@ func (c *RaydiumClient) GetPool(ctx context.Context, baseMint, quoteMint solana.
 		BaseVault:  solana.PublicKeyFromBytes(data[72:104]),
 		QuoteVault: solana.PublicKeyFromBytes(data[104:136]),
 		// Извлекаем decimals
-		BaseDecimals:  uint8(data[136]),
-		QuoteDecimals: uint8(data[137]),
+		BaseDecimals:  (data[136]),
+		QuoteDecimals: (data[137]),
 		// Извлекаем fee в базисных пунктах (2 байта)
 		DefaultFeeBps: binary.LittleEndian.Uint16(data[138:140]),
 	}
@@ -202,13 +202,13 @@ func (inst *SwapInstruction) SetDirection(direction SwapDirection) *SwapInstruct
 // Validate проверяет все необходимые параметры
 func (inst *SwapInstruction) Validate() error {
 	if inst.Amount == nil {
-		return errors.New("Amount is not set")
+		return errors.New("amount is not set")
 	}
 	if inst.MinimumOut == nil {
-		return errors.New("MinimumOut is not set")
+		return errors.New("minimumOut is not set")
 	}
 	if inst.Direction == nil {
-		return errors.New("Direction is not set")
+		return errors.New("direction is not set")
 	}
 
 	// Проверка всех аккаунтов
@@ -252,7 +252,7 @@ func (inst *SwapInstruction) Build() (solana.Instruction, error) {
 	}
 
 	instruction := &RaydiumSwapInstruction{
-		programID: solana.MustPublicKeyFromBase58(RAYDIUM_V4_PROGRAM_ID),
+		programID: solana.MustPublicKeyFromBase58(RaydiumV4ProgramID),
 		accounts:  inst.AccountMetaSlice,
 		data:      data,
 	}
@@ -271,7 +271,7 @@ func (c *RaydiumClient) CreateSwapInstructions(params *SwapParams) ([]solana.Ins
 	// Добавляем инструкцию compute budget если указан приоритетный fee
 	if params.PriorityFeeLamports > 0 {
 		computeLimitIx, err := computebudget.NewSetComputeUnitLimitInstructionBuilder().
-			SetUnits(MAX_COMPUTE_UNIT_LIMIT).
+			SetUnits(MaxComputeUnitLimit).
 			ValidateAndBuild()
 		if err != nil {
 			return nil, fmt.Errorf("failed to build compute limit instruction: %w", err)
@@ -369,12 +369,21 @@ func (c *RaydiumClient) SimulateSwap(ctx context.Context, params *SwapParams) er
 
 	// Подписываем транзакцию если есть приватный ключ
 	if params.PrivateKey != nil {
-		tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+		signatures, err := tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
 			if key.Equals(params.UserWallet) {
 				return params.PrivateKey
 			}
 			return nil
 		})
+		if err != nil {
+			return fmt.Errorf("failed to sign transaction: %w", err)
+		}
+
+		// Опционально: можно добавить логирование подписей
+		c.logger.Debug("transaction signed",
+			zap.Int("signatures_count", len(signatures)),
+			zap.String("first_signature", signatures[0].String()),
+		)
 	}
 
 	// Симулируем транзакцию
@@ -524,6 +533,10 @@ func (c *RaydiumClient) logUpdatedBalances(params *SwapParams) error {
 	return nil
 }
 
+// GetBaseClient возвращает базовый blockchain.Client
+func (c *RaydiumClient) GetBaseClient() blockchain.Client {
+	return c.client
+}
 // internal/dex/raydium/constants.go
 package raydium
 
@@ -531,83 +544,83 @@ import "fmt"
 
 // Program IDs
 const (
-	RAYDIUM_V4_PROGRAM_ID = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
-	TOKEN_PROGRAM_ID      = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-	SYSTEM_PROGRAM_ID     = "11111111111111111111111111111111"
-	SYSVAR_RENT_PUBKEY    = "SysvarRent111111111111111111111111111111111"
-	WRAPPED_SOL_MINT      = "So11111111111111111111111111111111111111112" // Добавлено
+	RaydiumV4ProgramID = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
+	TokenProgramID     = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+	SystemProgramID    = "11111111111111111111111111111111"
+	SysvarRentPubkey   = "SysvarRent111111111111111111111111111111111"
+	WrappedSolMint     = "So11111111111111111111111111111111111111112"
 )
 
 // Compute budget constants
 const (
-	MAX_COMPUTE_UNIT_LIMIT = 300000
-	DEFAULT_COMPUTE_PRICE  = 1000
-	MIN_COMPUTE_PRICE      = 0      // Добавлено
-	MAX_COMPUTE_PRICE      = 100000 // Добавлено
+	MaxComputeUnitLimit = 300000
+	DefaultComputePrice = 1000
+	MinComputePrice     = 0
+	MaxComputePrice     = 100000
 )
 
 // Pool account layout constants
 const (
-	POOL_ACCOUNT_SIZE     = 388
-	POOL_VERSION_OFFSET   = 0 // Добавлено
-	STATUS_OFFSET         = 1 // Добавлено
-	BASE_MINT_OFFSET      = 8
-	QUOTE_MINT_OFFSET     = 40
-	LP_MINT_OFFSET        = 72 // Добавлено
-	BASE_VAULT_OFFSET     = 104
-	QUOTE_VAULT_OFFSET    = 136
-	DECIMALS_OFFSET       = 168
-	FEE_BPS_OFFSET        = 170
-	POOL_STATUS_OFFSET    = 188
-	AMM_OPEN_ORDERS       = 196
-	MARKET_ID_OFFSET      = 228
-	TARGET_ORDERS_OFFSET  = 260 // Добавлено
-	WITHDRAW_QUEUE_OFFSET = 292 // Добавлено
+	PoolAccountSize     = 388
+	PoolVersionOffset   = 0
+	StatusOffset        = 1
+	BaseMintOffset      = 8
+	QuoteMintOffset     = 40
+	LpMintOffset        = 72
+	BaseVaultOffset     = 104
+	QuoteVaultOffset    = 136
+	DecimalsOffset      = 168
+	FeeBpsOffset        = 170
+	PoolStatusOffset    = 188
+	AmmOpenOrders       = 196
+	MarketIDOffset      = 228
+	TargetOrdersOffset  = 260
+	WithdrawQueueOffset = 292
 )
 
 // Pool status
 const (
-	POOL_STATUS_UNINITIALIZED uint8 = 0
-	POOL_STATUS_INITIALIZED   uint8 = 1
-	POOL_STATUS_DISABLED      uint8 = 2
-	POOL_STATUS_ACTIVE        uint8 = 3
+	PoolStatusUninitialized uint8 = 0
+	PoolStatusInitialized   uint8 = 1
+	PoolStatusDisabled      uint8 = 2
+	PoolStatusActive        uint8 = 3
 )
 
 // PDA seeds
 const (
-	AMM_AUTHORITY_LAYOUT = "amm_authority"
-	POOL_TEMP_LP_LAYOUT  = "pool_temp_lp"
-	POOL_WITHDRAW_QUEUE  = "withdraw_queue"
-	TARGET_ORDERS_SEED   = "target_orders" // Добавлено
-	OPEN_ORDERS_SEED     = "open_orders"   // Добавлено
+	AmmAuthorityLayout = "amm_authority"
+	PoolTempLpLayout   = "pool_temp_lp"
+	PoolWithdrawQueue  = "withdraw_queue"
+	TargetOrdersSeed   = "target_orders"
+	OpenOrdersSeed     = "open_orders"
 )
 
 // Swap constants
 const (
-	DEFAULT_SLIPPAGE_PERCENT = 0.5
-	MAX_SLIPPAGE_PERCENT     = 5.0
-	MIN_SWAP_AMOUNT          = 1000   // Добавлено: минимальная сумма для свапа в лампортах
-	MAX_TOKENS_IN_POOL       = 100000 // Добавлено: максимальное количество токенов в пуле
-	TRADE_DIRECTION_IN       = "in"   // Добавлено
-	TRADE_DIRECTION_OUT      = "out"  // Добавлено
+	DefaultSlippagePercent = 0.5
+	MaxSlippagePercent     = 5.0
+	MinSwapAmount          = 1000
+	MaxTokensInPool        = 100000
+	TradeDirectionIn       = "in"
+	TradeDirectionOut      = "out"
 )
 
 // Error codes
 const (
-	ERR_POOL_NOT_FOUND      = "POOL_NOT_FOUND" // Изменено на uppercase
-	ERR_INVALID_POOL_STATUS = "INVALID_POOL_STATUS"
-	ERR_INSUFFICIENT_FUNDS  = "INSUFFICIENT_FUNDS"
-	ERR_SLIPPAGE_EXCEEDED   = "SLIPPAGE_EXCEEDED"
-	ERR_INVALID_MINT        = "INVALID_MINT"
-	ERR_INVALID_AMOUNT      = "INVALID_AMOUNT"    // Добавлено
-	ERR_POOL_DISABLED       = "POOL_DISABLED"     // Добавлено
-	ERR_INVALID_DIRECTION   = "INVALID_DIRECTION" // Добавлено
+	ErrPoolNotFound      = "POOL_NOT_FOUND"
+	ErrInvalidPoolStatus = "INVALID_POOL_STATUS"
+	ErrInsufficientFunds = "INSUFFICIENT_FUNDS"
+	ErrSlippageExceeded  = "SLIPPAGE_EXCEEDED"
+	ErrInvalidMint       = "INVALID_MINT"
+	ErrInvalidAmount     = "INVALID_AMOUNT"
+	ErrPoolDisabled      = "POOL_DISABLED"
+	ErrInvalidDirection  = "INVALID_DIRECTION"
 )
 
 // Account size constants
 const (
-	TOKEN_ACCOUNT_SIZE = 165 // Добавлено
-	MINT_ACCOUNT_SIZE  = 82  // Добавлено
+	TokenAccountSize = 165
+	MintAccountSize  = 82
 )
 
 func (e *RaydiumError) Error() string {
@@ -886,62 +899,66 @@ func (s *Sniper) ValidateAndPrepare() error {
 // 4. Добавить отслеживание транзакций в мемпуле
 // 5. Добавить механизм websocket подключения
 // 6. Добавить механизм агрегации данных по нескольким RPC
-func (s *Sniper) MonitorPoolChanges() error {
+func (s *Sniper) MonitorPoolChanges(ctx context.Context) error {
 	s.logger.Debug("starting pool monitoring")
 
 	ticker := time.NewTicker(s.config.MonitorInterval)
 	defer ticker.Stop()
 
 	// Получаем начальное состояние пула
-	pool, err := s.client.GetPool(context.Background(), s.config.BaseMint, s.config.QuoteMint)
+	pool, err := s.client.GetPool(ctx, s.config.BaseMint, s.config.QuoteMint)
 	if err != nil {
 		return fmt.Errorf("failed to get initial pool state: %w", err)
 	}
 
 	poolManager := NewPoolManager(s.client.client, s.logger, pool)
-	initialState, err := poolManager.GetPoolState(context.Background())
+	initialState, err := poolManager.GetPoolState(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get initial pool state: %w", err)
 	}
 
 	var retryCount int
-	for {
-		select {
-		case <-ticker.C:
-			// Получаем текущее состояние пула
-			currentState, err := poolManager.GetPoolState(context.Background())
-			if err != nil {
-				retryCount++
-				s.logger.Error("failed to get current pool state",
-					zap.Error(err),
-					zap.Int("retry", retryCount),
-				)
-				if retryCount >= s.config.MaxRetries {
-					return fmt.Errorf("max retries exceeded while monitoring pool")
-				}
-				continue
+	for range ticker.C {
+		// Проверяем контекст перед каждой итерацией
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("monitoring stopped: %w", err)
+		}
+
+		// Получаем текущее состояние пула
+		currentState, err := poolManager.GetPoolState(ctx)
+		if err != nil {
+			retryCount++
+			s.logger.Error("failed to get current pool state",
+				zap.Error(err),
+				zap.Int("retry", retryCount),
+			)
+			if retryCount >= s.config.MaxRetries {
+				return fmt.Errorf("max retries exceeded while monitoring pool")
 			}
-			retryCount = 0
+			continue
+		}
+		retryCount = 0
 
-			// Проверяем изменения в пуле
-			if s.hasSignificantChanges(initialState, currentState) {
-				s.logger.Info("detected significant pool changes",
-					zap.Uint64("oldBaseReserve", initialState.BaseReserve),
-					zap.Uint64("newBaseReserve", currentState.BaseReserve),
-					zap.Uint64("oldQuoteReserve", initialState.QuoteReserve),
-					zap.Uint64("newQuoteReserve", currentState.QuoteReserve),
-				)
+		// Проверяем изменения в пуле
+		if s.hasSignificantChanges(initialState, currentState) {
+			s.logger.Info("detected significant pool changes",
+				zap.Uint64("oldBaseReserve", initialState.BaseReserve),
+				zap.Uint64("newBaseReserve", currentState.BaseReserve),
+				zap.Uint64("oldQuoteReserve", initialState.QuoteReserve),
+				zap.Uint64("newQuoteReserve", currentState.QuoteReserve),
+			)
 
-				// Если пул неактивен, прекращаем мониторинг
-				if currentState.Status != 1 {
-					return fmt.Errorf("pool became inactive")
-				}
-
-				// Обновляем начальное состояние
-				initialState = currentState
+			// Если пул неактивен, прекращаем мониторинг
+			if currentState.Status != 1 {
+				return fmt.Errorf("pool became inactive")
 			}
+
+			// Обновляем начальное состояние
+			initialState = currentState
 		}
 	}
+
+	return nil
 }
 
 // Вспомогательный метод для определения значительных изменений в пуле

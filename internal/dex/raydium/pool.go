@@ -12,7 +12,7 @@ import (
 )
 
 // NewPoolManager создает новый менеджер пула
-func NewPoolManager(client blockchain.Client, logger *zap.Logger, pool *RaydiumPool) *PoolManager {
+func NewPoolManager(client blockchain.Client, logger *zap.Logger, pool *Pool) *PoolManager {
 	return &PoolManager{
 		client: client,
 		logger: logger,

@@ -17,7 +17,7 @@ import (
 )
 
 // NewRaydiumClient создает новый экземпляр клиента Raydium с дефолтными настройками
-func NewRaydiumClient(rpcEndpoint string, wallet solana.PrivateKey, logger *zap.Logger) (*RaydiumClient, error) {
+func NewRaydiumClient(rpcEndpoint string, wallet solana.PrivateKey, logger *zap.Logger) (*Client, error) {
 	logger = logger.Named("raydium-client")
 
 	// Создаем базового клиента через фабрику
@@ -27,7 +27,7 @@ func NewRaydiumClient(rpcEndpoint string, wallet solana.PrivateKey, logger *zap.
 	}
 
 	// Создаем клиент с дефолтными настройками
-	return &RaydiumClient{
+	return &Client{
 		client:      solClient,
 		logger:      logger,
 		privateKey:  wallet,
@@ -39,7 +39,7 @@ func NewRaydiumClient(rpcEndpoint string, wallet solana.PrivateKey, logger *zap.
 }
 
 // GetPool получает информацию о пуле по базовому и котируемому токенам
-func (c *RaydiumClient) GetPool(ctx context.Context, baseMint, quoteMint solana.PublicKey) (*RaydiumPool, error) {
+func (c *Client) GetPool(ctx context.Context, baseMint, quoteMint solana.PublicKey) (*Pool, error) {
 	c.logger.Debug("getting raydium pool info",
 		zap.String("baseMint", baseMint.String()),
 		zap.String("quoteMint", quoteMint.String()),
@@ -48,7 +48,7 @@ func (c *RaydiumClient) GetPool(ctx context.Context, baseMint, quoteMint solana.
 	// Получаем программные аккаунты через интерфейс
 	accounts, err := c.client.GetProgramAccounts(
 		ctx,
-		solana.MustPublicKeyFromBase58(RAYDIUM_V4_PROGRAM_ID),
+		RaydiumV4ProgramID,
 		solanarpc.GetProgramAccountsOpts{
 			Filters: []solanarpc.RPCFilter{
 				{
@@ -84,7 +84,7 @@ func (c *RaydiumClient) GetPool(ctx context.Context, baseMint, quoteMint solana.
 	// Получаем authority пула через PDA
 	authority, _, err := solana.FindProgramAddress(
 		[][]byte{[]byte("amm_authority")},
-		solana.MustPublicKeyFromBase58(RAYDIUM_V4_PROGRAM_ID),
+		RaydiumV4ProgramID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to derive authority: %w", err)
@@ -98,7 +98,7 @@ func (c *RaydiumClient) GetPool(ctx context.Context, baseMint, quoteMint solana.
 
 	// Извлекаем данные из бинарного представления
 	// Офсеты взяты из документации Raydium и SDK
-	pool := &RaydiumPool{
+	pool := &Pool{
 		ID:        poolAccount.Pubkey, // Исправлено с PublicKey на Pubkey
 		Authority: authority,
 		BaseMint:  baseMint,
@@ -107,8 +107,8 @@ func (c *RaydiumClient) GetPool(ctx context.Context, baseMint, quoteMint solana.
 		BaseVault:  solana.PublicKeyFromBytes(data[72:104]),
 		QuoteVault: solana.PublicKeyFromBytes(data[104:136]),
 		// Извлекаем decimals
-		BaseDecimals:  uint8(data[136]),
-		QuoteDecimals: uint8(data[137]),
+		BaseDecimals:  (data[136]),
+		QuoteDecimals: (data[137]),
 		// Извлекаем fee в базисных пунктах (2 байта)
 		DefaultFeeBps: binary.LittleEndian.Uint16(data[138:140]),
 	}
@@ -126,7 +126,7 @@ func (c *RaydiumClient) GetPool(ctx context.Context, baseMint, quoteMint solana.
 }
 
 // GetPoolState получает текущее состояние пула
-func (c *RaydiumClient) GetPoolState(pool *RaydiumPool) (*PoolState, error) {
+func (c *Client) GetPoolState(pool *Pool) (*PoolState, error) {
 	c.logger.Debug("getting pool state",
 		zap.String("poolId", pool.ID.String()),
 	)
@@ -202,13 +202,13 @@ func (inst *SwapInstruction) SetDirection(direction SwapDirection) *SwapInstruct
 // Validate проверяет все необходимые параметры
 func (inst *SwapInstruction) Validate() error {
 	if inst.Amount == nil {
-		return errors.New("Amount is not set")
+		return errors.New("amount is not set")
 	}
 	if inst.MinimumOut == nil {
-		return errors.New("MinimumOut is not set")
+		return errors.New("minimumOut is not set")
 	}
 	if inst.Direction == nil {
-		return errors.New("Direction is not set")
+		return errors.New("direction is not set")
 	}
 
 	// Проверка всех аккаунтов
@@ -221,17 +221,17 @@ func (inst *SwapInstruction) Validate() error {
 }
 
 // ProgramID возвращает ID программы Raydium
-func (i *RaydiumSwapInstruction) ProgramID() solana.PublicKey {
+func (i *ExecutableSwapInstruction) ProgramID() solana.PublicKey {
 	return i.programID
 }
 
 // Accounts возвращает список аккаунтов
-func (i *RaydiumSwapInstruction) Accounts() []*solana.AccountMeta {
+func (i *ExecutableSwapInstruction) Accounts() []*solana.AccountMeta {
 	return i.accounts
 }
 
 // Data возвращает сериализованные данные инструкции
-func (i *RaydiumSwapInstruction) Data() ([]byte, error) {
+func (i *ExecutableSwapInstruction) Data() ([]byte, error) {
 	return i.data, nil
 }
 
@@ -251,8 +251,8 @@ func (inst *SwapInstruction) Build() (solana.Instruction, error) {
 		data[16] = 1
 	}
 
-	instruction := &RaydiumSwapInstruction{
-		programID: solana.MustPublicKeyFromBase58(RAYDIUM_V4_PROGRAM_ID),
+	instruction := &ExecutableSwapInstruction{
+		programID: RaydiumV4ProgramID,
 		accounts:  inst.AccountMetaSlice,
 		data:      data,
 	}
@@ -261,7 +261,7 @@ func (inst *SwapInstruction) Build() (solana.Instruction, error) {
 }
 
 // CreateSwapInstructions создает инструкции для свапа
-func (c *RaydiumClient) CreateSwapInstructions(params *SwapParams) ([]solana.Instruction, error) {
+func (c *Client) CreateSwapInstructions(params *SwapParams) ([]solana.Instruction, error) {
 	if err := validateSwapParams(params); err != nil {
 		return nil, err
 	}
@@ -271,7 +271,7 @@ func (c *RaydiumClient) CreateSwapInstructions(params *SwapParams) ([]solana.Ins
 	// Добавляем инструкцию compute budget если указан приоритетный fee
 	if params.PriorityFeeLamports > 0 {
 		computeLimitIx, err := computebudget.NewSetComputeUnitLimitInstructionBuilder().
-			SetUnits(MAX_COMPUTE_UNIT_LIMIT).
+			SetUnits(MaxComputeUnitLimit).
 			ValidateAndBuild()
 		if err != nil {
 			return nil, fmt.Errorf("failed to build compute limit instruction: %w", err)
@@ -337,7 +337,7 @@ func validateSwapParams(params *SwapParams) error {
 }
 
 // SimulateSwap выполняет симуляцию транзакции свапа
-func (c *RaydiumClient) SimulateSwap(ctx context.Context, params *SwapParams) error {
+func (c *Client) SimulateSwap(ctx context.Context, params *SwapParams) error {
 	c.logger.Debug("simulating swap transaction",
 		zap.String("userWallet", params.UserWallet.String()),
 		zap.Uint64("amountIn", params.AmountIn),
@@ -369,12 +369,21 @@ func (c *RaydiumClient) SimulateSwap(ctx context.Context, params *SwapParams) er
 
 	// Подписываем транзакцию если есть приватный ключ
 	if params.PrivateKey != nil {
-		tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+		signatures, err := tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
 			if key.Equals(params.UserWallet) {
 				return params.PrivateKey
 			}
 			return nil
 		})
+		if err != nil {
+			return fmt.Errorf("failed to sign transaction: %w", err)
+		}
+
+		// Опционально: можно добавить логирование подписей
+		c.logger.Debug("transaction signed",
+			zap.Int("signatures_count", len(signatures)),
+			zap.String("first_signature", signatures[0].String()),
+		)
 	}
 
 	// Симулируем транзакцию
@@ -412,7 +421,7 @@ func (c *RaydiumClient) SimulateSwap(ctx context.Context, params *SwapParams) er
 // Метрики выполнения свапов
 
 // ExecuteSwap выполняет свап и возвращает signature транзакции
-func (c *RaydiumClient) ExecuteSwap(params *SwapParams) (string, error) {
+func (c *Client) ExecuteSwap(params *SwapParams) (string, error) {
 	c.logger.Debug("starting swap execution",
 		zap.String("userWallet", params.UserWallet.String()),
 		zap.Uint64("amountIn", params.AmountIn),
@@ -492,39 +501,40 @@ func (c *RaydiumClient) ExecuteSwap(params *SwapParams) (string, error) {
 	return sig.String(), nil
 }
 
+// TODO: этот метод нигде пока не используется, надо добавить его в код
 // logUpdatedBalances вспомогательный метод для логирования балансов после свапа
-func (c *RaydiumClient) logUpdatedBalances(params *SwapParams) error {
-	ctx := context.Background()
+// func (c *Client) logUpdatedBalances(params *SwapParams) error {
+// 	ctx := context.Background()
 
-	// Получаем баланс SOL
-	solBalance, err := c.client.GetBalance(
-		ctx,
-		params.UserWallet,
-		solanarpc.CommitmentConfirmed,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to get SOL balance: %w", err)
-	}
+// 	// Получаем баланс SOL
+// 	solBalance, err := c.client.GetBalance(
+// 		ctx,
+// 		params.UserWallet,
+// 		solanarpc.CommitmentConfirmed,
+// 	)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to get SOL balance: %w", err)
+// 	}
 
-	// Получаем баланс токена
-	tokenBalance, err := c.client.GetTokenAccountBalance(
-		ctx,
-		params.DestinationTokenAccount,
-		solanarpc.CommitmentConfirmed,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to get token balance: %w", err)
-	}
+// 	// Получаем баланс токена
+// 	tokenBalance, err := c.client.GetTokenAccountBalance(
+// 		ctx,
+// 		params.DestinationTokenAccount,
+// 		solanarpc.CommitmentConfirmed,
+// 	)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to get token balance: %w", err)
+// 	}
 
-	c.logger.Info("updated balances",
-		zap.Float64("solBalance", float64(solBalance)/float64(solana.LAMPORTS_PER_SOL)),
-		zap.String("tokenBalance", tokenBalance.Value.UiAmountString),
-	)
+// 	c.logger.Info("updated balances",
+// 		zap.Float64("solBalance", float64(solBalance)/float64(solana.LAMPORTS_PER_SOL)),
+// 		zap.String("tokenBalance", tokenBalance.Value.UiAmountString),
+// 	)
 
-	return nil
-}
+// 	return nil
+// }
 
 // GetBaseClient возвращает базовый blockchain.Client
-func (c *RaydiumClient) GetBaseClient() blockchain.Client {
+func (c *Client) GetBaseClient() blockchain.Client {
 	return c.client
 }

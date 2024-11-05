@@ -1,96 +1,101 @@
 // internal/dex/raydium/constants.go
 package raydium
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/gagliardetto/solana-go"
+)
 
 // Program IDs
-const (
-	RAYDIUM_V4_PROGRAM_ID = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
-	TOKEN_PROGRAM_ID      = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-	SYSTEM_PROGRAM_ID     = "11111111111111111111111111111111"
-	SYSVAR_RENT_PUBKEY    = "SysvarRent111111111111111111111111111111111"
-	WRAPPED_SOL_MINT      = "So11111111111111111111111111111111111111112" // Добавлено
+var (
+	// Используем MPK для краткости, так как это константы
+	TokenProgramID     = solana.MPK("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+	RaydiumV4ProgramID = solana.MPK("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")
+	SystemProgramID    = solana.MPK("11111111111111111111111111111111")
+	SysvarRentPubkey   = solana.MPK("SysvarRent111111111111111111111111111111111")
+	WrappedSolMint     = solana.MPK("So11111111111111111111111111111111111111112")
 )
 
 // Compute budget constants
 const (
-	MAX_COMPUTE_UNIT_LIMIT = 300000
-	DEFAULT_COMPUTE_PRICE  = 1000
-	MIN_COMPUTE_PRICE      = 0      // Добавлено
-	MAX_COMPUTE_PRICE      = 100000 // Добавлено
+	MaxComputeUnitLimit = 300000
+	DefaultComputePrice = 1000
+	MinComputePrice     = 0
+	MaxComputePrice     = 100000
 )
 
 // Pool account layout constants
 const (
-	POOL_ACCOUNT_SIZE     = 388
-	POOL_VERSION_OFFSET   = 0 // Добавлено
-	STATUS_OFFSET         = 1 // Добавлено
-	BASE_MINT_OFFSET      = 8
-	QUOTE_MINT_OFFSET     = 40
-	LP_MINT_OFFSET        = 72 // Добавлено
-	BASE_VAULT_OFFSET     = 104
-	QUOTE_VAULT_OFFSET    = 136
-	DECIMALS_OFFSET       = 168
-	FEE_BPS_OFFSET        = 170
-	POOL_STATUS_OFFSET    = 188
-	AMM_OPEN_ORDERS       = 196
-	MARKET_ID_OFFSET      = 228
-	TARGET_ORDERS_OFFSET  = 260 // Добавлено
-	WITHDRAW_QUEUE_OFFSET = 292 // Добавлено
+	PoolAccountSize     = 388
+	PoolVersionOffset   = 0
+	StatusOffset        = 1
+	BaseMintOffset      = 8
+	QuoteMintOffset     = 40
+	LpMintOffset        = 72
+	BaseVaultOffset     = 104
+	QuoteVaultOffset    = 136
+	DecimalsOffset      = 168
+	FeeBpsOffset        = 170
+	PoolStatusOffset    = 188
+	AmmOpenOrders       = 196
+	MarketIDOffset      = 228
+	TargetOrdersOffset  = 260
+	WithdrawQueueOffset = 292
 )
 
 // Pool status
 const (
-	POOL_STATUS_UNINITIALIZED uint8 = 0
-	POOL_STATUS_INITIALIZED   uint8 = 1
-	POOL_STATUS_DISABLED      uint8 = 2
-	POOL_STATUS_ACTIVE        uint8 = 3
+	PoolStatusUninitialized uint8 = 0
+	PoolStatusInitialized   uint8 = 1
+	PoolStatusDisabled      uint8 = 2
+	PoolStatusActive        uint8 = 3
 )
 
 // PDA seeds
 const (
-	AMM_AUTHORITY_LAYOUT = "amm_authority"
-	POOL_TEMP_LP_LAYOUT  = "pool_temp_lp"
-	POOL_WITHDRAW_QUEUE  = "withdraw_queue"
-	TARGET_ORDERS_SEED   = "target_orders" // Добавлено
-	OPEN_ORDERS_SEED     = "open_orders"   // Добавлено
+	AmmAuthorityLayout = "amm_authority"
+	PoolTempLpLayout   = "pool_temp_lp"
+	PoolWithdrawQueue  = "withdraw_queue"
+	TargetOrdersSeed   = "target_orders"
+	OpenOrdersSeed     = "open_orders"
 )
 
 // Swap constants
 const (
-	DEFAULT_SLIPPAGE_PERCENT = 0.5
-	MAX_SLIPPAGE_PERCENT     = 5.0
-	MIN_SWAP_AMOUNT          = 1000   // Добавлено: минимальная сумма для свапа в лампортах
-	MAX_TOKENS_IN_POOL       = 100000 // Добавлено: максимальное количество токенов в пуле
-	TRADE_DIRECTION_IN       = "in"   // Добавлено
-	TRADE_DIRECTION_OUT      = "out"  // Добавлено
+	DefaultSlippagePercent = 0.5
+	MaxSlippagePercent     = 5.0
+	MinSwapAmount          = 1000
+	MaxTokensInPool        = 100000
+	TradeDirectionIn       = "in"
+	TradeDirectionOut      = "out"
 )
 
 // Error codes
 const (
-	ERR_POOL_NOT_FOUND      = "POOL_NOT_FOUND" // Изменено на uppercase
-	ERR_INVALID_POOL_STATUS = "INVALID_POOL_STATUS"
-	ERR_INSUFFICIENT_FUNDS  = "INSUFFICIENT_FUNDS"
-	ERR_SLIPPAGE_EXCEEDED   = "SLIPPAGE_EXCEEDED"
-	ERR_INVALID_MINT        = "INVALID_MINT"
-	ERR_INVALID_AMOUNT      = "INVALID_AMOUNT"    // Добавлено
-	ERR_POOL_DISABLED       = "POOL_DISABLED"     // Добавлено
-	ERR_INVALID_DIRECTION   = "INVALID_DIRECTION" // Добавлено
+	ErrPoolNotFound      = "POOL_NOT_FOUND"
+	ErrInvalidPoolStatus = "INVALID_POOL_STATUS"
+	ErrInsufficientFunds = "INSUFFICIENT_FUNDS"
+	ErrSlippageExceeded  = "SLIPPAGE_EXCEEDED"
+	ErrInvalidMint       = "INVALID_MINT"
+	ErrInvalidAmount     = "INVALID_AMOUNT"
+	ErrPoolDisabled      = "POOL_DISABLED"
+	ErrInvalidDirection  = "INVALID_DIRECTION"
 )
 
 // Account size constants
 const (
-	TOKEN_ACCOUNT_SIZE = 165 // Добавлено
-	MINT_ACCOUNT_SIZE  = 82  // Добавлено
+	TokenAccountSize = 165
+	MintAccountSize  = 82
 )
 
-func (e *RaydiumError) Error() string {
+func (e *Error) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
 
 // Добавляем конструктор для RaydiumError
-func NewRaydiumError(code string, message string, details map[string]interface{}) *RaydiumError {
-	return &RaydiumError{
+func NewRaydiumError(code string, message string, details map[string]interface{}) *Error {
+	return &Error{
 		Code:    code,
 		Message: message,
 		Details: details,

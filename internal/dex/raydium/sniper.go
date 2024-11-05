@@ -133,62 +133,66 @@ func (s *Sniper) ValidateAndPrepare() error {
 // 4. Добавить отслеживание транзакций в мемпуле
 // 5. Добавить механизм websocket подключения
 // 6. Добавить механизм агрегации данных по нескольким RPC
-func (s *Sniper) MonitorPoolChanges() error {
+func (s *Sniper) MonitorPoolChanges(ctx context.Context) error {
 	s.logger.Debug("starting pool monitoring")
 
 	ticker := time.NewTicker(s.config.MonitorInterval)
 	defer ticker.Stop()
 
 	// Получаем начальное состояние пула
-	pool, err := s.client.GetPool(context.Background(), s.config.BaseMint, s.config.QuoteMint)
+	pool, err := s.client.GetPool(ctx, s.config.BaseMint, s.config.QuoteMint)
 	if err != nil {
 		return fmt.Errorf("failed to get initial pool state: %w", err)
 	}
 
 	poolManager := NewPoolManager(s.client.client, s.logger, pool)
-	initialState, err := poolManager.GetPoolState(context.Background())
+	initialState, err := poolManager.GetPoolState(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get initial pool state: %w", err)
 	}
 
 	var retryCount int
-	for {
-		select {
-		case <-ticker.C:
-			// Получаем текущее состояние пула
-			currentState, err := poolManager.GetPoolState(context.Background())
-			if err != nil {
-				retryCount++
-				s.logger.Error("failed to get current pool state",
-					zap.Error(err),
-					zap.Int("retry", retryCount),
-				)
-				if retryCount >= s.config.MaxRetries {
-					return fmt.Errorf("max retries exceeded while monitoring pool")
-				}
-				continue
+	for range ticker.C {
+		// Проверяем контекст перед каждой итерацией
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("monitoring stopped: %w", err)
+		}
+
+		// Получаем текущее состояние пула
+		currentState, err := poolManager.GetPoolState(ctx)
+		if err != nil {
+			retryCount++
+			s.logger.Error("failed to get current pool state",
+				zap.Error(err),
+				zap.Int("retry", retryCount),
+			)
+			if retryCount >= s.config.MaxRetries {
+				return fmt.Errorf("max retries exceeded while monitoring pool")
 			}
-			retryCount = 0
+			continue
+		}
+		retryCount = 0
 
-			// Проверяем изменения в пуле
-			if s.hasSignificantChanges(initialState, currentState) {
-				s.logger.Info("detected significant pool changes",
-					zap.Uint64("oldBaseReserve", initialState.BaseReserve),
-					zap.Uint64("newBaseReserve", currentState.BaseReserve),
-					zap.Uint64("oldQuoteReserve", initialState.QuoteReserve),
-					zap.Uint64("newQuoteReserve", currentState.QuoteReserve),
-				)
+		// Проверяем изменения в пуле
+		if s.hasSignificantChanges(initialState, currentState) {
+			s.logger.Info("detected significant pool changes",
+				zap.Uint64("oldBaseReserve", initialState.BaseReserve),
+				zap.Uint64("newBaseReserve", currentState.BaseReserve),
+				zap.Uint64("oldQuoteReserve", initialState.QuoteReserve),
+				zap.Uint64("newQuoteReserve", currentState.QuoteReserve),
+			)
 
-				// Если пул неактивен, прекращаем мониторинг
-				if currentState.Status != 1 {
-					return fmt.Errorf("pool became inactive")
-				}
-
-				// Обновляем начальное состояние
-				initialState = currentState
+			// Если пул неактивен, прекращаем мониторинг
+			if currentState.Status != 1 {
+				return fmt.Errorf("pool became inactive")
 			}
+
+			// Обновляем начальное состояние
+			initialState = currentState
 		}
 	}
+
+	return nil
 }
 
 // Вспомогательный метод для определения значительных изменений в пуле

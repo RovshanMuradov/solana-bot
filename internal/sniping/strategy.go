@@ -1,3 +1,4 @@
+// internal/sniping/strategy.go
 package sniping
 
 import (
