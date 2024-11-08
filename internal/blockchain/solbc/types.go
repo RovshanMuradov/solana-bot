@@ -21,7 +21,7 @@ type TokenMetadataCache struct {
 
 // Client представляет основной клиент Solana
 type Client struct {
-	rpc     *rpc.RPCClient
+	rpc     *rpc.Client
 	adapter *solanarpc.Client
 	logger  *zap.Logger
 	metrics *ClientMetrics
@@ -31,7 +31,7 @@ type ClientMetrics struct {
 	AccountInfoRequests    uint64
 	TransactionRequests    uint64
 	FailedRequests         uint64
-	ProgramAccountRequests uint64 // Добавляем новое поле
+	ProgramAccountRequests uint64
 	LastError              error
 	LastErrorTime          time.Time
 	BalanceRequests        uint64

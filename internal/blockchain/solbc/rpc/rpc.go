@@ -32,7 +32,7 @@ type SendTransactionOpts struct {
 }
 
 // RPCClient представляет упрощенный RPC клиент
-type RPCClient struct {
+type Client struct {
 	nodes   []*solanarpc.Client
 	urls    []string
 	current int
@@ -41,7 +41,7 @@ type RPCClient struct {
 }
 
 // NewClient создает новый RPC клиент
-func NewClient(urls []string, logger *zap.Logger) (*RPCClient, error) {
+func NewClient(urls []string, logger *zap.Logger) (*Client, error) {
 	if len(urls) == 0 {
 		return nil, ErrNoRPCNodes
 	}
@@ -51,7 +51,7 @@ func NewClient(urls []string, logger *zap.Logger) (*RPCClient, error) {
 		nodes[i] = solanarpc.New(url)
 	}
 
-	return &RPCClient{
+	return &Client{
 		nodes:  nodes,
 		urls:   urls,
 		logger: logger.Named("rpc-client"),
@@ -59,7 +59,7 @@ func NewClient(urls []string, logger *zap.Logger) (*RPCClient, error) {
 }
 
 // SendTransactionWithOpts отправляет транзакцию с опциями
-func (c *RPCClient) SendTransactionWithOpts(
+func (c *Client) SendTransactionWithOpts(
 	ctx context.Context,
 	tx *solana.Transaction,
 	opts SendTransactionOpts,
@@ -80,7 +80,7 @@ func (c *RPCClient) SendTransactionWithOpts(
 }
 
 // ExecuteWithRetry выполняет RPC-запрос с автоматическим переключением узлов при ошибке
-func (c *RPCClient) ExecuteWithRetry(ctx context.Context, operation func(*solanarpc.Client) error) error {
+func (c *Client) ExecuteWithRetry(ctx context.Context, operation func(*solanarpc.Client) error) error {
 	timeoutCtx, cancel := context.WithTimeout(ctx, reqTimeout)
 	defer cancel()
 
@@ -133,7 +133,7 @@ func (c *RPCClient) ExecuteWithRetry(ctx context.Context, operation func(*solana
 }
 
 // GetAccountInfo получает информацию об аккаунте
-func (c *RPCClient) GetAccountInfo(ctx context.Context, pubkey solana.PublicKey) (*solanarpc.GetAccountInfoResult, error) {
+func (c *Client) GetAccountInfo(ctx context.Context, pubkey solana.PublicKey) (*solanarpc.GetAccountInfoResult, error) {
 	var result *solanarpc.GetAccountInfoResult
 	err := c.ExecuteWithRetry(ctx, func(client *solanarpc.Client) error {
 		var err error
@@ -147,7 +147,7 @@ func (c *RPCClient) GetAccountInfo(ctx context.Context, pubkey solana.PublicKey)
 }
 
 // GetLatestBlockhash получает последний blockhash
-func (c *RPCClient) GetLatestBlockhash(ctx context.Context) (*solanarpc.GetLatestBlockhashResult, error) {
+func (c *Client) GetLatestBlockhash(ctx context.Context) (*solanarpc.GetLatestBlockhashResult, error) {
 	var result *solanarpc.GetLatestBlockhashResult
 	err := c.ExecuteWithRetry(ctx, func(client *solanarpc.Client) error {
 		var err error
@@ -158,7 +158,7 @@ func (c *RPCClient) GetLatestBlockhash(ctx context.Context) (*solanarpc.GetLates
 }
 
 // SendTransaction отправляет транзакцию
-func (c *RPCClient) SendTransaction(ctx context.Context, tx *solana.Transaction) (solana.Signature, error) {
+func (c *Client) SendTransaction(ctx context.Context, tx *solana.Transaction) (solana.Signature, error) {
 	var signature solana.Signature
 	err := c.ExecuteWithRetry(ctx, func(client *solanarpc.Client) error {
 		var err error
@@ -172,7 +172,7 @@ func (c *RPCClient) SendTransaction(ctx context.Context, tx *solana.Transaction)
 }
 
 // Добавляем новый метод в RPCClient
-func (c *RPCClient) GetSignatureStatuses(ctx context.Context, signatures ...solana.Signature) (*solanarpc.GetSignatureStatusesResult, error) {
+func (c *Client) GetSignatureStatuses(ctx context.Context, signatures ...solana.Signature) (*solanarpc.GetSignatureStatusesResult, error) {
 	var result *solanarpc.GetSignatureStatusesResult
 	err := c.ExecuteWithRetry(ctx, func(client *solanarpc.Client) error {
 		var err error
@@ -183,10 +183,10 @@ func (c *RPCClient) GetSignatureStatuses(ctx context.Context, signatures ...sola
 }
 
 // Close закрывает клиент
-func (c *RPCClient) Close() {}
+func (c *Client) Close() {}
 
 // GetProgramAccounts получает все аккаунты для заданной программы
-func (c *RPCClient) GetProgramAccounts(
+func (c *Client) GetProgramAccounts(
 	ctx context.Context,
 	program solana.PublicKey,
 	opts solanarpc.GetProgramAccountsOpts,
@@ -220,7 +220,7 @@ func (c *RPCClient) GetProgramAccounts(
 }
 
 // GetTokenAccountBalance получает баланс токен-аккаунта
-func (c *RPCClient) GetTokenAccountBalance(
+func (c *Client) GetTokenAccountBalance(
 	ctx context.Context,
 	account solana.PublicKey,
 	commitment solanarpc.CommitmentType,
@@ -245,7 +245,7 @@ func (c *RPCClient) GetTokenAccountBalance(
 }
 
 // SimulateTransaction симулирует выполнение транзакции
-func (c *RPCClient) SimulateTransaction(
+func (c *Client) SimulateTransaction(
 	ctx context.Context,
 	tx *solana.Transaction,
 ) (*solanarpc.SimulateTransactionResponse, error) {
@@ -268,7 +268,7 @@ func (c *RPCClient) SimulateTransaction(
 	return result, nil
 }
 
-func (c *RPCClient) GetBalance(
+func (c *Client) GetBalance(
 	ctx context.Context,
 	pubkey solana.PublicKey,
 	commitment solanarpc.CommitmentType,
@@ -292,7 +292,7 @@ func (c *RPCClient) GetBalance(
 }
 
 // GetCurrentURL возвращает текущий активный URL
-func (c *RPCClient) GetCurrentURL() string {
+func (c *Client) GetCurrentURL() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 

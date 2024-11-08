@@ -224,6 +224,12 @@ func (s *Sniper) executeTask(ctx context.Context, task *types.Task) error {
 }
 
 func (s *Sniper) validateTokens(ctx context.Context, task *types.Task) (solana.PublicKey, solana.PublicKey, error) {
+	select {
+	case <-ctx.Done():
+		return solana.PublicKey{}, solana.PublicKey{}, ctx.Err() // обработка отмены контекста
+	default:
+	}
+
 	sourceMint, err := solana.PublicKeyFromBase58(task.SourceToken)
 	if err != nil {
 		return solana.PublicKey{}, solana.PublicKey{}, fmt.Errorf("invalid source token: %w", err)
