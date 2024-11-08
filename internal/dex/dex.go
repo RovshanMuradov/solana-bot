@@ -43,9 +43,7 @@ func GetDEXByName(name string, client blockchain.Client, logger *zap.Logger) (ty
 }
 
 // initializeRaydiumDEX инициализирует Raydium DEX
-// internal/dex/dex.go
 func initializeRaydiumDEX(client blockchain.Client, logger *zap.Logger) (types.DEX, error) {
-	// Проверяем и приводим клиент к нужному типу
 	solClient, ok := client.(*solbc.Client)
 	if !ok {
 		return nil, fmt.Errorf("invalid client type")
@@ -64,16 +62,12 @@ func initializeRaydiumDEX(client blockchain.Client, logger *zap.Logger) (types.D
 	}
 
 	// Создаем Raydium клиент
-	raydiumClient, err := raydium.NewRaydiumClient(
-		endpoint,
-		walletKey,
-		logger.Named("raydium"),
-	)
+	raydiumClient, err := raydium.NewRaydiumClient(endpoint, walletKey, logger.Named("raydium"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Raydium client: %w", err)
 	}
 
-	// Создаем конфигурацию снайпера
+	// Создаем конфигурацию
 	config := &raydium.SniperConfig{
 		MaxSlippageBps:   500,        // 5%
 		MinAmountSOL:     100000,     // 0.0001 SOL

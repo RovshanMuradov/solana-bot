@@ -59,14 +59,22 @@ func main() {
 	fmt.Println("=== Loading wallets ===")
 	wallets, err := wallet.LoadWallets("configs/wallets.csv")
 	if err != nil {
-		fmt.Printf("Failed to load wallets: %v\n", err)
 		logger.Fatal("Failed to load wallets", zap.Error(err))
 	}
 	fmt.Printf("Loaded %d wallets\n", len(wallets))
 
-	// Инициализация Solana клиента
+	// Получаем первый кошелек для инициализации клиента
+	var primaryWallet *wallet.Wallet
+	for _, w := range wallets {
+		primaryWallet = w
+		break
+	}
+	if primaryWallet == nil {
+		logger.Fatal("No wallets available")
+	}
+	// Инициализация Solana клиента с приватным ключом
 	fmt.Println("=== Initializing Solana client ===")
-	client, err := solbc.NewClient(cfg.RPCList, logger)
+	client, err := solbc.NewClient(cfg.RPCList, primaryWallet.PrivateKey, logger)
 	if err != nil {
 		logger.Fatal("Failed to initialize Solana client", zap.Error(err))
 	}

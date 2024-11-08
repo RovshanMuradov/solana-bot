@@ -14,19 +14,19 @@ import (
 )
 
 // NewClient создает новый экземпляр клиента с улучшенным мониторингом
-func NewClient(rpcURLs []string, logger *zap.Logger) (*Client, error) {
+func NewClient(rpcURLs []string, privateKey solana.PrivateKey, logger *zap.Logger) (*Client, error) {
 	logger = logger.Named("solana-client")
 
-	// Создаем новый RPC клиент
 	rpcClient, err := rpc.NewClient(rpcURLs, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create RPC client: %w", err)
 	}
 
 	return &Client{
-		rpc:     rpcClient,
-		logger:  logger,
-		metrics: &ClientMetrics{},
+		rpc:        rpcClient,
+		logger:     logger,
+		metrics:    &ClientMetrics{},
+		privateKey: privateKey,
 	}, nil
 }
 
@@ -193,7 +193,8 @@ func (c *Client) GetRPCEndpoint() string {
 
 // GetWalletKey возвращает приватный ключ кошелька
 func (c *Client) GetWalletKey() (solana.PrivateKey, error) {
-	// Реализация получения ключа из конфигурации клиента
-	// Это зависит от того, как у вас хранится ключ
-	return nil, fmt.Errorf("not implemented")
+	if c.privateKey == nil {
+		return nil, fmt.Errorf("private key not set")
+	}
+	return c.privateKey, nil
 }

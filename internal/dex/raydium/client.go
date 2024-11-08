@@ -21,7 +21,11 @@ func NewRaydiumClient(rpcEndpoint string, wallet solana.PrivateKey, logger *zap.
 	logger = logger.Named("raydium-client")
 
 	// Создаем базового клиента через фабрику
-	solClient, err := solbc.NewClient([]string{rpcEndpoint}, logger)
+	solClient, err := solbc.NewClient(
+		[]string{rpcEndpoint},
+		wallet, // Передаем приватный ключ в NewClient
+		logger,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create solana client: %w", err)
 	}
@@ -36,6 +40,47 @@ func NewRaydiumClient(rpcEndpoint string, wallet solana.PrivateKey, logger *zap.
 		priorityFee: 1000,
 		commitment:  solanarpc.CommitmentConfirmed,
 	}, nil
+}
+
+// Добавим также вспомогательный метод для получения публичного ключа
+func (c *Client) GetPublicKey() solana.PublicKey {
+	return c.privateKey.PublicKey()
+}
+
+// Добавим метод для подписания транзакций
+func (c *Client) SignTransaction(tx *solana.Transaction) error {
+	_, err := tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+		if key.Equals(c.GetPublicKey()) {
+			return &c.privateKey
+		}
+		return nil
+	})
+	return err
+}
+
+// Добавим метод для проверки баланса кошелька
+func (c *Client) CheckWalletBalance(ctx context.Context) (uint64, error) {
+	balance, err := c.client.GetBalance(
+		ctx,
+		c.GetPublicKey(),
+		solanarpc.CommitmentConfirmed,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get wallet balance: %w", err)
+	}
+	return balance, nil
+}
+
+// Добавим метод для получения ATA (Associated Token Account)
+func (c *Client) GetAssociatedTokenAccount(mint solana.PublicKey) (solana.PublicKey, error) {
+	ata, _, err := solana.FindAssociatedTokenAddress(
+		c.GetPublicKey(),
+		mint,
+	)
+	if err != nil {
+		return solana.PublicKey{}, fmt.Errorf("failed to find associated token address: %w", err)
+	}
+	return ata, nil
 }
 
 // GetPool получает информацию о пуле по базовому и котируемому токенам

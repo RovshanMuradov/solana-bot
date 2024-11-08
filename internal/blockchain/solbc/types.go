@@ -8,6 +8,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/gagliardetto/solana-go"
 	solanarpc "github.com/gagliardetto/solana-go/rpc"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc/rpc"
@@ -21,10 +22,11 @@ type TokenMetadataCache struct {
 
 // Client представляет основной клиент Solana
 type Client struct {
-	rpc     *rpc.Client
-	adapter *solanarpc.Client
-	logger  *zap.Logger
-	metrics *ClientMetrics
+	rpc        *rpc.Client
+	adapter    *solanarpc.Client
+	logger     *zap.Logger
+	metrics    *ClientMetrics
+	privateKey solana.PrivateKey // Добавляем поле для приватного ключа
 }
 
 type ClientMetrics struct {

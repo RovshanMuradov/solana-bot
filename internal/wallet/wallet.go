@@ -1,3 +1,4 @@
+// inernal/wallet/wallet.go
 package wallet
 
 import (
