@@ -4,6 +4,7 @@ package raydium
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sync"
 
@@ -96,12 +97,12 @@ func (pc *PoolCache) findPoolInJSON(baseMint, quoteMint solana.PublicKey) *Pool 
 	}
 
 	// Функция для поиска в списке пулов
-	findInPoolList := func(pools []PoolJsonInfo) *Pool {
+	findInPoolList := func(pools []PoolJSONInfo) *Pool {
 		for _, info := range pools {
 			if (info.BaseMint == baseMint.String() && info.QuoteMint == quoteMint.String()) ||
 				(info.BaseMint == quoteMint.String() && info.QuoteMint == baseMint.String()) {
 
-				pool := pc.convertJsonToPool(info)
+				pool := pc.convertJSONToPool(info)
 				if pool != nil && pc.isValidPool(pool) {
 					pc.logger.Debug("found valid pool in JSON",
 						zap.String("pool_id", pool.ID.String()),
@@ -123,26 +124,88 @@ func (pc *PoolCache) findPoolInJSON(baseMint, quoteMint solana.PublicKey) *Pool 
 	return findInPoolList(pc.jsonPools.Unofficial)
 }
 
-func (pc *PoolCache) convertJsonToPool(info PoolJsonInfo) *Pool {
+func (pc *PoolCache) convertJSONToPool(info PoolJSONInfo) *Pool {
 	defer func() {
 		if r := recover(); r != nil {
 			pc.logger.Error("failed to convert pool info",
-				zap.String("id", info.Id),
+				zap.String("id", info.ID),
 				zap.Any("panic", r))
 		}
 	}()
 
-	return &Pool{
-		ID:            solana.MustPublicKeyFromBase58(info.Id),
-		Authority:     solana.MustPublicKeyFromBase58(info.Authority),
-		BaseMint:      solana.MustPublicKeyFromBase58(info.BaseMint),
-		QuoteMint:     solana.MustPublicKeyFromBase58(info.QuoteMint),
-		BaseVault:     solana.MustPublicKeyFromBase58(info.BaseVault),
-		QuoteVault:    solana.MustPublicKeyFromBase58(info.QuoteVault),
-		BaseDecimals:  uint8(info.BaseDecimals),
-		QuoteDecimals: uint8(info.QuoteDecimals),
-		Version:       PoolVersion(info.Version),
+	// Создаем безопасные конвертеры для uint8
+	safeUint8 := func(n int) (uint8, error) {
+		if n < 0 || n > math.MaxUint8 {
+			return 0, fmt.Errorf("value %d outside uint8 range", n)
+		}
+		return uint8(n), nil
 	}
+
+	// Безопасно конвертируем decimals
+	baseDecimals, err := safeUint8(info.BaseDecimals)
+	if err != nil {
+		pc.logger.Error("invalid base decimals",
+			zap.String("pool_id", info.ID),
+			zap.Int("decimals", info.BaseDecimals),
+			zap.Error(err))
+		return nil
+	}
+
+	quoteDecimals, err := safeUint8(info.QuoteDecimals)
+	if err != nil {
+		pc.logger.Error("invalid quote decimals",
+			zap.String("pool_id", info.ID),
+			zap.Int("quote_decimals", info.QuoteDecimals),
+			zap.Error(err))
+		return nil
+	}
+
+	// Проверяем версию пула
+	var version PoolVersion
+	switch info.Version {
+	case 3:
+		version = PoolVersionV3
+	case 4:
+		version = PoolVersionV4
+	default:
+		pc.logger.Error("unsupported pool version",
+			zap.String("pool_id", info.ID),
+			zap.Int("version", info.Version))
+		return nil
+	}
+
+	try := func() *Pool {
+		return &Pool{
+			ID:            solana.MustPublicKeyFromBase58(info.ID),
+			Authority:     solana.MustPublicKeyFromBase58(info.Authority),
+			BaseMint:      solana.MustPublicKeyFromBase58(info.BaseMint),
+			QuoteMint:     solana.MustPublicKeyFromBase58(info.QuoteMint),
+			BaseVault:     solana.MustPublicKeyFromBase58(info.BaseVault),
+			QuoteVault:    solana.MustPublicKeyFromBase58(info.QuoteVault),
+			BaseDecimals:  baseDecimals,  // Используем безопасно сконвертированное значение
+			QuoteDecimals: quoteDecimals, // Используем безопасно сконвертированное значение
+			Version:       version,       // Используем проверенную версию
+		}
+	}
+
+	pool := try()
+	if pool == nil {
+		return nil
+	}
+
+	// Дополнительная проверка созданного пула
+	if !pc.isValidPool(pool) {
+		pc.logger.Error("created invalid pool",
+			zap.String("pool_id", info.ID))
+		return nil
+	}
+
+	return pool
+}
+
+// Добавим метод для валидации версии
+func (v PoolVersion) IsValid() bool {
+	return v == PoolVersionV3 || v == PoolVersionV4
 }
 
 func (pc *PoolCache) isValidPool(pool *Pool) bool {

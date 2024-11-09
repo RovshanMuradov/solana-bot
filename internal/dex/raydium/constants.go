@@ -89,6 +89,12 @@ const (
 	MintAccountSize  = 82
 )
 
+// Также добавим константы для версий пула
+const (
+	MinPoolDecimals uint8 = 0
+	MaxPoolDecimals uint8 = 255
+)
+
 func (e *Error) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }

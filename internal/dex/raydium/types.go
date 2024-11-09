@@ -28,8 +28,9 @@ const (
 type PoolVersion uint8
 
 const (
-	PoolVersionV4 PoolVersion = 4
-	PoolVersionV3 PoolVersion = 3
+	PoolVersionUnknown PoolVersion = 0
+	PoolVersionV4      PoolVersion = 4
+	PoolVersionV3      PoolVersion = 3
 )
 
 type Pool struct {
@@ -48,8 +49,8 @@ type Pool struct {
 	State   PoolState // встроенное состояние
 }
 
-type PoolJsonInfo struct {
-	Id            string `json:"id"`
+type PoolJSONInfo struct {
+	ID            string `json:"id"`
 	BaseMint      string `json:"baseMint"`
 	QuoteMint     string `json:"quoteMint"`
 	LpMint        string `json:"lpMint"`
@@ -57,19 +58,19 @@ type PoolJsonInfo struct {
 	QuoteDecimals int    `json:"quoteDecimals"`
 	LpDecimals    int    `json:"lpDecimals"`
 	Version       int    `json:"version"`
-	ProgramId     string `json:"programId"`
+	ProgramID     string `json:"programId"`
 	Authority     string `json:"authority"`
 	BaseVault     string `json:"baseVault"`
 	QuoteVault    string `json:"quoteVault"`
-	MarketId      string `json:"marketId"`
+	MarketID      string `json:"marketId"`
 	OpenOrders    string `json:"openOrders"`
 	TargetOrders  string `json:"targetOrders"`
 	Status        string `json:"status"`
 }
 
 type PoolList struct {
-	Official   []PoolJsonInfo `json:"official"`
-	Unofficial []PoolJsonInfo `json:"unofficial"`
+	Official   []PoolJSONInfo `json:"official"`
+	Unofficial []PoolJSONInfo `json:"unofficial"`
 }
 
 type PoolState struct {
