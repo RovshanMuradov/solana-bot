@@ -1,4 +1,3 @@
-// internal/dex/pumpfun/pumpfun.go
 package pumpfun
 
 import (
@@ -29,7 +28,6 @@ func (p *DEX) PrepareSwapInstruction(
 	_ solana.PublicKey,
 	_ solana.PublicKey,
 	_ solana.PublicKey,
-	_ uint64,
 	_ uint64,
 	_ *zap.Logger,
 ) (solana.Instruction, error) {

@@ -1,0 +1,711 @@
+// internal/dex/raydium/client.go - это пакет, который содержит в себе реализацию клиента для работы с декстером Raydium
+// inernal/dex/raydium/types.go
+package raydium
+
+import (
+	"context"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/gagliardetto/solana-go"
+	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
+	solanarpc "github.com/gagliardetto/solana-go/rpc"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
+	"go.uber.org/zap"
+)
+
+// NewRaydiumClient создает новый экземпляр клиента Raydium с дефолтными настройками
+func NewRaydiumClient(rpcEndpoint string, wallet solana.PrivateKey, logger *zap.Logger) (*Client, error) {
+	logger = logger.Named("raydium-client")
+
+	// Создаем базового клиента через фабрику
+	solClient, err := solbc.NewClient(
+		[]string{rpcEndpoint},
+		wallet,
+		logger,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create solana client: %w", err)
+	}
+
+	// Создаем кэш пулов
+	poolCache := NewPoolCache(logger)
+
+	// Пытаемся загрузить пулы из файла
+	if err := poolCache.LoadPoolsFromFile("mainnet.json"); err != nil {
+		// Логируем ошибку, но не прерываем создание клиента
+		// так как мы всё равно можем искать пулы on-chain
+		logger.Warn("Failed to load pools from mainnet.json",
+			zap.Error(err),
+			zap.String("fallback", "will use on-chain lookup"))
+	} else {
+		logger.Info("Successfully loaded pools from mainnet.json",
+			zap.Int("pools_count", poolCache.GetPoolsCount()))
+	}
+
+	// Создаем клиент с дефолтными настройками
+	client := &Client{
+		client:      solClient,
+		logger:      logger,
+		privateKey:  wallet,
+		timeout:     30 * time.Second,
+		retries:     3,
+		priorityFee: 1000,
+		commitment:  solanarpc.CommitmentConfirmed,
+		poolCache:   poolCache,
+	}
+
+	// Если файл не загружен, пытаемся получить данные о пулах on-chain
+	if !poolCache.IsLoaded() {
+		logger.Info("Starting initial pool sync from chain...")
+		if err := client.syncPoolsFromChain(context.Background()); err != nil {
+			logger.Warn("Failed to sync pools from chain",
+				zap.Error(err),
+				zap.String("impact", "pool discovery may be slower"))
+		}
+	}
+
+	return client, nil
+}
+
+// syncPoolsFromChain получает информацию о пулах из блокчейна
+func (c *Client) syncPoolsFromChain(ctx context.Context) error {
+	c.logger.Info("Starting pool sync from chain")
+
+	accounts, err := c.client.GetProgramAccounts(
+		ctx,
+		RaydiumV4ProgramID,
+		solanarpc.GetProgramAccountsOpts{
+			Filters: []solanarpc.RPCFilter{
+				{
+					DataSize: PoolAccountSize, // Используем константу из constants.go
+				},
+			},
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to get program accounts: %w", err)
+	}
+
+	c.logger.Info("Found pool accounts", zap.Int("count", len(accounts)))
+	validPools := 0
+
+	for _, acc := range accounts {
+		pool, err := c.parsePoolAccount(acc)
+		if err != nil {
+			c.logger.Debug("Failed to parse pool account",
+				zap.String("pubkey", acc.Pubkey.String()),
+				zap.Error(err))
+			continue
+		}
+
+		// Добавляем дополнительную валидацию
+		if !c.poolCache.isValidPool(pool) {
+			c.logger.Debug("Invalid pool data",
+				zap.String("pool_id", pool.ID.String()))
+			continue
+		}
+
+		if err := c.poolCache.AddPool(pool); err != nil {
+			c.logger.Debug("Failed to cache pool",
+				zap.String("pool_id", pool.ID.String()),
+				zap.Error(err))
+		} else {
+			validPools++
+		}
+	}
+
+	c.logger.Info("Pool sync completed",
+		zap.Int("total_pools", len(accounts)),
+		zap.Int("valid_pools", validPools))
+
+	return nil
+}
+
+// Добавим также вспомогательный метод для получения публичного ключа
+func (c *Client) GetPublicKey() solana.PublicKey {
+	return c.privateKey.PublicKey()
+}
+
+// Добавим метод для подписания транзакций
+func (c *Client) SignTransaction(tx *solana.Transaction) error {
+	_, err := tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+		if key.Equals(c.GetPublicKey()) {
+			return &c.privateKey
+		}
+		return nil
+	})
+	return err
+}
+
+// Добавим метод для проверки баланса кошелька
+func (c *Client) CheckWalletBalance(ctx context.Context) (uint64, error) {
+	balance, err := c.client.GetBalance(
+		ctx,
+		c.GetPublicKey(),
+		solanarpc.CommitmentConfirmed,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get wallet balance: %w", err)
+	}
+	return balance, nil
+}
+
+// Добавим метод для получения ATA (Associated Token Account)
+func (c *Client) GetAssociatedTokenAccount(mint solana.PublicKey) (solana.PublicKey, error) {
+	ata, _, err := solana.FindAssociatedTokenAddress(
+		c.GetPublicKey(),
+		mint,
+	)
+	if err != nil {
+		return solana.PublicKey{}, fmt.Errorf("failed to find associated token address: %w", err)
+	}
+	return ata, nil
+}
+
+// GetPool реализует полную логику поиска пула:
+// 1. Проверяет кэш (использует pc.GetPool)
+// 2. Проверяет JSON файл (использует pc.findPoolInJson)
+// 3. Ищет в блокчейне (использует c.findPoolOnChain)
+func (c *Client) GetPool(ctx context.Context, baseMint, quoteMint solana.PublicKey) (*Pool, error) {
+	c.logger.Debug("getting raydium pool info",
+		zap.String("baseMint", baseMint.String()),
+		zap.String("quoteMint", quoteMint.String()),
+	)
+
+	// 1. Сначала проверяем кэш
+	if pool := c.poolCache.GetPool(baseMint, quoteMint); pool != nil {
+		c.logger.Debug("pool found in cache",
+			zap.String("poolId", pool.ID.String()))
+		return pool, nil
+	}
+
+	// 2. Затем ищем в JSON файле
+	if pool := c.poolCache.findPoolInJSON(baseMint, quoteMint); pool != nil {
+		c.logger.Debug("pool found in JSON file",
+			zap.String("poolId", pool.ID.String()))
+		// Сохраняем в кэш для будущих запросов
+		if err := c.poolCache.AddPool(pool); err != nil {
+			c.logger.Warn("failed to cache pool from JSON",
+				zap.String("pool_id", pool.ID.String()),
+				zap.Error(err))
+		}
+		return pool, nil
+	}
+
+	// 3. Если не нашли, ищем в блокчейне
+	c.logger.Debug("pool not found in cache or JSON, searching on-chain")
+	pool, err := c.findPoolOnChain(ctx, baseMint, quoteMint)
+	if err != nil {
+		// Пробуем поменять порядок токенов и поискать снова
+		pool, err = c.findPoolOnChain(ctx, quoteMint, baseMint)
+		if err != nil {
+			return nil, fmt.Errorf("pool not found for tokens %s and %s: %w",
+				baseMint.String(), quoteMint.String(), err)
+		}
+	}
+
+	// Сохраняем найденный пул в кэш
+	if err := c.poolCache.AddPool(pool); err != nil {
+		c.logger.Warn("failed to cache pool from chain",
+			zap.String("pool_id", pool.ID.String()),
+			zap.Error(err))
+	}
+
+	return pool, nil
+}
+
+// parsePoolAccount вынесен в отдельный метод для переиспользования
+func (c *Client) parsePoolAccount(account solanarpc.KeyedAccount) (*Pool, error) {
+	// Получаем authority пула через PDA
+	authority, _, err := solana.FindProgramAddress(
+		[][]byte{[]byte("amm_authority")},
+		RaydiumV4ProgramID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive authority: %w", err)
+	}
+
+	// Парсим данные аккаунта
+	data := account.Account.Data.GetBinary()
+	if len(data) < 388 {
+		return nil, fmt.Errorf("invalid pool account data length: %d", len(data))
+	}
+
+	// Извлекаем mint адреса из данных
+	baseMint := solana.PublicKeyFromBytes(data[8:40])
+	quoteMint := solana.PublicKeyFromBytes(data[40:72])
+
+	pool := &Pool{
+		ID:            account.Pubkey,
+		Authority:     authority,
+		BaseMint:      baseMint,
+		QuoteMint:     quoteMint,
+		BaseVault:     solana.PublicKeyFromBytes(data[72:104]),
+		QuoteVault:    solana.PublicKeyFromBytes(data[104:136]),
+		BaseDecimals:  data[136],
+		QuoteDecimals: data[137],
+		DefaultFeeBps: binary.LittleEndian.Uint16(data[138:140]),
+	}
+
+	c.logger.Debug("parsed pool info",
+		zap.String("poolId", pool.ID.String()),
+		zap.String("baseVault", pool.BaseVault.String()),
+		zap.String("quoteVault", pool.QuoteVault.String()))
+
+	return pool, nil
+}
+
+// GetPoolState получает текущее состояние пула
+func (c *Client) GetPoolState(pool *Pool) (*PoolState, error) {
+	c.logger.Debug("getting pool state",
+		zap.String("poolId", pool.ID.String()),
+	)
+
+	// Получаем данные аккаунта пула
+	account, err := c.client.GetAccountInfo(context.Background(), pool.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pool account: %w", err)
+	}
+
+	// Парсим данные в структуру состояния
+	state := &PoolState{
+		BaseReserve:  binary.LittleEndian.Uint64(account.Value.Data.GetBinary()[64:72]), // пример смещения
+		QuoteReserve: binary.LittleEndian.Uint64(account.Value.Data.GetBinary()[72:80]), // пример смещения
+		Status:       account.Value.Data.GetBinary()[88],                                // пример смещения
+	}
+
+	return state, nil
+}
+
+// TODO:
+// Для полноценной работы нужно добавить:
+// Корректную сериализацию инструкций (согласно протоколу Raydium)
+// Детальную обработку различных типов ошибок
+// Валидацию параметров свапа
+// Обработку разных версий пулов
+// Расчет слиппажа и проверку лимитов
+
+// NewSwapInstructionBuilder создает новый билдер для SwapInstruction
+func NewSwapInstructionBuilder() *SwapInstruction {
+	return &SwapInstruction{
+		AccountMetaSlice: make(solana.AccountMetaSlice, 7), // 7 обязательных аккаунтов
+	}
+}
+
+// Методы для установки параметров, следуя паттерну из SDK
+func (inst *SwapInstruction) SetAmount(amount uint64) *SwapInstruction {
+	inst.Amount = &amount
+	return inst
+}
+
+func (inst *SwapInstruction) SetMinimumOut(minimumOut uint64) *SwapInstruction {
+	inst.MinimumOut = &minimumOut
+	return inst
+}
+
+// Методы для установки аккаунтов
+func (inst *SwapInstruction) SetAccounts(
+	pool solana.PublicKey,
+	authority solana.PublicKey,
+	userWallet solana.PublicKey,
+	sourceToken solana.PublicKey,
+	destToken solana.PublicKey,
+	baseVault solana.PublicKey,
+	quoteVault solana.PublicKey,
+) *SwapInstruction {
+	inst.AccountMetaSlice[0] = solana.Meta(pool).WRITE()
+	inst.AccountMetaSlice[1] = solana.Meta(authority)
+	inst.AccountMetaSlice[2] = solana.Meta(userWallet).WRITE().SIGNER()
+	inst.AccountMetaSlice[3] = solana.Meta(sourceToken).WRITE()
+	inst.AccountMetaSlice[4] = solana.Meta(destToken).WRITE()
+	inst.AccountMetaSlice[5] = solana.Meta(baseVault).WRITE()
+	inst.AccountMetaSlice[6] = solana.Meta(quoteVault).WRITE()
+	return inst
+}
+
+// Добавляем метод для установки направления
+func (inst *SwapInstruction) SetDirection(direction SwapDirection) *SwapInstruction {
+	inst.Direction = &direction
+	return inst
+}
+
+// Validate проверяет все необходимые параметры
+func (inst *SwapInstruction) Validate() error {
+	if inst.Amount == nil {
+		return errors.New("amount is not set")
+	}
+	if inst.MinimumOut == nil {
+		return errors.New("minimumOut is not set")
+	}
+	if inst.Direction == nil {
+		return errors.New("direction is not set")
+	}
+
+	// Проверка всех аккаунтов
+	for i, acc := range inst.AccountMetaSlice {
+		if acc == nil {
+			return fmt.Errorf("account at index %d is not set", i)
+		}
+	}
+	return nil
+}
+
+// ProgramID возвращает ID программы Raydium
+func (i *ExecutableSwapInstruction) ProgramID() solana.PublicKey {
+	return i.programID
+}
+
+// Accounts возвращает список аккаунтов
+func (i *ExecutableSwapInstruction) Accounts() []*solana.AccountMeta {
+	return i.accounts
+}
+
+// Data возвращает сериализованные данные инструкции
+func (i *ExecutableSwapInstruction) Data() ([]byte, error) {
+	return i.data, nil
+}
+
+// Build создает инструкцию
+func (inst *SwapInstruction) Build() (solana.Instruction, error) {
+	if err := inst.Validate(); err != nil {
+		return nil, err
+	}
+
+	// Сериализация данных инструкции
+	data := make([]byte, 17) // 16 байт для amount и minimumOut + 1 байт для direction
+	binary.LittleEndian.PutUint64(data[0:8], *inst.Amount)
+	binary.LittleEndian.PutUint64(data[8:16], *inst.MinimumOut)
+	if *inst.Direction == SwapDirectionIn {
+		data[16] = 0
+	} else {
+		data[16] = 1
+	}
+
+	instruction := &ExecutableSwapInstruction{
+		programID: RaydiumV4ProgramID,
+		accounts:  inst.AccountMetaSlice,
+		data:      data,
+	}
+
+	return instruction, nil
+}
+
+// CreateSwapInstructions создает инструкции для свапа
+func (c *Client) CreateSwapInstructions(params *SwapParams) ([]solana.Instruction, error) {
+	if err := validateSwapParams(params); err != nil {
+		return nil, err
+	}
+
+	instructions := make([]solana.Instruction, 0)
+
+	// Добавляем инструкцию compute budget если указан приоритетный fee
+	if params.PriorityFeeLamports > 0 {
+		computeLimitIx, err := computebudget.NewSetComputeUnitLimitInstructionBuilder().
+			SetUnits(MaxComputeUnitLimit).
+			ValidateAndBuild()
+		if err != nil {
+			return nil, fmt.Errorf("failed to build compute limit instruction: %w", err)
+		}
+		instructions = append(instructions, computeLimitIx)
+
+		computePriceIx, err := computebudget.NewSetComputeUnitPriceInstructionBuilder().
+			SetMicroLamports(params.PriorityFeeLamports).
+			ValidateAndBuild()
+		if err != nil {
+			return nil, fmt.Errorf("failed to build compute price instruction: %w", err)
+		}
+		instructions = append(instructions, computePriceIx)
+	}
+
+	// Создаем инструкцию свапа
+	swapIx, err := NewSwapInstructionBuilder().
+		SetAmount(params.AmountIn).
+		SetMinimumOut(params.MinAmountOut).
+		SetAccounts(
+			params.Pool.ID,
+			params.Pool.Authority,
+			params.UserWallet,
+			params.SourceTokenAccount,
+			params.DestinationTokenAccount,
+			params.Pool.BaseVault,
+			params.Pool.QuoteVault,
+		).
+		Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build swap instruction: %w", err)
+	}
+
+	instructions = append(instructions, swapIx)
+
+	return instructions, nil
+}
+
+// validateSwapParams проверяет входные параметры
+func validateSwapParams(params *SwapParams) error {
+	if params == nil {
+		return errors.New("params cannot be nil")
+	}
+	if params.Pool == nil {
+		return errors.New("pool cannot be nil")
+	}
+	if params.UserWallet.IsZero() {
+		return errors.New("user wallet is required")
+	}
+	if params.SourceTokenAccount.IsZero() {
+		return errors.New("source token account is required")
+	}
+	if params.DestinationTokenAccount.IsZero() {
+		return errors.New("destination token account is required")
+	}
+	if params.AmountIn == 0 {
+		return errors.New("amount in must be greater than 0")
+	}
+	if params.MinAmountOut == 0 {
+		return errors.New("minimum amount out must be greater than 0")
+	}
+	return nil
+}
+
+// SimulateSwap выполняет симуляцию транзакции свапа
+func (c *Client) SimulateSwap(ctx context.Context, params *SwapParams) error {
+	c.logger.Debug("simulating swap transaction",
+		zap.String("userWallet", params.UserWallet.String()),
+		zap.Uint64("amountIn", params.AmountIn),
+		zap.Uint64("minAmountOut", params.MinAmountOut),
+		zap.String("pool", params.Pool.ID.String()),
+	)
+
+	// Получаем инструкции для свапа
+	instructions, err := c.CreateSwapInstructions(params)
+	if err != nil {
+		return fmt.Errorf("failed to create swap instructions: %w", err)
+	}
+
+	// Получаем последний блокхеш
+	recent, err := c.client.GetRecentBlockhash(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get recent blockhash: %w", err)
+	}
+
+	// Создаем транзакцию
+	tx, err := solana.NewTransaction(
+		instructions,
+		recent,
+		solana.TransactionPayer(params.UserWallet),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create transaction: %w", err)
+	}
+
+	// Подписываем транзакцию если есть приватный ключ
+	if params.PrivateKey != nil {
+		signatures, err := tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+			if key.Equals(params.UserWallet) {
+				return params.PrivateKey
+			}
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("failed to sign transaction: %w", err)
+		}
+
+		// Опционально: можно добавить логирование подписей
+		c.logger.Debug("transaction signed",
+			zap.Int("signatures_count", len(signatures)),
+			zap.String("first_signature", signatures[0].String()),
+		)
+	}
+
+	// Симулируем транзакцию
+	simResult, err := c.client.SimulateTransaction(ctx, tx)
+	if err != nil {
+		return fmt.Errorf("failed to simulate transaction: %w", err)
+	}
+
+	// Проверяем результат симуляции
+	if simResult.Err != nil {
+		return fmt.Errorf("simulation failed: %s", simResult.Err)
+	}
+
+	// Анализируем логи симуляции
+	for _, log := range simResult.Logs {
+		c.logger.Debug("simulation log", zap.String("log", log))
+	}
+
+	c.logger.Info("swap simulation successful",
+		zap.Uint64("unitsConsumed", simResult.UnitsConsumed),
+		zap.String("sourceToken", params.SourceTokenAccount.String()),
+		zap.String("destinationToken", params.DestinationTokenAccount.String()),
+		zap.Uint64("priorityFee", params.PriorityFeeLamports),
+	)
+
+	return nil
+}
+
+// TODO:
+// Основные улучшения, которые можно добавить:
+// Retry логика для случаев временных сбоев
+// Более детальная валидация результатов транзакции
+// Механизм отмены операции по таймауту
+// Сохранение истории транзакций
+// Метрики выполнения свапов
+
+// ExecuteSwap выполняет свап и возвращает signature транзакции
+func (c *Client) ExecuteSwap(params *SwapParams) (string, error) {
+	c.logger.Debug("starting swap execution",
+		zap.String("userWallet", params.UserWallet.String()),
+		zap.Uint64("amountIn", params.AmountIn),
+		zap.Uint64("minAmountOut", params.MinAmountOut),
+		zap.String("pool", params.Pool.ID.String()),
+		zap.Uint64("priorityFee", params.PriorityFeeLamports),
+	)
+
+	// Базовая валидация параметров
+	if err := validateSwapParams(params); err != nil {
+		return "", fmt.Errorf("invalid swap parameters: %w", err)
+	}
+
+	// Проверяем баланс кошелька
+	ctx := context.Background()
+	balance, err := c.client.GetBalance(ctx, params.UserWallet, solanarpc.CommitmentConfirmed)
+	if err != nil {
+		return "", fmt.Errorf("failed to get wallet balance: %w", err)
+	}
+
+	// Учитываем приоритетную комиссию и обычную комиссию транзакции
+	requiredBalance := params.AmountIn + params.PriorityFeeLamports + 5000
+	if balance < requiredBalance {
+		return "", fmt.Errorf("insufficient balance: required %d, got %d", requiredBalance, balance)
+	}
+
+	// Создаем все необходимые инструкции для свапа
+	instructions, err := c.CreateSwapInstructions(params)
+	if err != nil {
+		return "", fmt.Errorf("failed to create swap instructions: %w", err)
+	}
+
+	// Получаем последний блокхеш
+	recent, err := c.client.GetRecentBlockhash(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get recent blockhash: %w", err)
+	}
+
+	// Создаем транзакцию
+	tx, err := solana.NewTransaction(
+		instructions,
+		recent,
+		solana.TransactionPayer(params.UserWallet),
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to create transaction: %w", err)
+	}
+
+	// Подписываем транзакцию
+	_, err = tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+		if key.Equals(params.UserWallet) {
+			if params.PrivateKey != nil {
+				return params.PrivateKey
+			}
+			return &c.privateKey
+		}
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to sign transaction: %w", err)
+	}
+
+	// Отправляем транзакцию
+	sig, err := c.client.SendTransactionWithOpts(ctx, tx, blockchain.TransactionOptions{
+		SkipPreflight:       true,
+		PreflightCommitment: c.commitment, // используем commitment напрямую из клиента
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to send transaction: %w", err)
+	}
+
+	c.logger.Info("swap executed successfully",
+		zap.String("signature", sig.String()),
+		zap.String("explorer", fmt.Sprintf("https://explorer.solana.com/tx/%s", sig.String())),
+	)
+
+	return sig.String(), nil
+}
+
+// TODO: этот метод нигде пока не используется, надо добавить его в код
+// logUpdatedBalances вспомогательный метод для логирования балансов после свапа
+// func (c *Client) logUpdatedBalances(params *SwapParams) error {
+// 	ctx := context.Background()
+
+// 	// Получаем баланс SOL
+// 	solBalance, err := c.client.GetBalance(
+// 		ctx,
+// 		params.UserWallet,
+// 		solanarpc.CommitmentConfirmed,
+// 	)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to get SOL balance: %w", err)
+// 	}
+
+// 	// Получаем баланс токена
+// 	tokenBalance, err := c.client.GetTokenAccountBalance(
+// 		ctx,
+// 		params.DestinationTokenAccount,
+// 		solanarpc.CommitmentConfirmed,
+// 	)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to get token balance: %w", err)
+// 	}
+
+// 	c.logger.Info("updated balances",
+// 		zap.Float64("solBalance", float64(solBalance)/float64(solana.LAMPORTS_PER_SOL)),
+// 		zap.String("tokenBalance", tokenBalance.Value.UiAmountString),
+// 	)
+
+// 	return nil
+// }
+
+// GetBaseClient возвращает базовый blockchain.Client
+func (c *Client) GetBaseClient() blockchain.Client {
+	return c.client
+}
+
+// findPoolOnChain используется для поиска пула в блокчейне
+func (c *Client) findPoolOnChain(ctx context.Context, baseMint, quoteMint solana.PublicKey) (*Pool, error) {
+	accounts, err := c.client.GetProgramAccounts(
+		ctx,
+		RaydiumV4ProgramID,
+		solanarpc.GetProgramAccountsOpts{
+			Filters: []solanarpc.RPCFilter{
+				{
+					DataSize: 388,
+				},
+				{
+					Memcmp: &solanarpc.RPCFilterMemcmp{
+						Offset: 8,
+						Bytes:  baseMint.Bytes(),
+					},
+				},
+				{
+					Memcmp: &solanarpc.RPCFilterMemcmp{
+						Offset: 40,
+						Bytes:  quoteMint.Bytes(),
+					},
+				},
+			},
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get program accounts: %w", err)
+	}
+
+	if len(accounts) == 0 {
+		return nil, fmt.Errorf("pool not found for tokens %s and %s",
+			baseMint.String(), quoteMint.String())
+	}
+
+	return c.parsePoolAccount(accounts[0])
+}

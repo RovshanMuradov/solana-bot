@@ -1,4 +1,5 @@
-package solana
+// internal/blockchain/solbc/token_metadata.go
+package solbc
 
 import (
 	"context"
@@ -6,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/gagliardetto/solana-go"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"go.uber.org/zap"
 )
 
@@ -14,12 +16,6 @@ type TokenMetadata struct {
 	Decimals uint8
 	Symbol   string
 	Name     string
-}
-
-// TokenMetadataCache кэширует метаданные токенов
-type TokenMetadataCache struct {
-	cache  sync.Map
-	logger *zap.Logger
 }
 
 func NewTokenMetadataCache(logger *zap.Logger) *TokenMetadataCache {
@@ -31,7 +27,7 @@ func NewTokenMetadataCache(logger *zap.Logger) *TokenMetadataCache {
 // GetTokenMetadata получает метаданные токена с кэшированием
 func (c *TokenMetadataCache) GetTokenMetadata(
 	ctx context.Context,
-	client *Client,
+	client blockchain.Client,
 	mint solana.PublicKey,
 ) (*TokenMetadata, error) {
 	// Проверяем кэш
@@ -61,29 +57,30 @@ func (c *TokenMetadataCache) GetTokenMetadata(
 
 	// Добавляем информацию для известных токенов
 	switch mint.String() {
-	case "So11111111111111111111111111111111111111112":
+	case "So11111111111111111111111111111111111111112": // wSOL
 		metadata.Symbol = "SOL"
 		metadata.Name = "Wrapped SOL"
-	case "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v":
+	case "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": // USDC
 		metadata.Symbol = "USDC"
 		metadata.Name = "USD Coin"
 	}
 
-	// Логируем найденные метаданные
-	c.logger.Debug("Token metadata retrieved",
-		zap.String("mint", mint.String()),
-		zap.Uint8("decimals", metadata.Decimals))
-
 	// Сохраняем в кэш
 	c.cache.Store(mint.String(), metadata)
+
+	c.logger.Debug("Token metadata retrieved",
+		zap.String("mint", mint.String()),
+		zap.Uint8("decimals", metadata.Decimals),
+		zap.String("symbol", metadata.Symbol),
+		zap.String("name", metadata.Name))
 
 	return metadata, nil
 }
 
-// Добавляем метод для получения метаданных нескольких токенов
+// GetMultipleTokenMetadata получает метаданные нескольких токенов параллельно
 func (c *TokenMetadataCache) GetMultipleTokenMetadata(
 	ctx context.Context,
-	client *Client,
+	client blockchain.Client,
 	mints []solana.PublicKey,
 ) (map[string]*TokenMetadata, error) {
 	result := make(map[string]*TokenMetadata)

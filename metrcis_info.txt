@@ -1,0 +1,779 @@
+=== Содержимое файла: ./internal/utils/logger/config.go ===
+// internal/utils/logger/config.go
+package logger
+
+type Config struct {
+	LogFile     string
+	MaxSize     int  // мегабайты
+	MaxAge      int  // дни
+	MaxBackups  int  // количество файлов
+	Compress    bool // сжимать ротированные файлы
+	Development bool
+}
+
+// DefaultConfig возвращает конфигурацию по умолчанию
+func DefaultConfig() *Config {
+	return &Config{
+		LogFile:     "bot.log",
+		MaxSize:     100,  // 100 MB
+		MaxAge:      7,    // 7 дней
+		MaxBackups:  3,    // 3 файла
+		Compress:    true, // сжимать старые логи
+		Development: false,
+	}
+}
+
+
+=== Содержимое файла: ./internal/utils/logger/logger.go ===
+// internal/utils/logger/logger.go
+package logger
+
+import (
+	"os"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/rovshanmuradov/solana-bot/internal/dex/raydium"
+	"github.com/rovshanmuradov/solana-bot/internal/types"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"gopkg.in/natefinch/lumberjack.v2"
+)
+
+// Logger расширяет функционал zap.Logger
+type Logger struct {
+	*zap.Logger
+	config *Config
+}
+
+// Для удобства добавим константы статусов трейда
+const (
+	TradePending   = "pending"
+	TradeCompleted = "completed"
+	TradeFailed    = "failed"
+	TradeCancelled = "cancelled"
+)
+
+// New создает новый логгер с расширенной функциональностью
+func New(cfg *Config) (*Logger, error) {
+	if cfg == nil {
+		cfg = DefaultConfig()
+	}
+
+	// Настройка ротации логов
+	logRotator := &lumberjack.Logger{
+		Filename:   cfg.LogFile,
+		MaxSize:    cfg.MaxSize,
+		MaxBackups: cfg.MaxBackups,
+		MaxAge:     cfg.MaxAge,
+		Compress:   cfg.Compress,
+	}
+
+	// Базовая конфигурация энкодера
+	encoderConfig := zap.NewProductionEncoderConfig()
+	if cfg.Development {
+		encoderConfig = zap.NewDevelopmentEncoderConfig()
+	}
+
+	// Улучшаем конфигурацию энкодера
+	encoderConfig.TimeKey = "timestamp"
+	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	encoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
+	encoderConfig.EncodeDuration = zapcore.StringDurationEncoder
+	encoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
+
+	// Создаем энкодеры для консоли и файла
+	consoleEncoder := zapcore.NewConsoleEncoder(encoderConfig)
+	fileEncoder := zapcore.NewJSONEncoder(encoderConfig)
+
+	// Определяем уровень логирования
+	var level zapcore.Level
+	if cfg.Development {
+		level = zapcore.DebugLevel
+	} else {
+		level = zapcore.InfoLevel
+	}
+
+	// Создаем core с поддержкой нескольких writers
+	core := zapcore.NewTee(
+		zapcore.NewCore(consoleEncoder, zapcore.AddSync(os.Stdout), level),
+		zapcore.NewCore(fileEncoder, zapcore.AddSync(logRotator), level),
+	)
+
+	// Создаем логгер с дополнительными опциями
+	logger := &Logger{
+		Logger: zap.New(core,
+			zap.AddCaller(),
+			zap.AddStacktrace(zapcore.ErrorLevel),
+			zap.AddCallerSkip(1),
+		),
+		config: cfg,
+	}
+
+	return logger, nil
+}
+
+// WithTransaction добавляет контекст транзакции к логам
+func (l *Logger) WithTransaction(txHash string) *zap.Logger {
+	return l.With(
+		zap.String("tx_hash", txHash),
+		zap.Time("tx_time", time.Now().UTC()),
+	)
+}
+
+// WithOperation создает логгер для конкретной операции
+func (l *Logger) WithOperation(operation string) *zap.Logger {
+	return l.With(
+		zap.String("operation", operation),
+		zap.String("correlation_id", uuid.New().String()),
+		zap.Time("start_time", time.Now().UTC()),
+	)
+}
+
+// WithComponent добавляет информацию о компоненте системы
+func (l *Logger) WithComponent(component string) *zap.Logger {
+	return l.With(zap.String("component", component))
+}
+
+// WithUser добавляет информацию о пользователе/wallet
+func (l *Logger) WithUser(userID string) *zap.Logger {
+	return l.With(zap.String("user_id", userID))
+}
+
+// LogError логирует ошибку с дополнительным контекстом
+func (l *Logger) LogError(msg string, err error, fields ...zap.Field) {
+	if err != nil {
+		fields = append(fields, zap.Error(err))
+	}
+	l.Error(msg, fields...)
+}
+
+// Sync реализует безопасный вызов Sync
+func (l *Logger) Sync() error {
+	err := l.Logger.Sync()
+	if err != nil && err.Error() == "sync /dev/stdout: invalid argument" {
+		return nil
+	}
+	return err
+}
+
+// WithTask логирует информацию о задаче
+func (l *Logger) WithTask(task *types.Task) *zap.Logger {
+	return l.With(
+		zap.String("task_name", task.TaskName),
+		zap.String("dex", task.DEXName),
+		zap.String("source_token", task.SourceToken),
+		zap.String("target_token", task.TargetToken),
+		zap.Float64("amount_in", task.AmountIn),
+		zap.Float64("min_amount_out", task.MinAmountOut),
+		zap.Float64("priority_fee", task.PriorityFee),
+	)
+}
+
+// WithPool логирует информацию о пуле
+func (l *Logger) WithPool(pool *raydium.Pool) *zap.Logger {
+	return l.With(
+		zap.String("pool_id", pool.AmmID),
+		zap.String("program_id", pool.AmmProgramID),
+		zap.String("pool_token_a", pool.PoolCoinTokenAccount),
+		zap.String("pool_token_b", pool.PoolPcTokenAccount),
+	)
+}
+
+// TrackPerformance отслеживает производительность операции
+func (l *Logger) TrackPerformance(operation string) (end func()) {
+	start := time.Now()
+	opLogger := l.WithOperation(operation)
+
+	opLogger.Debug("Starting operation")
+
+	return func() {
+		duration := time.Since(start)
+		opLogger.Debug("Operation completed",
+			zap.Duration("duration", duration),
+			zap.Float64("duration_ms", float64(duration.Microseconds())/1000),
+		)
+	}
+}
+
+
+=== Содержимое файла: ./internal/utils/logger.go ===
+// internal/utils/logger.go
+package utils
+
+import (
+	"os"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+)
+
+func InitLogger(debug bool, logFile string) (*zap.Logger, error) {
+	config := zap.NewProductionConfig()
+	if debug {
+		config = zap.NewDevelopmentConfig()
+	}
+
+	// Настройка вывода в консоль и файл
+	consoleEncoder := zapcore.NewConsoleEncoder(config.EncoderConfig)
+	fileEncoder := zapcore.NewJSONEncoder(config.EncoderConfig)
+
+	// Открытие файла для логирования
+	logFileHandle, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, err
+	}
+
+	core := zapcore.NewTee(
+		zapcore.NewCore(consoleEncoder, zapcore.AddSync(os.Stdout), config.Level),
+		zapcore.NewCore(fileEncoder, zapcore.AddSync(logFileHandle), config.Level),
+	)
+
+	logger := zap.New(core)
+	return logger, nil
+}
+
+
+=== Содержимое файла: ./internal/utils/metrics/collector.go ===
+// internal/utils/metrics/collector.go
+package metrics
+
+import (
+	"sync"
+
+	"github.com/prometheus/client_golang/prometheus"
+)
+
+// MetricType представляет тип метрики
+type MetricType string
+
+const (
+	TransactionCounterType  MetricType = "transaction_counter"
+	TransactionDurationType MetricType = "transaction_duration"
+	RPCLatencyType          MetricType = "rpc_latency"
+	WebsocketConnectionType MetricType = "websocket_connections"
+	PoolLiquidityType       MetricType = "pool_liquidity"
+)
+
+// Collector управляет набором метрик
+type Collector struct {
+	metrics sync.Map
+}
+
+// NewCollector создает новый экземпляр коллектора метрик
+func NewCollector() *Collector {
+	c := &Collector{}
+	c.initializeMetrics()
+	return c
+}
+
+func (c *Collector) initializeMetrics() {
+	metricsMap := map[MetricType]prometheus.Collector{
+		TransactionCounterType:  transactionCounter,
+		TransactionDurationType: transactionDuration,
+		RPCLatencyType:          rpcLatency,
+		WebsocketConnectionType: websocketConnections,
+		PoolLiquidityType:       poolLiquidity,
+	}
+
+	for metricType, metric := range metricsMap {
+		c.metrics.Store(metricType, metric)
+		prometheus.MustRegister(metric)
+	}
+}
+
+// Reset сбрасывает все метрики (полезно для тестирования)
+func (c *Collector) Reset() {
+	c.metrics.Range(func(_, value interface{}) bool {
+		switch m := value.(type) {
+		case *prometheus.CounterVec:
+			m.Reset()
+		case *prometheus.GaugeVec:
+			m.Reset()
+		case *prometheus.HistogramVec:
+			m.Reset()
+		}
+		return true
+	})
+}
+
+// Определение метрик с улучшенными лейблами
+var (
+	transactionCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "solana_bot",
+			Name:      "transactions_total",
+			Help:      "Total number of transactions processed",
+		},
+		[]string{"status", "type", "dex"},
+	)
+
+	transactionDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "solana_bot",
+			Name:      "transaction_duration_seconds",
+			Help:      "Transaction duration in seconds",
+			Buckets:   prometheus.ExponentialBuckets(0.01, 2, 10),
+		},
+		[]string{"type", "dex"},
+	)
+
+	rpcLatency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "solana_bot",
+			Name:      "rpc_latency_seconds",
+			Help:      "RPC request latency in seconds",
+			Buckets:   prometheus.ExponentialBuckets(0.001, 2, 10),
+		},
+		[]string{"method", "endpoint"},
+	)
+
+	websocketConnections = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "solana_bot",
+			Name:      "websocket_connections",
+			Help:      "Number of active websocket connections",
+		},
+		[]string{"status"},
+	)
+
+	poolLiquidity = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "solana_bot",
+			Name:      "pool_liquidity",
+			Help:      "Current liquidity in pools",
+		},
+		[]string{"pool_id", "token"},
+	)
+)
+
+
+=== Содержимое файла: ./internal/utils/metrics/metrics.go ===
+// internal/utils/metrics/metrics.go
+package metrics
+
+import (
+	"context"
+	"time"
+)
+
+// RecordTransaction записывает метрики транзакции с учетом контекста
+func (c *Collector) RecordTransaction(ctx context.Context, txType, dex string, duration time.Duration, success bool) {
+	// Проверяем, не отменен ли контекст
+	select {
+	case <-ctx.Done():
+		// Если контекст отменен, записываем метрику с пометкой cancelled
+		transactionCounter.WithLabelValues("cancelled", txType, dex).Inc()
+		return
+	default:
+		// Продолжаем обычное выполнение
+		status := "success"
+		if !success {
+			status = "failed"
+		}
+
+		// Записываем метрики транзакции
+		transactionCounter.WithLabelValues(status, txType, dex).Inc()
+		transactionDuration.WithLabelValues(txType, dex).Observe(duration.Seconds())
+	}
+}
+
+// RecordRPCLatency записывает метрики RPC-запроса
+func (c *Collector) RecordRPCLatency(method, endpoint string, duration time.Duration) {
+	rpcLatency.WithLabelValues(method, endpoint).Observe(duration.Seconds())
+}
+
+// UpdateWebsocketConnections обновляет метрики веб-сокет соединений
+func (c *Collector) UpdateWebsocketConnections(active int, status string) {
+	websocketConnections.WithLabelValues(status).Set(float64(active))
+}
+
+// UpdatePoolLiquidity обновляет метрики пула
+func (c *Collector) UpdatePoolLiquidity(poolID, token string, amount float64) {
+	poolLiquidity.WithLabelValues(poolID, token).Set(amount)
+}
+
+
+=== Содержимое файла: ./internal/utils/metrics.go ===
+// internal/utils/metrics.go
+package utils
+
+import (
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+)
+
+var (
+	transactionCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "solana_bot_transactions_total",
+			Help: "Total number of transactions sent",
+		},
+		[]string{"status"},
+	)
+	transactionDuration = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "solana_bot_transaction_duration_seconds",
+			Help:    "Duration of transaction preparation and sending",
+			Buckets: prometheus.LinearBuckets(0, 0.1, 10),
+		},
+	)
+)
+
+func init() {
+	prometheus.MustRegister(transactionCounter)
+	prometheus.MustRegister(transactionDuration)
+}
+
+func MeasureTransactionDuration(f func() error) error {
+	start := time.Now()
+	err := f()
+	duration := time.Since(start).Seconds()
+	transactionDuration.Observe(duration)
+	if err != nil {
+		transactionCounter.WithLabelValues("failed").Inc()
+	} else {
+		transactionCounter.WithLabelValues("success").Inc()
+	}
+	return err
+}
+
+// internal/blockchain/solbc/transaction/manager.go
+package transaction
+
+import (
+	"context"
+	"time"
+
+	"github.com/cenkalti/backoff/v4"
+	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
+	"go.uber.org/zap"
+)
+
+type Manager struct {
+	client    *rpc.Client
+	logger    *zap.Logger
+	config    Config
+	validator *Validator
+	monitor   *Monitor
+	metrics   *Metrics
+}
+
+func NewManager(client *rpc.Client, logger *zap.Logger, config Config) *Manager {
+	return &Manager{
+		client:    client,
+		logger:    logger.Named("tx-manager"),
+		config:    config,
+		validator: NewValidator(logger),
+		monitor:   NewMonitor(client, logger, config),
+		metrics:   NewMetrics(),
+	}
+}
+
+func (tm *Manager) SendAndConfirm(ctx context.Context, tx *solana.Transaction) (*Status, error) {
+	defer tm.metrics.TrackTransaction(time.Now())
+
+	if err := tm.validator.ValidateTransaction(tx); err != nil {
+		tm.logger.Error("Transaction validation failed", zap.Error(err))
+		return nil, err
+	}
+
+	signature, err := tm.sendWithRetry(ctx, tx)
+	if err != nil {
+		tm.logger.Error("Failed to send transaction", zap.Error(err))
+		return nil, err
+	}
+
+	status, err := tm.monitor.AwaitConfirmation(ctx, signature)
+	if err != nil {
+		tm.logger.Error("Transaction confirmation failed",
+			zap.String("signature", signature.String()),
+			zap.Error(err))
+		return nil, err
+	}
+
+	return status, nil
+}
+
+func (tm *Manager) sendWithRetry(ctx context.Context, tx *solana.Transaction) (solana.Signature, error) {
+	var signature solana.Signature
+	operation := func() error {
+		var err error
+		signature, err = tm.client.SendTransactionWithOpts(ctx, tx, rpc.TransactionOpts{
+			SkipPreflight:       tm.config.SkipPreflight,
+			PreflightCommitment: tm.config.Commitment,
+		})
+		if err != nil {
+			tm.metrics.failureCounter.Inc()
+			tm.logger.Warn("Retrying transaction send", zap.Error(err))
+			return err
+		}
+		tm.metrics.successCounter.Inc()
+		return nil
+	}
+
+	err := backoff.Retry(operation, backoff.WithContext(backoff.NewExponentialBackOff(), ctx))
+	if err != nil {
+		return solana.Signature{}, err
+	}
+	return signature, nil
+}
+// internal/blockchain/solbc/transaction/metrics.go
+package transaction
+
+import (
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+)
+
+type Metrics struct {
+	successCounter    prometheus.Counter
+	failureCounter    prometheus.Counter
+	durationHistogram prometheus.Histogram
+}
+
+func NewMetrics() *Metrics {
+	successCounter := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "solana_tx_success_total",
+		Help: "Total number of successful transactions",
+	})
+	failureCounter := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "solana_tx_failure_total",
+		Help: "Total number of failed transactions",
+	})
+	durationHistogram := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "solana_tx_duration_seconds",
+		Help:    "Transaction duration in seconds",
+		Buckets: prometheus.LinearBuckets(0, 0.1, 10),
+	})
+
+	prometheus.MustRegister(successCounter, failureCounter, durationHistogram)
+
+	return &Metrics{
+		successCounter:    successCounter,
+		failureCounter:    failureCounter,
+		durationHistogram: durationHistogram,
+	}
+}
+
+func (tm *Metrics) TrackTransaction(start time.Time) {
+	tm.durationHistogram.Observe(time.Since(start).Seconds())
+}
+// internal/blockchain/solbc/transaction/monitor.go
+package transaction
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
+	"go.uber.org/zap"
+)
+
+type Monitor struct {
+	client  *rpc.Client
+	logger  *zap.Logger
+	config  Config
+	metrics *Metrics
+}
+
+func NewMonitor(client *rpc.Client, logger *zap.Logger, config Config) *Monitor {
+	if config.MinConfirmations == 0 {
+		config.MinConfirmations = 1
+	}
+	return &Monitor{
+		client:  client,
+		logger:  logger.Named("tx-monitor"),
+		config:  config,
+		metrics: NewMetrics(),
+	}
+}
+
+// checkConfirmation проверяет, подтверждена ли транзакция
+func (m *Monitor) checkConfirmation(ctx context.Context, signature solana.Signature) (bool, error) {
+	response, err := m.client.GetSignatureStatuses(ctx, false, signature)
+	if err != nil {
+		return false, fmt.Errorf("failed to get signature status: %w", err)
+	}
+
+	if len(response.Value) == 0 || response.Value[0] == nil {
+		return false, nil
+	}
+
+	status := response.Value[0]
+
+	if status.Confirmations != nil && *status.Confirmations >= uint64(m.config.MinConfirmations) {
+		return true, nil
+	}
+
+	return status.ConfirmationStatus == rpc.ConfirmationStatusFinalized, nil
+}
+
+func (m *Monitor) GetTransactionStatus(ctx context.Context, signature solana.Signature) (*Status, error) {
+	response, err := m.client.GetSignatureStatuses(ctx, false, signature)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get transaction status: %w", err)
+	}
+
+	if response == nil || len(response.Value) == 0 || response.Value[0] == nil {
+		return &Status{
+			Signature: signature.String(),
+			Status:    "pending",
+			Timestamp: time.Now(),
+		}, nil
+	}
+
+	status := response.Value[0]
+	txStatus := &Status{
+		Signature: signature.String(),
+		Timestamp: time.Now(),
+		Slot:      status.Slot,
+	}
+
+	if status.Confirmations != nil {
+		txStatus.Confirmations = *status.Confirmations
+	}
+
+	switch status.ConfirmationStatus {
+	case rpc.ConfirmationStatusFinalized:
+		txStatus.Status = "finalized"
+	case rpc.ConfirmationStatusConfirmed:
+		txStatus.Status = "confirmed"
+	default:
+		txStatus.Status = "pending"
+	}
+
+	if status.Err != nil {
+		errMsg := fmt.Sprintf("%v", status.Err)
+		txStatus.Error = errMsg
+		txStatus.Status = "failed"
+	}
+
+	return txStatus, nil
+}
+
+func (m *Monitor) AwaitConfirmation(ctx context.Context, signature solana.Signature) (*Status, error) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	deadline := time.After(m.config.ConfirmationTime)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-deadline:
+			return nil, ErrConfirmationTimeout
+		case <-ticker.C:
+			// Сначала проверяем базовое подтверждение
+			confirmed, err := m.checkConfirmation(ctx, signature)
+			if err != nil {
+				m.logger.Warn("Confirmation check failed", zap.Error(err))
+				continue
+			}
+
+			// Если транзакция подтверждена, получаем полный статус
+			if confirmed {
+				return m.GetTransactionStatus(ctx, signature)
+			}
+		}
+	}
+}
+// internal/blockchain/solbc/transaction/types.go
+package transaction
+
+import (
+	"errors"
+	"time"
+
+	"github.com/gagliardetto/solana-go/rpc"
+)
+
+var (
+	ErrConfirmationTimeout = errors.New("transaction confirmation timeout")
+	ErrInvalidSignature    = errors.New("invalid transaction signature")
+	ErrInvalidBlockhash    = errors.New("invalid blockhash")
+	ErrInvalidInstruction  = errors.New("invalid instruction")
+)
+
+type Config struct {
+	MaxRetries       int
+	RetryDelay       time.Duration
+	ConfirmationTime time.Duration
+	PriorityFee      uint64
+	ComputeUnits     uint32
+	SkipPreflight    bool
+	Commitment       rpc.CommitmentType
+	MinConfirmations uint8
+}
+
+type Status struct {
+	Signature     string
+	Status        string
+	Confirmations uint64
+	Slot          uint64
+	Error         string
+	Timestamp     time.Time
+	BlockTime     *time.Time
+}
+// internal/blockchain/solbc/transaction/validator.go
+package transaction
+
+import (
+	"github.com/gagliardetto/solana-go"
+	"go.uber.org/zap"
+)
+
+type Validator struct {
+	logger *zap.Logger
+}
+
+func NewValidator(logger *zap.Logger) *Validator {
+	return &Validator{
+		logger: logger.Named("tx-validator"),
+	}
+}
+
+func (v *Validator) ValidateTransaction(tx *solana.Transaction) error {
+	if err := v.ValidateSignatures(tx); err != nil {
+		return err
+	}
+
+	if err := v.ValidateBlockhash(tx); err != nil {
+		return err
+	}
+
+	if err := v.ValidateInstructions(tx.Message.Instructions); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (v *Validator) ValidateSignatures(tx *solana.Transaction) error {
+	if len(tx.Signatures) == 0 {
+		return ErrInvalidSignature
+	}
+	// Дополнительные проверки подписей...
+	return nil
+}
+
+func (v *Validator) ValidateBlockhash(tx *solana.Transaction) error {
+	if tx.Message.RecentBlockhash == (solana.Hash{}) {
+		return ErrInvalidBlockhash
+	}
+	return nil
+}
+
+func (v *Validator) ValidateInstructions(instructions []solana.CompiledInstruction) error {
+	if len(instructions) == 0 {
+		return ErrInvalidInstruction
+	}
+	// Дополнительные проверки инструкций...
+	return nil
+}

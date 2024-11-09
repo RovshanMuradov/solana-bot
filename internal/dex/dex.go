@@ -2,59 +2,100 @@
 package dex
 
 import (
-	"errors"
 	"fmt"
 	"strings"
+	"time"
 
-	solanaClient "github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/dex/raydium"
 	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"go.uber.org/zap"
 )
 
-func GetDEXByName(name string, client *solanaClient.Client, logger *zap.Logger) (types.DEX, error) {
-	fmt.Printf("\n=== Getting DEX by name: %s ===\n", name)
+// GetDEXByName возвращает имплементацию DEX по имени
+func GetDEXByName(name string, client blockchain.Client, logger *zap.Logger) (types.DEX, error) {
+	if client == nil {
+		return nil, fmt.Errorf("client cannot be nil")
+	}
 
 	if logger == nil {
-		fmt.Println("Logger is nil")
-		return nil, errors.New("logger is nil")
+		return nil, fmt.Errorf("logger cannot be nil")
 	}
 
-	name = strings.TrimSpace(name)
+	name = strings.TrimSpace(strings.ToLower(name))
 	if name == "" {
-		fmt.Println("DEX name is empty")
-		return nil, errors.New("DEX name cannot be empty")
+		return nil, fmt.Errorf("DEX name cannot be empty")
 	}
 
-	fmt.Printf("Client nil? %v\n", client == nil)
+	logger = logger.With(zap.String("dex_name", name))
+	logger.Info("Initializing DEX instance")
 
-	if client == nil {
-		fmt.Println("Solana client is nil")
-		return nil, errors.New("solana client cannot be nil")
-	}
-
-	switch strings.ToLower(name) {
-	case strings.ToLower("Raydium"):
-		fmt.Println("Creating Raydium DEX instance")
-
-		if raydium.DefaultPoolConfig == nil {
-			fmt.Println("Default pool config is nil")
-			return nil, errors.New("default pool config is nil")
-		}
-
-		fmt.Printf("Pool config: %+v\n", raydium.DefaultPoolConfig)
-
-		dex := raydium.NewDEX(client, logger, raydium.DefaultPoolConfig)
-		if dex == nil {
-			fmt.Println("Failed to create Raydium DEX instance")
-			return nil, errors.New("failed to create Raydium DEX instance")
-		}
-
-		fmt.Printf("DEX created: %+v\n", dex)
-		return dex, nil
-
+	switch name {
+	case "raydium":
+		return initializeRaydiumDEX(client, logger)
+	case "pump.fun":
+		return nil /*initializePumpFunDEX(client, logger)*/, nil
 	default:
-		fmt.Printf("Unsupported DEX: %s\n", name)
+		logger.Error("Unsupported DEX requested", zap.String("name", name))
 		return nil, fmt.Errorf("unsupported DEX: %s", name)
 	}
 }
+
+// initializeRaydiumDEX инициализирует Raydium DEX
+func initializeRaydiumDEX(client blockchain.Client, logger *zap.Logger) (types.DEX, error) {
+	solClient, ok := client.(*solbc.Client)
+	if !ok {
+		return nil, fmt.Errorf("invalid client type")
+	}
+
+	// Получаем RPC endpoint
+	endpoint := solClient.GetRPCEndpoint()
+	if endpoint == "" {
+		return nil, fmt.Errorf("empty RPC endpoint")
+	}
+
+	// Получаем приватный ключ
+	walletKey, err := solClient.GetWalletKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get wallet key: %w", err)
+	}
+
+	// Создаем Raydium клиент
+	raydiumClient, err := raydium.NewRaydiumClient(endpoint, walletKey, logger.Named("raydium"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Raydium client: %w", err)
+	}
+
+	// Создаем конфигурацию
+	config := &raydium.SniperConfig{
+		MaxSlippageBps:   500,        // 5%
+		MinAmountSOL:     100000,     // 0.0001 SOL
+		MaxAmountSOL:     1000000000, // 1 SOL
+		PriorityFee:      1000,
+		WaitConfirmation: true,
+		MonitorInterval:  time.Second,
+		MaxRetries:       3,
+	}
+
+	return &raydiumDEX{
+		client: raydiumClient,
+		logger: logger,
+		config: config,
+	}, nil
+}
+
+// // initializePumpFunDEX инициализирует Pump.fun DEX
+// func initializePumpFunDEX(_ blockchain.Client, logger *zap.Logger) (types.DEX, error) {
+// 	logger.Debug("Initializing Pump.fun DEX")
+
+// 	// Создаем новый экземпляр Pump.fun DEX
+// 	dex := pumpfun.NewDEX()
+// 	if dex == nil {
+// 		logger.Error("Failed to create Pump.fun DEX instance")
+// 		return nil, fmt.Errorf("failed to create Pump.fun DEX instance")
+// 	}
+
+// 	logger.Info("Pump.fun DEX initialized successfully")
+// 	return dex, nil
+// }

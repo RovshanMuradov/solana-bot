@@ -7,6 +7,6 @@ import (
 
 type Blockchain interface {
 	Name() string
-	SendTransaction(ctx context.Context, tx interface{}) (string, error)
+	SendTransaction(ctx context.Context, tx interface{}) error
 	// Другие общие методы
 }

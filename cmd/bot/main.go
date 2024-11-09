@@ -7,8 +7,9 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
-	solanaClient "github.com/rovshanmuradov/solana-bot/internal/blockchain/solana"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/config"
 	"github.com/rovshanmuradov/solana-bot/internal/sniping"
 	"github.com/rovshanmuradov/solana-bot/internal/storage/postgres"
@@ -20,8 +21,12 @@ import (
 func main() {
 	fmt.Println("\n=== Starting Solana Bot ===")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// Создаем корневой контекст с отменой
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+
+	// Создаем канал для ошибок снайпера
+	sniperErrCh := make(chan error, 1)
 
 	// Инициализация логгера
 	logConfig := zap.NewDevelopmentConfig()
@@ -54,23 +59,31 @@ func main() {
 	fmt.Println("=== Loading wallets ===")
 	wallets, err := wallet.LoadWallets("configs/wallets.csv")
 	if err != nil {
-		fmt.Printf("Failed to load wallets: %v\n", err)
 		logger.Fatal("Failed to load wallets", zap.Error(err))
 	}
 	fmt.Printf("Loaded %d wallets\n", len(wallets))
 
-	// Инициализация Solana клиента
+	// Получаем первый кошелек для инициализации клиента
+	var primaryWallet *wallet.Wallet
+	for _, w := range wallets {
+		primaryWallet = w
+		break
+	}
+	if primaryWallet == nil {
+		logger.Fatal("No wallets available")
+	}
+	// Инициализация Solana клиента с приватным ключом
 	fmt.Println("=== Initializing Solana client ===")
-	client, err := solanaClient.NewClient(cfg.RPCList, logger)
+	client, err := solbc.NewClient(cfg.RPCList, primaryWallet.PrivateKey, logger)
 	if err != nil {
-		fmt.Printf("Failed to initialize Solana client: %v\n", err)
 		logger.Fatal("Failed to initialize Solana client", zap.Error(err))
 	}
+	defer client.Close()
 
 	// Инициализация блокчейнов
 	fmt.Println("=== Initializing blockchains ===")
 	blockchains := make(map[string]types.Blockchain)
-	solanaBC, err := solanaClient.NewBlockchain(client, logger)
+	solanaBC, err := solbc.NewBlockchain(client, logger)
 	if err != nil {
 		fmt.Printf("Failed to initialize Solana blockchain: %v\n", err)
 		logger.Fatal("Failed to initialize Solana blockchain", zap.Error(err))
@@ -104,24 +117,55 @@ func main() {
 		logger.Fatal("Failed to create sniper: sniper is nil")
 	}
 
-	// Запуск снайпера
+	// Создаем отдельный контекст для снайпера с таймаутом
+	sniperCtx, sniperCancel := context.WithTimeout(rootCtx, 24*time.Hour) // или другой подходящий таймаут
+	defer sniperCancel()
+
+	// Запуск снайпера с обработкой ошибок
 	fmt.Println("=== Running sniper ===")
 	go func() {
-		sniper.Run(ctx, tasks)
+		if err := sniper.Run(sniperCtx, tasks); err != nil {
+			logger.Error("Sniper encountered an error", zap.Error(err))
+			sniperErrCh <- err
+			rootCancel() // Отменяем корневой контекст при ошибке
+		}
 	}()
 
 	// Обработка сигналов завершения
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
+	// Ожидаем любое из событий
 	select {
 	case <-sigCh:
 		logger.Info("Received termination signal")
-	case <-ctx.Done():
+	case <-rootCtx.Done():
 		logger.Info("Context canceled")
+	case err := <-sniperErrCh:
+		logger.Error("Sniper failed", zap.Error(err))
+	case <-sniperCtx.Done():
+		if err := sniperCtx.Err(); err == context.DeadlineExceeded {
+			logger.Error("Sniper timeout exceeded")
+		}
 	}
 
+	// Начинаем корректное завершение работы
 	logger.Info("Starting graceful shutdown")
-	cancel()
+
+	// Отменяем все контексты
+	sniperCancel()
+	rootCancel()
+
+	// Даем время на завершение всех операций
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+
+	// Ждем завершения всех операций или таймаута
+	select {
+	case <-shutdownCtx.Done():
+		logger.Warn("Shutdown timeout exceeded, forcing exit")
+	case <-time.After(100 * time.Millisecond): // Минимальная пауза для корректного завершения
+	}
+
 	logger.Info("Bot successfully shut down")
 }

@@ -5,8 +5,8 @@ import (
 	"context"
 
 	"github.com/gagliardetto/solana-go"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
-	"go.uber.org/zap"
 )
 
 type Task struct {
@@ -16,11 +16,9 @@ type Task struct {
 	WalletName                  string
 	Delta                       int
 	PriorityFee                 float64
-	AMMID                       string
 	SourceToken                 string
 	TargetToken                 string
 	AmountIn                    float64
-	MinAmountOut                float64
 	AutosellPercent             float64
 	AutosellDelay               int
 	AutosellAmount              float64
@@ -31,24 +29,18 @@ type Task struct {
 	SourceTokenDecimals         int
 	TargetTokenDecimals         int
 	DEXName                     string `default:"Raydium"` // Добавляем значение по умолчанию
+	SlippageConfig              SlippageConfig
 }
 
 type DEX interface {
-	Name() string
-	PrepareSwapInstruction(
-		ctx context.Context,
-		wallet solana.PublicKey,
-		sourceToken solana.PublicKey,
-		destinationToken solana.PublicKey,
-		amountIn uint64,
-		minAmountOut uint64,
-		logger *zap.Logger,
-	) (solana.Instruction, error)
-	ExecuteSwap(
-		ctx context.Context,
-		task *Task,
-		wallet *wallet.Wallet,
-	) error
+	// Возвращает имя DEX
+	GetName() string
+	// Возвращает базовый клиент для работы с блокчейном
+	GetClient() blockchain.Client
+	// Возвращает конфигурацию DEX
+	GetConfig() interface{}
+	// Выполняет свап (новый метод)
+	ExecuteSwap(ctx context.Context, task *Task, wallet *wallet.Wallet) error
 }
 
 type Blockchain interface {

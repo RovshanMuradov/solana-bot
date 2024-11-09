@@ -1,2 +1,2 @@
-TaskName,Module,Workers,WalletName,Delta,PriorityFee,AMMID,SourceToken,TargetToken,AmountIn,MinAmountOut,AutosellPercent,AutosellDelay,AutosellAmount,TransactionDelay,AutosellPriorityFee
-buyTokens,Raydium,1,wallet1,100,0.0001,,So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,0.02,0.095,50,1000,0.05,100,0.00005
+TaskName,Module,Workers,WalletName,Delta,PriorityFee,SourceToken,TargetToken,AmountIn,SlippageConfig,AutosellPercent,AutosellDelay,AutosellAmount,TransactionDelay,AutosellPriorityFee
+buyTokens,Raydium,1,wallet1,100,0.001,So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,0.02,0.5,0,0,0,100,0.0003

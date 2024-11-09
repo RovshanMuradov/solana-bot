@@ -1,13 +1,17 @@
 {
     "license": "TEST-LICENSE-123456789",
-    "rpc_list": ["https://solana-mainnet.core.chainstack.com/130a7d138049d3e2f64684bcd6b13ffb"],
-    "websocket_url": "wss://solana-mainnet.core.chainstack.com/130a7d138049d3e2f64684bcd6b13ffb",
+    "rpc_list": [
+        "http://rpc-lax-a.thornode.io/e711fbc80050bff888e8584d9e2521ca",
+        "http://ny.rpc.urbanaio.com/"
+
+],
+    "websocket_url": "ws://ny.rpc.urbanaio.com",
     "monitor_delay": 1000,
     "rpc_delay": 100,
     "price_delay": 500,
     "debug_logging": true,
     "tps_logging": true,
-    "retries": 3,
+    "retries": 8,
     "webhook_url": "",
     "workers": 1,
     "postgres_url": "postgresql://rovshan:muradov25@postgres:5432/solana_bot?sslmode=disable"

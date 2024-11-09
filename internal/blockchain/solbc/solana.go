@@ -1,5 +1,5 @@
-// internal/blockchain/solana/solana.go:
-package solana
+// internal/blockchain/solbc/solana.go
+package solbc
 
 import (
 	"context"
