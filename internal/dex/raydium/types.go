@@ -48,6 +48,30 @@ type Pool struct {
 	State   PoolState // встроенное состояние
 }
 
+type PoolJsonInfo struct {
+	Id            string `json:"id"`
+	BaseMint      string `json:"baseMint"`
+	QuoteMint     string `json:"quoteMint"`
+	LpMint        string `json:"lpMint"`
+	BaseDecimals  int    `json:"baseDecimals"`
+	QuoteDecimals int    `json:"quoteDecimals"`
+	LpDecimals    int    `json:"lpDecimals"`
+	Version       int    `json:"version"`
+	ProgramId     string `json:"programId"`
+	Authority     string `json:"authority"`
+	BaseVault     string `json:"baseVault"`
+	QuoteVault    string `json:"quoteVault"`
+	MarketId      string `json:"marketId"`
+	OpenOrders    string `json:"openOrders"`
+	TargetOrders  string `json:"targetOrders"`
+	Status        string `json:"status"`
+}
+
+type PoolList struct {
+	Official   []PoolJsonInfo `json:"official"`
+	Unofficial []PoolJsonInfo `json:"unofficial"`
+}
+
 type PoolState struct {
 	BaseReserve  uint64 // Резерв базового токена в пуле
 	QuoteReserve uint64 // Резерв котируемого токена в пуле
@@ -77,6 +101,7 @@ type Client struct {
 	retries     int
 	priorityFee uint64
 	commitment  rpc.CommitmentType
+	poolCache   *PoolCache
 }
 
 // type clientOptions struct {

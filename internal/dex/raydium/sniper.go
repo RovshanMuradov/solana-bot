@@ -21,44 +21,110 @@ import (
 // 5. Асинхронное выполнение свапа
 
 func (s *Sniper) ExecuteSnipe() error {
+	ctx := context.Background()
 	s.logger.Debug("starting snipe execution")
 
-	// 1. Получение пула и валидация параметров
+	// 1. Валидация параметров
 	if err := s.ValidateAndPrepare(); err != nil {
 		return fmt.Errorf("failed to validate parameters: %w", err)
 	}
 
-	// 2. Получение информации о пуле и проверка его состояния
-	pool, err := s.client.GetPool(context.Background(), s.config.BaseMint, s.config.QuoteMint)
+	// 2. Получение информации о пуле через кэш или on-chain поиск
+	pool, err := s.client.GetPool(ctx, s.config.BaseMint, s.config.QuoteMint)
 	if err != nil {
-		return fmt.Errorf("failed to get pool: %w", err)
+		// Пробуем в обратном порядке
+		pool, err = s.client.GetPool(ctx, s.config.QuoteMint, s.config.BaseMint)
+		if err != nil {
+			return fmt.Errorf("failed to get pool in both directions: %w", err)
+		}
 	}
 
+	// 3. Проверка состояния пула
 	poolManager := NewPoolManager(s.client.client, s.logger, pool)
-	if err := poolManager.ValidatePool(context.Background()); err != nil {
+	if err := poolManager.ValidatePool(ctx); err != nil {
 		return fmt.Errorf("pool validation failed: %w", err)
 	}
 
-	// 3. Расчет параметров свапа
-	amounts, err := poolManager.CalculateAmounts(context.Background())
+	// 4. Получаем или создаем Associated Token Accounts
+	sourceATA, _, err := solana.FindAssociatedTokenAddress(
+		s.client.privateKey.PublicKey(),
+		s.config.BaseMint,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to get source ATA: %w", err)
+	}
+
+	destinationATA, _, err := solana.FindAssociatedTokenAddress(
+		s.client.privateKey.PublicKey(),
+		s.config.QuoteMint,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to get destination ATA: %w", err)
+	}
+
+	// 5. Расчет параметров свапа с учетом slippage
+	amounts, err := poolManager.CalculateAmounts(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to calculate swap amounts: %w", err)
 	}
 
-	// 4. Подготовка параметров для свапа
-	swapParams := &SwapParams{
-		UserWallet:          s.client.privateKey.PublicKey(),
-		AmountIn:            amounts.AmountIn,
-		MinAmountOut:        amounts.MinAmountOut,
-		Pool:                pool,
-		PriorityFeeLamports: s.config.PriorityFee,
-		// Здесь нужно добавить source и destination token accounts
+	// Проверяем минимальные и максимальные лимиты
+	if amounts.AmountIn < s.config.MinAmountSOL {
+		return fmt.Errorf("amount too small: %d < %d", amounts.AmountIn, s.config.MinAmountSOL)
+	}
+	if amounts.AmountIn > s.config.MaxAmountSOL {
+		return fmt.Errorf("amount too large: %d > %d", amounts.AmountIn, s.config.MaxAmountSOL)
 	}
 
-	// 5. Выполнение свапа
+	// 6. Проверяем баланс
+	balance, err := s.client.CheckWalletBalance(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to check balance: %w", err)
+	}
+
+	requiredBalance := amounts.AmountIn + s.config.PriorityFee + 5000 // 5000 lamports для комиссии
+	if balance < requiredBalance {
+		return fmt.Errorf("insufficient balance: required %d, got %d", requiredBalance, balance)
+	}
+
+	// 7. Подготовка параметров для свапа
+	swapParams := &SwapParams{
+		UserWallet:              s.client.privateKey.PublicKey(),
+		PrivateKey:              &s.client.privateKey,
+		AmountIn:                amounts.AmountIn,
+		MinAmountOut:            amounts.MinAmountOut,
+		Pool:                    pool,
+		SourceTokenAccount:      sourceATA,
+		DestinationTokenAccount: destinationATA,
+		PriorityFeeLamports:     s.config.PriorityFee,
+		Direction:               SwapDirectionIn,
+		SlippageBps:             s.config.MaxSlippageBps,
+		Deadline:                time.Now().Add(30 * time.Second),
+	}
+
+	// 8. Симуляция свапа
+	if err := s.client.SimulateSwap(ctx, swapParams); err != nil {
+		return fmt.Errorf("swap simulation failed: %w", err)
+	}
+
+	// 9. Выполнение свапа
 	signature, err := s.client.ExecuteSwap(swapParams)
 	if err != nil {
 		return fmt.Errorf("swap execution failed: %w", err)
+	}
+
+	// 10. Ждем подтверждения если настроено
+	if s.config.WaitConfirmation {
+		s.logger.Info("waiting for confirmation...",
+			zap.String("signature", signature))
+
+		status, err := s.waitForConfirmation(ctx, signature)
+		if err != nil {
+			return fmt.Errorf("confirmation failed: %w", err)
+		}
+		if status != "confirmed" && status != "finalized" {
+			return fmt.Errorf("transaction failed with status: %s", status)
+		}
 	}
 
 	// Логируем успешное выполнение
@@ -67,9 +133,38 @@ func (s *Sniper) ExecuteSnipe() error {
 		zap.Uint64("amountIn", amounts.AmountIn),
 		zap.Uint64("amountOut", amounts.AmountOut),
 		zap.Uint64("minAmountOut", amounts.MinAmountOut),
+		zap.String("explorer", fmt.Sprintf("https://explorer.solana.com/tx/%s", signature)),
 	)
 
 	return nil
+}
+
+// Вспомогательный метод для ожидания подтверждения транзакции
+func (s *Sniper) waitForConfirmation(ctx context.Context, signature string) (string, error) {
+	sig, err := solana.SignatureFromBase58(signature)
+	if err != nil {
+		return "", fmt.Errorf("invalid signature: %w", err)
+	}
+
+	for i := 0; i < 30; i++ { // максимум 30 попыток
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		default:
+			status, err := s.client.client.GetSignatureStatuses(ctx, sig)
+			if err != nil {
+				return "", fmt.Errorf("failed to get status: %w", err)
+			}
+			if status != nil && len(status.Value) > 0 && status.Value[0] != nil {
+				if status.Value[0].Err != nil {
+					return "failed", fmt.Errorf("transaction failed: %v", status.Value[0].Err)
+				}
+				return string(status.Value[0].ConfirmationStatus), nil // Используем напрямую без разыменования
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+	return "", fmt.Errorf("confirmation timeout")
 }
 
 // TODO: Потенциальные улучшения на основе TS версии:

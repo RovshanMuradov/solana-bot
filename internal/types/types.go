@@ -16,7 +16,6 @@ type Task struct {
 	WalletName                  string
 	Delta                       int
 	PriorityFee                 float64
-	AMMID                       string
 	SourceToken                 string
 	TargetToken                 string
 	AmountIn                    float64

@@ -1,4 +1,5 @@
 // internal/dex/raydium/client.go - это пакет, который содержит в себе реализацию клиента для работы с декстером Raydium
+// inernal/dex/raydium/types.go
 package raydium
 
 import (
@@ -23,15 +24,30 @@ func NewRaydiumClient(rpcEndpoint string, wallet solana.PrivateKey, logger *zap.
 	// Создаем базового клиента через фабрику
 	solClient, err := solbc.NewClient(
 		[]string{rpcEndpoint},
-		wallet, // Передаем приватный ключ в NewClient
+		wallet,
 		logger,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create solana client: %w", err)
 	}
 
+	// Создаем кэш пулов
+	poolCache := NewPoolCache(logger)
+
+	// Пытаемся загрузить пулы из файла
+	if err := poolCache.LoadPoolsFromFile("mainnet.json"); err != nil {
+		// Логируем ошибку, но не прерываем создание клиента
+		// так как мы всё равно можем искать пулы on-chain
+		logger.Warn("Failed to load pools from mainnet.json",
+			zap.Error(err),
+			zap.String("fallback", "will use on-chain lookup"))
+	} else {
+		logger.Info("Successfully loaded pools from mainnet.json",
+			zap.Int("pools_count", poolCache.GetPoolsCount()))
+	}
+
 	// Создаем клиент с дефолтными настройками
-	return &Client{
+	client := &Client{
 		client:      solClient,
 		logger:      logger,
 		privateKey:  wallet,
@@ -39,7 +55,74 @@ func NewRaydiumClient(rpcEndpoint string, wallet solana.PrivateKey, logger *zap.
 		retries:     3,
 		priorityFee: 1000,
 		commitment:  solanarpc.CommitmentConfirmed,
-	}, nil
+		poolCache:   poolCache,
+	}
+
+	// Если файл не загружен, пытаемся получить данные о пулах on-chain
+	if !poolCache.IsLoaded() {
+		logger.Info("Starting initial pool sync from chain...")
+		if err := client.syncPoolsFromChain(context.Background()); err != nil {
+			logger.Warn("Failed to sync pools from chain",
+				zap.Error(err),
+				zap.String("impact", "pool discovery may be slower"))
+		}
+	}
+
+	return client, nil
+}
+
+// syncPoolsFromChain получает информацию о пулах из блокчейна
+func (c *Client) syncPoolsFromChain(ctx context.Context) error {
+	c.logger.Info("Starting pool sync from chain")
+
+	accounts, err := c.client.GetProgramAccounts(
+		ctx,
+		RaydiumV4ProgramID,
+		solanarpc.GetProgramAccountsOpts{
+			Filters: []solanarpc.RPCFilter{
+				{
+					DataSize: PoolAccountSize, // Используем константу из constants.go
+				},
+			},
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to get program accounts: %w", err)
+	}
+
+	c.logger.Info("Found pool accounts", zap.Int("count", len(accounts)))
+	validPools := 0
+
+	for _, acc := range accounts {
+		pool, err := c.parsePoolAccount(acc)
+		if err != nil {
+			c.logger.Debug("Failed to parse pool account",
+				zap.String("pubkey", acc.Pubkey.String()),
+				zap.Error(err))
+			continue
+		}
+
+		// Добавляем дополнительную валидацию
+		if !c.poolCache.isValidPool(pool) {
+			c.logger.Debug("Invalid pool data",
+				zap.String("pool_id", pool.ID.String()))
+			continue
+		}
+
+		if err := c.poolCache.AddPool(pool); err != nil {
+			c.logger.Debug("Failed to cache pool",
+				zap.String("pool_id", pool.ID.String()),
+				zap.Error(err))
+		} else {
+			validPools++
+		}
+	}
+
+	c.logger.Info("Pool sync completed",
+		zap.Int("total_pools", len(accounts)),
+		zap.Int("valid_pools", validPools))
+
+	return nil
 }
 
 // Добавим также вспомогательный метод для получения публичного ключа
@@ -83,49 +166,60 @@ func (c *Client) GetAssociatedTokenAccount(mint solana.PublicKey) (solana.Public
 	return ata, nil
 }
 
-// GetPool получает информацию о пуле по базовому и котируемому токенам
+// GetPool реализует полную логику поиска пула:
+// 1. Проверяет кэш (использует pc.GetPool)
+// 2. Проверяет JSON файл (использует pc.findPoolInJson)
+// 3. Ищет в блокчейне (использует c.findPoolOnChain)
 func (c *Client) GetPool(ctx context.Context, baseMint, quoteMint solana.PublicKey) (*Pool, error) {
 	c.logger.Debug("getting raydium pool info",
 		zap.String("baseMint", baseMint.String()),
 		zap.String("quoteMint", quoteMint.String()),
 	)
 
-	// Получаем программные аккаунты через интерфейс
-	accounts, err := c.client.GetProgramAccounts(
-		ctx,
-		RaydiumV4ProgramID,
-		solanarpc.GetProgramAccountsOpts{
-			Filters: []solanarpc.RPCFilter{
-				{
-					DataSize: 388, // Размер данных аккаунта пула
-				},
-				{
-					Memcmp: &solanarpc.RPCFilterMemcmp{
-						Offset: 8,
-						Bytes:  baseMint.Bytes(),
-					},
-				},
-				{
-					Memcmp: &solanarpc.RPCFilterMemcmp{
-						Offset: 40,
-						Bytes:  quoteMint.Bytes(),
-					},
-				},
-			},
-		},
-	)
+	// 1. Сначала проверяем кэш
+	if pool := c.poolCache.GetPool(baseMint, quoteMint); pool != nil {
+		c.logger.Debug("pool found in cache",
+			zap.String("poolId", pool.ID.String()))
+		return pool, nil
+	}
+
+	// 2. Затем ищем в JSON файле
+	if pool := c.poolCache.findPoolInJSON(baseMint, quoteMint); pool != nil {
+		c.logger.Debug("pool found in JSON file",
+			zap.String("poolId", pool.ID.String()))
+		// Сохраняем в кэш для будущих запросов
+		if err := c.poolCache.AddPool(pool); err != nil {
+			c.logger.Warn("failed to cache pool from JSON",
+				zap.String("pool_id", pool.ID.String()),
+				zap.Error(err))
+		}
+		return pool, nil
+	}
+
+	// 3. Если не нашли, ищем в блокчейне
+	c.logger.Debug("pool not found in cache or JSON, searching on-chain")
+	pool, err := c.findPoolOnChain(ctx, baseMint, quoteMint)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get program accounts: %w", err)
+		// Пробуем поменять порядок токенов и поискать снова
+		pool, err = c.findPoolOnChain(ctx, quoteMint, baseMint)
+		if err != nil {
+			return nil, fmt.Errorf("pool not found for tokens %s and %s: %w",
+				baseMint.String(), quoteMint.String(), err)
+		}
 	}
 
-	if len(accounts) == 0 {
-		return nil, fmt.Errorf("pool not found for base mint %s and quote mint %s",
-			baseMint.String(), quoteMint.String())
+	// Сохраняем найденный пул в кэш
+	if err := c.poolCache.AddPool(pool); err != nil {
+		c.logger.Warn("failed to cache pool from chain",
+			zap.String("pool_id", pool.ID.String()),
+			zap.Error(err))
 	}
 
-	// Берем первый найденный пул
-	poolAccount := accounts[0]
+	return pool, nil
+}
 
+// parsePoolAccount вынесен в отдельный метод для переиспользования
+func (c *Client) parsePoolAccount(account solanarpc.KeyedAccount) (*Pool, error) {
 	// Получаем authority пула через PDA
 	authority, _, err := solana.FindProgramAddress(
 		[][]byte{[]byte("amm_authority")},
@@ -136,36 +230,31 @@ func (c *Client) GetPool(ctx context.Context, baseMint, quoteMint solana.PublicK
 	}
 
 	// Парсим данные аккаунта
-	data := poolAccount.Account.Data.GetBinary()
+	data := account.Account.Data.GetBinary()
 	if len(data) < 388 {
 		return nil, fmt.Errorf("invalid pool account data length: %d", len(data))
 	}
 
-	// Извлекаем данные из бинарного представления
-	// Офсеты взяты из документации Raydium и SDK
+	// Извлекаем mint адреса из данных
+	baseMint := solana.PublicKeyFromBytes(data[8:40])
+	quoteMint := solana.PublicKeyFromBytes(data[40:72])
+
 	pool := &Pool{
-		ID:        poolAccount.Pubkey, // Исправлено с PublicKey на Pubkey
-		Authority: authority,
-		BaseMint:  baseMint,
-		QuoteMint: quoteMint,
-		// Извлекаем адреса vault'ов (смещения могут отличаться, нужно сверить с документацией)
-		BaseVault:  solana.PublicKeyFromBytes(data[72:104]),
-		QuoteVault: solana.PublicKeyFromBytes(data[104:136]),
-		// Извлекаем decimals
-		BaseDecimals:  (data[136]),
-		QuoteDecimals: (data[137]),
-		// Извлекаем fee в базисных пунктах (2 байта)
+		ID:            account.Pubkey,
+		Authority:     authority,
+		BaseMint:      baseMint,
+		QuoteMint:     quoteMint,
+		BaseVault:     solana.PublicKeyFromBytes(data[72:104]),
+		QuoteVault:    solana.PublicKeyFromBytes(data[104:136]),
+		BaseDecimals:  data[136],
+		QuoteDecimals: data[137],
 		DefaultFeeBps: binary.LittleEndian.Uint16(data[138:140]),
 	}
 
-	c.logger.Debug("pool info retrieved successfully",
+	c.logger.Debug("parsed pool info",
 		zap.String("poolId", pool.ID.String()),
 		zap.String("baseVault", pool.BaseVault.String()),
-		zap.String("quoteVault", pool.QuoteVault.String()),
-		zap.Uint8("baseDecimals", pool.BaseDecimals),
-		zap.Uint8("quoteDecimals", pool.QuoteDecimals),
-		zap.Uint16("defaultFeeBps", pool.DefaultFeeBps),
-	)
+		zap.String("quoteVault", pool.QuoteVault.String()))
 
 	return pool, nil
 }
@@ -582,4 +671,41 @@ func (c *Client) ExecuteSwap(params *SwapParams) (string, error) {
 // GetBaseClient возвращает базовый blockchain.Client
 func (c *Client) GetBaseClient() blockchain.Client {
 	return c.client
+}
+
+// findPoolOnChain используется для поиска пула в блокчейне
+func (c *Client) findPoolOnChain(ctx context.Context, baseMint, quoteMint solana.PublicKey) (*Pool, error) {
+	accounts, err := c.client.GetProgramAccounts(
+		ctx,
+		RaydiumV4ProgramID,
+		solanarpc.GetProgramAccountsOpts{
+			Filters: []solanarpc.RPCFilter{
+				{
+					DataSize: 388,
+				},
+				{
+					Memcmp: &solanarpc.RPCFilterMemcmp{
+						Offset: 8,
+						Bytes:  baseMint.Bytes(),
+					},
+				},
+				{
+					Memcmp: &solanarpc.RPCFilterMemcmp{
+						Offset: 40,
+						Bytes:  quoteMint.Bytes(),
+					},
+				},
+			},
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get program accounts: %w", err)
+	}
+
+	if len(accounts) == 0 {
+		return nil, fmt.Errorf("pool not found for tokens %s and %s",
+			baseMint.String(), quoteMint.String())
+	}
+
+	return c.parsePoolAccount(accounts[0])
 }

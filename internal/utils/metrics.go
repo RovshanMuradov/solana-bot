@@ -24,9 +24,29 @@ var (
 	)
 )
 
+var (
+	poolCacheHits = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "raydium_pool_cache_hits_total",
+		Help: "Number of successful pool cache hits",
+	})
+
+	poolCacheMisses = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "raydium_pool_cache_misses_total",
+		Help: "Number of pool cache misses",
+	})
+
+	poolSyncErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "raydium_pool_sync_errors_total",
+		Help: "Number of errors during pool synchronization",
+	})
+)
+
 func init() {
 	prometheus.MustRegister(transactionCounter)
 	prometheus.MustRegister(transactionDuration)
+	prometheus.MustRegister(poolCacheHits)
+	prometheus.MustRegister(poolCacheMisses)
+	prometheus.MustRegister(poolSyncErrors)
 }
 
 func MeasureTransactionDuration(f func() error) error {

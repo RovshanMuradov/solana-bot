@@ -17,17 +17,36 @@ import (
 )
 
 // NewRaydiumClient создает новый экземпляр клиента Raydium с дефолтными настройками
-func NewRaydiumClient(rpcEndpoint string, wallet solana.PrivateKey, logger *zap.Logger) (*RaydiumClient, error) {
+func NewRaydiumClient(rpcEndpoint string, wallet solana.PrivateKey, logger *zap.Logger) (*Client, error) {
 	logger = logger.Named("raydium-client")
 
 	// Создаем базового клиента через фабрику
-	solClient, err := solbc.NewClient([]string{rpcEndpoint}, logger)
+	solClient, err := solbc.NewClient(
+		[]string{rpcEndpoint},
+		wallet,
+		logger,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create solana client: %w", err)
 	}
 
+	// Создаем кэш пулов
+	poolCache := NewPoolCache(logger)
+
+	// Пытаемся загрузить пулы из файла
+	if err := poolCache.LoadPoolsFromFile("mainnet.json"); err != nil {
+		// Логируем ошибку, но не прерываем создание клиента
+		// так как мы всё равно можем искать пулы on-chain
+		logger.Warn("Failed to load pools from mainnet.json",
+			zap.Error(err),
+			zap.String("fallback", "will use on-chain lookup"))
+	} else {
+		logger.Info("Successfully loaded pools from mainnet.json",
+			zap.Int("pools_count", poolCache.GetPoolsCount()))
+	}
+
 	// Создаем клиент с дефолтными настройками
-	return &RaydiumClient{
+	client := &Client{
 		client:      solClient,
 		logger:      logger,
 		privateKey:  wallet,
@@ -35,24 +54,132 @@ func NewRaydiumClient(rpcEndpoint string, wallet solana.PrivateKey, logger *zap.
 		retries:     3,
 		priorityFee: 1000,
 		commitment:  solanarpc.CommitmentConfirmed,
-	}, nil
+		poolCache:   poolCache,
+	}
+
+	// Если файл не загружен, пытаемся получить данные о пулах on-chain
+	if !poolCache.IsLoaded() {
+		logger.Info("Starting initial pool sync from chain...")
+		if err := client.syncPoolsFromChain(context.Background()); err != nil {
+			logger.Warn("Failed to sync pools from chain",
+				zap.Error(err),
+				zap.String("impact", "pool discovery may be slower"))
+		}
+	}
+
+	return client, nil
 }
 
-// GetPool получает информацию о пуле по базовому и котируемому токенам
-func (c *RaydiumClient) GetPool(ctx context.Context, baseMint, quoteMint solana.PublicKey) (*RaydiumPool, error) {
+// syncPoolsFromChain получает информацию о пулах из блокчейна
+func (c *Client) syncPoolsFromChain(ctx context.Context) error {
+	// Получаем все аккаунты программы Raydium V4
+	accounts, err := c.client.GetProgramAccounts(
+		ctx,
+		RaydiumV4ProgramID,
+		solanarpc.GetProgramAccountsOpts{
+			Filters: []solanarpc.RPCFilter{
+				{
+					DataSize: 388, // Размер данных аккаунта пула
+				},
+			},
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to get program accounts: %w", err)
+	}
+
+	c.logger.Info("Found pool accounts", zap.Int("count", len(accounts)))
+
+	// Обрабатываем каждый аккаунт
+	for _, acc := range accounts {
+		pool, err := c.parsePoolAccount(acc)
+		if err != nil {
+			c.logger.Debug("Failed to parse pool account",
+				zap.String("pubkey", acc.Pubkey.String()),
+				zap.Error(err))
+			continue
+		}
+
+		// Сохраняем пул в кэш
+		if err := c.poolCache.AddPool(pool); err != nil {
+			c.logger.Debug("Failed to cache pool",
+				zap.String("pool_id", pool.ID.String()),
+				zap.Error(err))
+		}
+	}
+
+	return nil
+}
+
+// Добавим также вспомогательный метод для получения публичного ключа
+func (c *Client) GetPublicKey() solana.PublicKey {
+	return c.privateKey.PublicKey()
+}
+
+// Добавим метод для подписания транзакций
+func (c *Client) SignTransaction(tx *solana.Transaction) error {
+	_, err := tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+		if key.Equals(c.GetPublicKey()) {
+			return &c.privateKey
+		}
+		return nil
+	})
+	return err
+}
+
+// Добавим метод для проверки баланса кошелька
+func (c *Client) CheckWalletBalance(ctx context.Context) (uint64, error) {
+	balance, err := c.client.GetBalance(
+		ctx,
+		c.GetPublicKey(),
+		solanarpc.CommitmentConfirmed,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get wallet balance: %w", err)
+	}
+	return balance, nil
+}
+
+// Добавим метод для получения ATA (Associated Token Account)
+func (c *Client) GetAssociatedTokenAccount(mint solana.PublicKey) (solana.PublicKey, error) {
+	ata, _, err := solana.FindAssociatedTokenAddress(
+		c.GetPublicKey(),
+		mint,
+	)
+	if err != nil {
+		return solana.PublicKey{}, fmt.Errorf("failed to find associated token address: %w", err)
+	}
+	return ata, nil
+}
+
+// GetPool реализует полную логику поиска пула:
+// 1. Проверяет кэш (использует pc.GetPool)
+// 2. Проверяет JSON файл (использует pc.findPoolInJson)
+// 3. Ищет в блокчейне (использует c.findPoolOnChain)
+func (c *Client) GetPool(ctx context.Context, baseMint, quoteMint solana.PublicKey) (*Pool, error) {
 	c.logger.Debug("getting raydium pool info",
 		zap.String("baseMint", baseMint.String()),
 		zap.String("quoteMint", quoteMint.String()),
 	)
 
+	// Сначала проверяем кэш
+	if pool := c.poolCache.GetPool(baseMint, quoteMint); pool != nil {
+		c.logger.Debug("pool found in cache",
+			zap.String("poolId", pool.ID.String()))
+		return pool, nil
+	}
+
+	// Если в кэше нет, ищем в блокчейне
+	c.logger.Debug("pool not found in cache, searching on-chain")
+
 	// Получаем программные аккаунты через интерфейс
 	accounts, err := c.client.GetProgramAccounts(
 		ctx,
-		solana.MustPublicKeyFromBase58(RaydiumV4ProgramID),
+		RaydiumV4ProgramID,
 		solanarpc.GetProgramAccountsOpts{
 			Filters: []solanarpc.RPCFilter{
 				{
-					DataSize: 388, // Размер данных аккаунта пула
+					DataSize: 388,
 				},
 				{
 					Memcmp: &solanarpc.RPCFilterMemcmp{
@@ -74,59 +201,99 @@ func (c *RaydiumClient) GetPool(ctx context.Context, baseMint, quoteMint solana.
 	}
 
 	if len(accounts) == 0 {
-		return nil, fmt.Errorf("pool not found for base mint %s and quote mint %s",
+		// Пробуем поменять порядок токенов и поискать снова
+		accounts, err = c.client.GetProgramAccounts(
+			ctx,
+			RaydiumV4ProgramID,
+			solanarpc.GetProgramAccountsOpts{
+				Filters: []solanarpc.RPCFilter{
+					{
+						DataSize: 388,
+					},
+					{
+						Memcmp: &solanarpc.RPCFilterMemcmp{
+							Offset: 8,
+							Bytes:  quoteMint.Bytes(),
+						},
+					},
+					{
+						Memcmp: &solanarpc.RPCFilterMemcmp{
+							Offset: 40,
+							Bytes:  baseMint.Bytes(),
+						},
+					},
+				},
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get program accounts with reversed tokens: %w", err)
+		}
+	}
+
+	if len(accounts) == 0 {
+		return nil, fmt.Errorf("pool not found for tokens %s and %s",
 			baseMint.String(), quoteMint.String())
 	}
 
-	// Берем первый найденный пул
-	poolAccount := accounts[0]
+	// Парсим найденный пул
+	pool, err := c.parsePoolAccount(accounts[0])
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse pool account: %w", err)
+	}
 
+	// Сохраняем в кэш для будущих запросов
+	if err := c.poolCache.AddPool(pool); err != nil {
+		c.logger.Warn("failed to cache pool",
+			zap.String("pool_id", pool.ID.String()),
+			zap.Error(err))
+	}
+
+	return pool, nil
+}
+
+// parsePoolAccount вынесен в отдельный метод для переиспользования
+func (c *Client) parsePoolAccount(account solanarpc.KeyedAccount) (*Pool, error) {
 	// Получаем authority пула через PDA
 	authority, _, err := solana.FindProgramAddress(
 		[][]byte{[]byte("amm_authority")},
-		solana.MustPublicKeyFromBase58(RaydiumV4ProgramID),
+		RaydiumV4ProgramID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to derive authority: %w", err)
 	}
 
 	// Парсим данные аккаунта
-	data := poolAccount.Account.Data.GetBinary()
+	data := account.Account.Data.GetBinary()
 	if len(data) < 388 {
 		return nil, fmt.Errorf("invalid pool account data length: %d", len(data))
 	}
 
-	// Извлекаем данные из бинарного представления
-	// Офсеты взяты из документации Raydium и SDK
-	pool := &RaydiumPool{
-		ID:        poolAccount.Pubkey, // Исправлено с PublicKey на Pubkey
-		Authority: authority,
-		BaseMint:  baseMint,
-		QuoteMint: quoteMint,
-		// Извлекаем адреса vault'ов (смещения могут отличаться, нужно сверить с документацией)
-		BaseVault:  solana.PublicKeyFromBytes(data[72:104]),
-		QuoteVault: solana.PublicKeyFromBytes(data[104:136]),
-		// Извлекаем decimals
-		BaseDecimals:  (data[136]),
-		QuoteDecimals: (data[137]),
-		// Извлекаем fee в базисных пунктах (2 байта)
+	// Извлекаем mint адреса из данных
+	baseMint := solana.PublicKeyFromBytes(data[8:40])
+	quoteMint := solana.PublicKeyFromBytes(data[40:72])
+
+	pool := &Pool{
+		ID:            account.Pubkey,
+		Authority:     authority,
+		BaseMint:      baseMint,
+		QuoteMint:     quoteMint,
+		BaseVault:     solana.PublicKeyFromBytes(data[72:104]),
+		QuoteVault:    solana.PublicKeyFromBytes(data[104:136]),
+		BaseDecimals:  data[136],
+		QuoteDecimals: data[137],
 		DefaultFeeBps: binary.LittleEndian.Uint16(data[138:140]),
 	}
 
-	c.logger.Debug("pool info retrieved successfully",
+	c.logger.Debug("parsed pool info",
 		zap.String("poolId", pool.ID.String()),
 		zap.String("baseVault", pool.BaseVault.String()),
-		zap.String("quoteVault", pool.QuoteVault.String()),
-		zap.Uint8("baseDecimals", pool.BaseDecimals),
-		zap.Uint8("quoteDecimals", pool.QuoteDecimals),
-		zap.Uint16("defaultFeeBps", pool.DefaultFeeBps),
-	)
+		zap.String("quoteVault", pool.QuoteVault.String()))
 
 	return pool, nil
 }
 
 // GetPoolState получает текущее состояние пула
-func (c *RaydiumClient) GetPoolState(pool *RaydiumPool) (*PoolState, error) {
+func (c *Client) GetPoolState(pool *Pool) (*PoolState, error) {
 	c.logger.Debug("getting pool state",
 		zap.String("poolId", pool.ID.String()),
 	)
@@ -221,17 +388,17 @@ func (inst *SwapInstruction) Validate() error {
 }
 
 // ProgramID возвращает ID программы Raydium
-func (i *RaydiumSwapInstruction) ProgramID() solana.PublicKey {
+func (i *ExecutableSwapInstruction) ProgramID() solana.PublicKey {
 	return i.programID
 }
 
 // Accounts возвращает список аккаунтов
-func (i *RaydiumSwapInstruction) Accounts() []*solana.AccountMeta {
+func (i *ExecutableSwapInstruction) Accounts() []*solana.AccountMeta {
 	return i.accounts
 }
 
 // Data возвращает сериализованные данные инструкции
-func (i *RaydiumSwapInstruction) Data() ([]byte, error) {
+func (i *ExecutableSwapInstruction) Data() ([]byte, error) {
 	return i.data, nil
 }
 
@@ -251,8 +418,8 @@ func (inst *SwapInstruction) Build() (solana.Instruction, error) {
 		data[16] = 1
 	}
 
-	instruction := &RaydiumSwapInstruction{
-		programID: solana.MustPublicKeyFromBase58(RaydiumV4ProgramID),
+	instruction := &ExecutableSwapInstruction{
+		programID: RaydiumV4ProgramID,
 		accounts:  inst.AccountMetaSlice,
 		data:      data,
 	}
@@ -261,7 +428,7 @@ func (inst *SwapInstruction) Build() (solana.Instruction, error) {
 }
 
 // CreateSwapInstructions создает инструкции для свапа
-func (c *RaydiumClient) CreateSwapInstructions(params *SwapParams) ([]solana.Instruction, error) {
+func (c *Client) CreateSwapInstructions(params *SwapParams) ([]solana.Instruction, error) {
 	if err := validateSwapParams(params); err != nil {
 		return nil, err
 	}
@@ -337,7 +504,7 @@ func validateSwapParams(params *SwapParams) error {
 }
 
 // SimulateSwap выполняет симуляцию транзакции свапа
-func (c *RaydiumClient) SimulateSwap(ctx context.Context, params *SwapParams) error {
+func (c *Client) SimulateSwap(ctx context.Context, params *SwapParams) error {
 	c.logger.Debug("simulating swap transaction",
 		zap.String("userWallet", params.UserWallet.String()),
 		zap.Uint64("amountIn", params.AmountIn),
@@ -421,7 +588,7 @@ func (c *RaydiumClient) SimulateSwap(ctx context.Context, params *SwapParams) er
 // Метрики выполнения свапов
 
 // ExecuteSwap выполняет свап и возвращает signature транзакции
-func (c *RaydiumClient) ExecuteSwap(params *SwapParams) (string, error) {
+func (c *Client) ExecuteSwap(params *SwapParams) (string, error) {
 	c.logger.Debug("starting swap execution",
 		zap.String("userWallet", params.UserWallet.String()),
 		zap.Uint64("amountIn", params.AmountIn),
@@ -501,54 +668,97 @@ func (c *RaydiumClient) ExecuteSwap(params *SwapParams) (string, error) {
 	return sig.String(), nil
 }
 
+// TODO: этот метод нигде пока не используется, надо добавить его в код
 // logUpdatedBalances вспомогательный метод для логирования балансов после свапа
-func (c *RaydiumClient) logUpdatedBalances(params *SwapParams) error {
-	ctx := context.Background()
+// func (c *Client) logUpdatedBalances(params *SwapParams) error {
+// 	ctx := context.Background()
 
-	// Получаем баланс SOL
-	solBalance, err := c.client.GetBalance(
-		ctx,
-		params.UserWallet,
-		solanarpc.CommitmentConfirmed,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to get SOL balance: %w", err)
-	}
+// 	// Получаем баланс SOL
+// 	solBalance, err := c.client.GetBalance(
+// 		ctx,
+// 		params.UserWallet,
+// 		solanarpc.CommitmentConfirmed,
+// 	)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to get SOL balance: %w", err)
+// 	}
 
-	// Получаем баланс токена
-	tokenBalance, err := c.client.GetTokenAccountBalance(
-		ctx,
-		params.DestinationTokenAccount,
-		solanarpc.CommitmentConfirmed,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to get token balance: %w", err)
-	}
+// 	// Получаем баланс токена
+// 	tokenBalance, err := c.client.GetTokenAccountBalance(
+// 		ctx,
+// 		params.DestinationTokenAccount,
+// 		solanarpc.CommitmentConfirmed,
+// 	)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to get token balance: %w", err)
+// 	}
 
-	c.logger.Info("updated balances",
-		zap.Float64("solBalance", float64(solBalance)/float64(solana.LAMPORTS_PER_SOL)),
-		zap.String("tokenBalance", tokenBalance.Value.UiAmountString),
-	)
+// 	c.logger.Info("updated balances",
+// 		zap.Float64("solBalance", float64(solBalance)/float64(solana.LAMPORTS_PER_SOL)),
+// 		zap.String("tokenBalance", tokenBalance.Value.UiAmountString),
+// 	)
 
-	return nil
-}
+// 	return nil
+// }
 
 // GetBaseClient возвращает базовый blockchain.Client
-func (c *RaydiumClient) GetBaseClient() blockchain.Client {
+func (c *Client) GetBaseClient() blockchain.Client {
 	return c.client
+}
+
+// findPoolOnChain используется для поиска пула в блокчейне
+func (c *Client) findPoolOnChain(ctx context.Context, baseMint, quoteMint solana.PublicKey) (*Pool, error) {
+	accounts, err := c.client.GetProgramAccounts(
+		ctx,
+		RaydiumV4ProgramID,
+		solanarpc.GetProgramAccountsOpts{
+			Filters: []solanarpc.RPCFilter{
+				{
+					DataSize: 388,
+				},
+				{
+					Memcmp: &solanarpc.RPCFilterMemcmp{
+						Offset: 8,
+						Bytes:  baseMint.Bytes(),
+					},
+				},
+				{
+					Memcmp: &solanarpc.RPCFilterMemcmp{
+						Offset: 40,
+						Bytes:  quoteMint.Bytes(),
+					},
+				},
+			},
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get program accounts: %w", err)
+	}
+
+	if len(accounts) == 0 {
+		return nil, fmt.Errorf("pool not found for tokens %s and %s",
+			baseMint.String(), quoteMint.String())
+	}
+
+	return c.parsePoolAccount(accounts[0])
 }
 // internal/dex/raydium/constants.go
 package raydium
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/gagliardetto/solana-go"
+)
 
 // Program IDs
-const (
-	RaydiumV4ProgramID = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
-	TokenProgramID     = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-	SystemProgramID    = "11111111111111111111111111111111"
-	SysvarRentPubkey   = "SysvarRent111111111111111111111111111111111"
-	WrappedSolMint     = "So11111111111111111111111111111111111111112"
+var (
+	// Используем MPK для краткости, так как это константы
+	TokenProgramID     = solana.MPK("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+	RaydiumV4ProgramID = solana.MPK("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")
+	SystemProgramID    = solana.MPK("11111111111111111111111111111111")
+	SysvarRentPubkey   = solana.MPK("SysvarRent111111111111111111111111111111111")
+	WrappedSolMint     = solana.MPK("So11111111111111111111111111111111111111112")
 )
 
 // Compute budget constants
@@ -623,17 +833,155 @@ const (
 	MintAccountSize  = 82
 )
 
-func (e *RaydiumError) Error() string {
+func (e *Error) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
 
 // Добавляем конструктор для RaydiumError
-func NewRaydiumError(code string, message string, details map[string]interface{}) *RaydiumError {
-	return &RaydiumError{
+func NewRaydiumError(code string, message string, details map[string]interface{}) *Error {
+	return &Error{
 		Code:    code,
 		Message: message,
 		Details: details,
 	}
+}
+// internal/dex/raydium/pool_cache.go
+package raydium
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"sync"
+
+	"github.com/gagliardetto/solana-go"
+	"go.uber.org/zap"
+)
+
+type PoolCache struct {
+	pools     map[string]*Pool
+	jsonPools *PoolList
+	mu        sync.RWMutex
+	logger    *zap.Logger
+}
+
+func NewPoolCache(logger *zap.Logger) *PoolCache {
+	return &PoolCache{
+		pools:  make(map[string]*Pool),
+		logger: logger,
+	}
+}
+
+func (pc *PoolCache) LoadPoolsFromFile(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read pools file: %w", err)
+	}
+
+	var poolList PoolList
+	if err := json.Unmarshal(data, &poolList); err != nil {
+		return fmt.Errorf("failed to unmarshal pools: %w", err)
+	}
+
+	pc.mu.Lock()
+	pc.jsonPools = &poolList
+	pc.mu.Unlock()
+
+	return nil
+}
+
+// GetPoolsCount возвращает количество пулов в кэше
+func (pc *PoolCache) GetPoolsCount() int {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+
+	if pc.jsonPools == nil {
+		return len(pc.pools)
+	}
+	return len(pc.jsonPools.Official) + len(pc.jsonPools.Unofficial)
+}
+
+// IsLoaded проверяет загружены ли пулы из файла
+func (pc *PoolCache) IsLoaded() bool {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	return pc.jsonPools != nil
+}
+
+// AddPool добавляет пул в кэш
+func (pc *PoolCache) AddPool(pool *Pool) error {
+	if pool == nil {
+		return fmt.Errorf("cannot add nil pool")
+	}
+	if !pc.isValidPool(pool) {
+		return fmt.Errorf("invalid pool data")
+	}
+
+	cacheKey := fmt.Sprintf("%s-%s", pool.BaseMint.String(), pool.QuoteMint.String())
+	pc.mu.Lock()
+	pc.pools[cacheKey] = pool
+	pc.mu.Unlock()
+	return nil
+}
+
+// GetPool получает пул из кэша
+func (pc *PoolCache) GetPool(baseMint, quoteMint solana.PublicKey) *Pool {
+	cacheKey := fmt.Sprintf("%s-%s", baseMint.String(), quoteMint.String())
+	pc.mu.RLock()
+	pool := pc.pools[cacheKey]
+	pc.mu.RUnlock()
+	return pool
+}
+
+// findPoolInJson ищет пул в загруженном JSON файле
+func (pc *PoolCache) findPoolInJson(baseMint, quoteMint solana.PublicKey) *Pool {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+
+	if pc.jsonPools == nil {
+		return nil
+	}
+
+	// Ищем в официальных пулах
+	for _, info := range pc.jsonPools.Official {
+		if (info.BaseMint == baseMint.String() && info.QuoteMint == quoteMint.String()) ||
+			(info.BaseMint == quoteMint.String() && info.QuoteMint == baseMint.String()) {
+			// Конвертируем JSON в структуру Pool
+			return pc.convertJsonToPool(info)
+		}
+	}
+	return nil
+}
+
+func (pc *PoolCache) convertJsonToPool(info PoolJsonInfo) *Pool {
+	defer func() {
+		if r := recover(); r != nil {
+			pc.logger.Error("failed to convert pool info",
+				zap.String("id", info.Id),
+				zap.Any("panic", r))
+		}
+	}()
+
+	return &Pool{
+		ID:            solana.MustPublicKeyFromBase58(info.Id),
+		Authority:     solana.MustPublicKeyFromBase58(info.Authority),
+		BaseMint:      solana.MustPublicKeyFromBase58(info.BaseMint),
+		QuoteMint:     solana.MustPublicKeyFromBase58(info.QuoteMint),
+		BaseVault:     solana.MustPublicKeyFromBase58(info.BaseVault),
+		QuoteVault:    solana.MustPublicKeyFromBase58(info.QuoteVault),
+		BaseDecimals:  uint8(info.BaseDecimals),
+		QuoteDecimals: uint8(info.QuoteDecimals),
+		Version:       PoolVersion(info.Version),
+	}
+}
+
+func (pc *PoolCache) isValidPool(pool *Pool) bool {
+	return !pool.ID.IsZero() &&
+		!pool.Authority.IsZero() &&
+		!pool.BaseMint.IsZero() &&
+		!pool.QuoteMint.IsZero() &&
+		!pool.BaseVault.IsZero() &&
+		!pool.QuoteVault.IsZero()
 }
 // internal/dex/raydium/pool.go - это пакет, который содержит в себе реализацию работы с пулами Raydium
 package raydium
@@ -649,7 +997,7 @@ import (
 )
 
 // NewPoolManager создает новый менеджер пула
-func NewPoolManager(client blockchain.Client, logger *zap.Logger, pool *RaydiumPool) *PoolManager {
+func NewPoolManager(client blockchain.Client, logger *zap.Logger, pool *Pool) *PoolManager {
 	return &PoolManager{
 		client: client,
 		logger: logger,
@@ -787,44 +1135,110 @@ import (
 // 5. Асинхронное выполнение свапа
 
 func (s *Sniper) ExecuteSnipe() error {
+	ctx := context.Background()
 	s.logger.Debug("starting snipe execution")
 
-	// 1. Получение пула и валидация параметров
+	// 1. Валидация параметров
 	if err := s.ValidateAndPrepare(); err != nil {
 		return fmt.Errorf("failed to validate parameters: %w", err)
 	}
 
-	// 2. Получение информации о пуле и проверка его состояния
-	pool, err := s.client.GetPool(context.Background(), s.config.BaseMint, s.config.QuoteMint)
+	// 2. Получение информации о пуле через кэш или on-chain поиск
+	pool, err := s.client.GetPool(ctx, s.config.BaseMint, s.config.QuoteMint)
 	if err != nil {
-		return fmt.Errorf("failed to get pool: %w", err)
+		// Пробуем в обратном порядке
+		pool, err = s.client.GetPool(ctx, s.config.QuoteMint, s.config.BaseMint)
+		if err != nil {
+			return fmt.Errorf("failed to get pool in both directions: %w", err)
+		}
 	}
 
+	// 3. Проверка состояния пула
 	poolManager := NewPoolManager(s.client.client, s.logger, pool)
-	if err := poolManager.ValidatePool(context.Background()); err != nil {
+	if err := poolManager.ValidatePool(ctx); err != nil {
 		return fmt.Errorf("pool validation failed: %w", err)
 	}
 
-	// 3. Расчет параметров свапа
-	amounts, err := poolManager.CalculateAmounts(context.Background())
+	// 4. Получаем или создаем Associated Token Accounts
+	sourceATA, _, err := solana.FindAssociatedTokenAddress(
+		s.client.privateKey.PublicKey(),
+		s.config.BaseMint,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to get source ATA: %w", err)
+	}
+
+	destinationATA, _, err := solana.FindAssociatedTokenAddress(
+		s.client.privateKey.PublicKey(),
+		s.config.QuoteMint,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to get destination ATA: %w", err)
+	}
+
+	// 5. Расчет параметров свапа с учетом slippage
+	amounts, err := poolManager.CalculateAmounts(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to calculate swap amounts: %w", err)
 	}
 
-	// 4. Подготовка параметров для свапа
-	swapParams := &SwapParams{
-		UserWallet:          s.client.privateKey.PublicKey(),
-		AmountIn:            amounts.AmountIn,
-		MinAmountOut:        amounts.MinAmountOut,
-		Pool:                pool,
-		PriorityFeeLamports: s.config.PriorityFee,
-		// Здесь нужно добавить source и destination token accounts
+	// Проверяем минимальные и максимальные лимиты
+	if amounts.AmountIn < s.config.MinAmountSOL {
+		return fmt.Errorf("amount too small: %d < %d", amounts.AmountIn, s.config.MinAmountSOL)
+	}
+	if amounts.AmountIn > s.config.MaxAmountSOL {
+		return fmt.Errorf("amount too large: %d > %d", amounts.AmountIn, s.config.MaxAmountSOL)
 	}
 
-	// 5. Выполнение свапа
+	// 6. Проверяем баланс
+	balance, err := s.client.CheckWalletBalance(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to check balance: %w", err)
+	}
+
+	requiredBalance := amounts.AmountIn + s.config.PriorityFee + 5000 // 5000 lamports для комиссии
+	if balance < requiredBalance {
+		return fmt.Errorf("insufficient balance: required %d, got %d", requiredBalance, balance)
+	}
+
+	// 7. Подготовка параметров для свапа
+	swapParams := &SwapParams{
+		UserWallet:              s.client.privateKey.PublicKey(),
+		PrivateKey:              &s.client.privateKey,
+		AmountIn:                amounts.AmountIn,
+		MinAmountOut:            amounts.MinAmountOut,
+		Pool:                    pool,
+		SourceTokenAccount:      sourceATA,
+		DestinationTokenAccount: destinationATA,
+		PriorityFeeLamports:     s.config.PriorityFee,
+		Direction:               SwapDirectionIn,
+		SlippageBps:             s.config.MaxSlippageBps,
+		Deadline:                time.Now().Add(30 * time.Second),
+	}
+
+	// 8. Симуляция свапа
+	if err := s.client.SimulateSwap(ctx, swapParams); err != nil {
+		return fmt.Errorf("swap simulation failed: %w", err)
+	}
+
+	// 9. Выполнение свапа
 	signature, err := s.client.ExecuteSwap(swapParams)
 	if err != nil {
 		return fmt.Errorf("swap execution failed: %w", err)
+	}
+
+	// 10. Ждем подтверждения если настроено
+	if s.config.WaitConfirmation {
+		s.logger.Info("waiting for confirmation...",
+			zap.String("signature", signature))
+
+		status, err := s.waitForConfirmation(ctx, signature)
+		if err != nil {
+			return fmt.Errorf("confirmation failed: %w", err)
+		}
+		if status != "confirmed" && status != "finalized" {
+			return fmt.Errorf("transaction failed with status: %s", status)
+		}
 	}
 
 	// Логируем успешное выполнение
@@ -833,9 +1247,38 @@ func (s *Sniper) ExecuteSnipe() error {
 		zap.Uint64("amountIn", amounts.AmountIn),
 		zap.Uint64("amountOut", amounts.AmountOut),
 		zap.Uint64("minAmountOut", amounts.MinAmountOut),
+		zap.String("explorer", fmt.Sprintf("https://explorer.solana.com/tx/%s", signature)),
 	)
 
 	return nil
+}
+
+// Вспомогательный метод для ожидания подтверждения транзакции
+func (s *Sniper) waitForConfirmation(ctx context.Context, signature string) (string, error) {
+	sig, err := solana.SignatureFromBase58(signature)
+	if err != nil {
+		return "", fmt.Errorf("invalid signature: %w", err)
+	}
+
+	for i := 0; i < 30; i++ { // максимум 30 попыток
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		default:
+			status, err := s.client.client.GetSignatureStatuses(ctx, sig)
+			if err != nil {
+				return "", fmt.Errorf("failed to get status: %w", err)
+			}
+			if status != nil && len(status.Value) > 0 && status.Value[0] != nil {
+				if status.Value[0].Err != nil {
+					return "failed", fmt.Errorf("transaction failed: %v", status.Value[0].Err)
+				}
+				return string(status.Value[0].ConfirmationStatus), nil // Используем напрямую без разыменования
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+	return "", fmt.Errorf("confirmation timeout")
 }
 
 // TODO: Потенциальные улучшения на основе TS версии:
@@ -1008,7 +1451,7 @@ const (
 	PoolVersionV3 PoolVersion = 3
 )
 
-type RaydiumPool struct {
+type Pool struct {
 	ID            solana.PublicKey // Идентификатор пула
 	Authority     solana.PublicKey // Публичный ключ, который имеет полномочия управлять пулом
 	BaseMint      solana.PublicKey // Публичный ключ базового токена
@@ -1024,6 +1467,30 @@ type RaydiumPool struct {
 	State   PoolState // встроенное состояние
 }
 
+type PoolJsonInfo struct {
+	Id            string `json:"id"`
+	BaseMint      string `json:"baseMint"`
+	QuoteMint     string `json:"quoteMint"`
+	LpMint        string `json:"lpMint"`
+	BaseDecimals  int    `json:"baseDecimals"`
+	QuoteDecimals int    `json:"quoteDecimals"`
+	LpDecimals    int    `json:"lpDecimals"`
+	Version       int    `json:"version"`
+	ProgramId     string `json:"programId"`
+	Authority     string `json:"authority"`
+	BaseVault     string `json:"baseVault"`
+	QuoteVault    string `json:"quoteVault"`
+	MarketId      string `json:"marketId"`
+	OpenOrders    string `json:"openOrders"`
+	TargetOrders  string `json:"targetOrders"`
+	Status        string `json:"status"`
+}
+
+type PoolList struct {
+	Official   []PoolJsonInfo `json:"official"`
+	Unofficial []PoolJsonInfo `json:"unofficial"`
+}
+
 type PoolState struct {
 	BaseReserve  uint64 // Резерв базового токена в пуле
 	QuoteReserve uint64 // Резерв котируемого токена в пуле
@@ -1035,7 +1502,7 @@ type SwapParams struct {
 	PrivateKey              *solana.PrivateKey // Приватный ключ для подписания транзакции
 	AmountIn                uint64             // Количество входного токена для обмена
 	MinAmountOut            uint64             // Минимальное количество выходного токена
-	Pool                    *RaydiumPool       // Указатель на пул для обмена
+	Pool                    *Pool              // Указатель на пул для обмена
 	SourceTokenAccount      solana.PublicKey   // Аккаунт исходного токена
 	DestinationTokenAccount solana.PublicKey   // Аккаунт целевого токена
 	PriorityFeeLamports     uint64             // Приоритетная комиссия в лампортах
@@ -1045,7 +1512,7 @@ type SwapParams struct {
 	Deadline    time.Time // таймаут для транзакции
 }
 
-type RaydiumClient struct {
+type Client struct {
 	client      blockchain.Client
 	logger      *zap.Logger
 	privateKey  solana.PrivateKey
@@ -1053,6 +1520,7 @@ type RaydiumClient struct {
 	retries     int
 	priorityFee uint64
 	commitment  rpc.CommitmentType
+	poolCache   *PoolCache
 }
 
 // type clientOptions struct {
@@ -1072,14 +1540,14 @@ type SwapInstruction struct {
 }
 
 // RaydiumSwapInstruction реализует интерфейс solana.Instruction
-type RaydiumSwapInstruction struct {
+type ExecutableSwapInstruction struct {
 	programID solana.PublicKey
 	accounts  []*solana.AccountMeta
 	data      []byte
 }
 
 // RaydiumError represents a custom error type
-type RaydiumError struct {
+type Error struct {
 	Code    string
 	Message string
 	Stage   string
@@ -1096,11 +1564,11 @@ type SwapAmounts struct {
 type PoolManager struct {
 	client blockchain.Client
 	logger *zap.Logger
-	pool   *RaydiumPool
+	pool   *Pool
 }
 
 type Sniper struct {
-	client *RaydiumClient
+	client *Client
 	logger *zap.Logger
 	config *SniperConfig // Конфигурация снайпинга
 }

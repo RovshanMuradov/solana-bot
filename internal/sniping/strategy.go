@@ -3,7 +3,6 @@ package sniping
 
 import (
 	"encoding/csv"
-	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -36,9 +35,12 @@ func LoadTasks(path string) ([]*types.Task, error) {
 	return tasks, nil
 }
 
+// internal/sniping/strategy.go
+
 func parseTask(record []string) (*types.Task, error) {
-	if len(record) != 16 {
-		return nil, errors.New("invalid CSV format")
+	// Было 16 полей (включая AMMID), стало 15
+	if len(record) != 15 {
+		return nil, fmt.Errorf("invalid CSV format: expected 15 fields, got %d", len(record))
 	}
 
 	workers, err := strconv.Atoi(record[2])
@@ -56,38 +58,40 @@ func parseTask(record []string) (*types.Task, error) {
 		return nil, fmt.Errorf("invalid PriorityFee value: %v", err)
 	}
 
-	amountIn, err := strconv.ParseFloat(record[9], 64)
+	// AMMID больше не используется, сдвигаем индексы
+	sourceToken := record[6]                           // было 7
+	targetToken := record[7]                           // было 8
+	amountIn, err := strconv.ParseFloat(record[8], 64) // было 9
 	if err != nil {
 		return nil, fmt.Errorf("invalid AmountIn value: %v", err)
 	}
 
-	// Парсим слиппаж
-	slippageConfig, err := types.NewSlippageConfig(record[10])
+	slippageConfig, err := types.NewSlippageConfig(record[9]) // было 10
 	if err != nil {
 		return nil, fmt.Errorf("invalid slippage configuration: %w", err)
 	}
 
-	autosellPercent, err := strconv.ParseFloat(record[11], 64)
+	autosellPercent, err := strconv.ParseFloat(record[10], 64) // было 11
 	if err != nil {
 		return nil, fmt.Errorf("invalid AutosellPercent value: %v", err)
 	}
 
-	autosellDelay, err := strconv.Atoi(record[12])
+	autosellDelay, err := strconv.Atoi(record[11]) // было 12
 	if err != nil {
 		return nil, fmt.Errorf("invalid AutosellDelay value: %v", err)
 	}
 
-	autosellAmount, err := strconv.ParseFloat(record[13], 64)
+	autosellAmount, err := strconv.ParseFloat(record[12], 64) // было 13
 	if err != nil {
 		return nil, fmt.Errorf("invalid AutosellAmount value: %v", err)
 	}
 
-	transactionDelay, err := strconv.Atoi(record[14])
+	transactionDelay, err := strconv.Atoi(record[13]) // было 14
 	if err != nil {
 		return nil, fmt.Errorf("invalid TransactionDelay value: %v", err)
 	}
 
-	autosellPriorityFee, err := strconv.ParseFloat(record[15], 64)
+	autosellPriorityFee, err := strconv.ParseFloat(record[14], 64) // было 15
 	if err != nil {
 		return nil, fmt.Errorf("invalid AutosellPriorityFee value: %v", err)
 	}
@@ -105,9 +109,8 @@ func parseTask(record []string) (*types.Task, error) {
 		WalletName:          record[3],
 		Delta:               delta,
 		PriorityFee:         priorityFee,
-		AMMID:               record[6],
-		SourceToken:         record[7],
-		TargetToken:         record[8],
+		SourceToken:         sourceToken,
+		TargetToken:         targetToken,
 		AmountIn:            amountIn,
 		AutosellPercent:     autosellPercent,
 		AutosellDelay:       autosellDelay,
