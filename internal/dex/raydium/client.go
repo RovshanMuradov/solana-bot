@@ -180,6 +180,11 @@ func (c *Client) enrichPoolWithOnChainData(ctx context.Context, pool *Pool) erro
 	}
 	pool.State = *state
 
+	// Валидируем обновленные данные пула
+	if err := ValidatePoolAccounts(pool); err != nil {
+		return fmt.Errorf("invalid pool accounts after enrichment: %w", err)
+	}
+
 	return nil
 }
 

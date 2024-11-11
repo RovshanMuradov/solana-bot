@@ -40,8 +40,8 @@ func (s *Sniper) ExecuteSnipe() error {
 	}
 
 	// 3. Проверяем состояние пула
-	if pool.State.Status != 1 { // 1 = активный статус
-		return fmt.Errorf("pool is not active")
+	if !IsPoolActive(pool) {
+		return fmt.Errorf("pool is not active or has no liquidity")
 	}
 
 	// 4. Получаем Associated Token Accounts
@@ -62,17 +62,20 @@ func (s *Sniper) ExecuteSnipe() error {
 	}
 
 	// 5. Расчет параметров свапа
-	amountIn := s.config.MinAmountSOL
-	amountOut := (amountIn * pool.State.QuoteReserve) / (pool.State.BaseReserve + amountIn)
-	slippage := uint64(float64(amountOut) * float64(s.config.MaxSlippageBps) / 10000)
-	minAmountOut := amountOut - slippage
+	amounts := CalculateSwapAmounts(pool, s.config.MinAmountSOL, s.config.MaxSlippageBps)
+
+	// Проверяем влияние на цену
+	priceImpact := GetPriceImpact(pool, amounts.AmountIn)
+	if priceImpact > 5.0 { // 5% максимальное влияние на цену
+		return fmt.Errorf("price impact too high: %.2f%%", priceImpact)
+	}
 
 	// 6. Проверяем минимальные и максимальные лимиты
-	if amountIn < s.config.MinAmountSOL {
-		return fmt.Errorf("amount too small: %d < %d", amountIn, s.config.MinAmountSOL)
+	if amounts.AmountIn < s.config.MinAmountSOL {
+		return fmt.Errorf("amount too small: %d < %d", amounts.AmountIn, s.config.MinAmountSOL)
 	}
-	if amountIn > s.config.MaxAmountSOL {
-		return fmt.Errorf("amount too large: %d > %d", amountIn, s.config.MaxAmountSOL)
+	if amounts.AmountIn > s.config.MaxAmountSOL {
+		return fmt.Errorf("amount too large: %d > %d", amounts.AmountIn, s.config.MaxAmountSOL)
 	}
 
 	// 7. Проверяем баланс
@@ -81,7 +84,7 @@ func (s *Sniper) ExecuteSnipe() error {
 		return fmt.Errorf("failed to check balance: %w", err)
 	}
 
-	requiredBalance := amountIn + s.config.PriorityFee + 5000 // 5000 lamports для комиссии
+	requiredBalance := amounts.AmountIn + s.config.PriorityFee + 5000
 	if balance < requiredBalance {
 		return fmt.Errorf("insufficient balance: required %d, got %d", requiredBalance, balance)
 	}
@@ -90,8 +93,8 @@ func (s *Sniper) ExecuteSnipe() error {
 	swapParams := &SwapParams{
 		UserWallet:              s.client.privateKey.PublicKey(),
 		PrivateKey:              &s.client.privateKey,
-		AmountIn:                amountIn,
-		MinAmountOut:            minAmountOut,
+		AmountIn:                amounts.AmountIn,
+		MinAmountOut:            amounts.MinAmountOut,
 		Pool:                    pool,
 		SourceTokenAccount:      sourceATA,
 		DestinationTokenAccount: destinationATA,
@@ -128,9 +131,10 @@ func (s *Sniper) ExecuteSnipe() error {
 
 	s.logger.Info("snipe executed successfully",
 		zap.String("signature", signature),
-		zap.Uint64("amountIn", amountIn),
-		zap.Uint64("amountOut", amountOut),
-		zap.Uint64("minAmountOut", minAmountOut),
+		zap.Uint64("amountIn", amounts.AmountIn),
+		zap.Uint64("amountOut", amounts.AmountOut),
+		zap.Uint64("minAmountOut", amounts.MinAmountOut),
+		zap.Float64("price_impact", priceImpact),
 		zap.String("explorer", fmt.Sprintf("https://explorer.solana.com/tx/%s", signature)),
 	)
 
@@ -156,9 +160,13 @@ func (s *Sniper) MonitorPoolChanges(ctx context.Context) error {
 		return fmt.Errorf("failed to get initial pool state: %w", err)
 	}
 
-	initialState := pool.State
+	if !IsPoolActive(pool) {
+		return fmt.Errorf("initial pool is not active or has no liquidity")
+	}
 
+	initialState := pool.State
 	var retryCount int
+
 	for range ticker.C {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("monitoring stopped: %w", err)
@@ -188,7 +196,7 @@ func (s *Sniper) MonitorPoolChanges(ctx context.Context) error {
 				zap.Uint64("newQuoteReserve", currentPool.State.QuoteReserve),
 			)
 
-			if currentPool.State.Status != 1 {
+			if !IsPoolActive(currentPool) {
 				return fmt.Errorf("pool became inactive")
 			}
 

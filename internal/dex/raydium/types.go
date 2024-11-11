@@ -122,12 +122,6 @@ type SwapAmounts struct {
 	MinAmountOut uint64 // Минимальное количество выходных токенов с учетом проскальзывания
 }
 
-type PoolManager struct {
-	client blockchain.Client
-	logger *zap.Logger
-	pool   *Pool
-}
-
 type Sniper struct {
 	client *Client
 	logger *zap.Logger
