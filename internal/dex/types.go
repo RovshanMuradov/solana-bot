@@ -33,7 +33,6 @@ func (d *raydiumDEX) GetConfig() interface{} {
 }
 
 func (d *raydiumDEX) ExecuteSwap(ctx context.Context, task *types.Task, w *wallet.Wallet) error {
-	// Создание параметров свапа
 	d.logger.Debug("Starting swap execution",
 		zap.String("source_token", task.SourceToken),
 		zap.String("target_token", task.TargetToken),
@@ -50,23 +49,37 @@ func (d *raydiumDEX) ExecuteSwap(ctx context.Context, task *types.Task, w *walle
 	// Конвертируем AmountIn в uint64
 	amountInLamports := uint64(task.AmountIn * float64(solana.LAMPORTS_PER_SOL))
 
+	// Рассчитываем минимальное количество выходных токенов с учетом слиппажа
+	amounts := raydium.CalculateSwapAmounts(pool, amountInLamports, d.config.MaxSlippageBps)
+
 	// Создаем параметры свапа
 	params := &raydium.SwapParams{
 		UserWallet:          w.PublicKey,
 		PrivateKey:          &w.PrivateKey,
-		AmountIn:            amountInLamports,
+		AmountIn:            amounts.AmountIn,
+		MinAmountOut:        amounts.MinAmountOut,
 		Pool:                pool,
 		PriorityFeeLamports: uint64(task.PriorityFee * float64(solana.LAMPORTS_PER_SOL)),
+		Direction:           raydium.SwapDirectionIn,
+		SlippageBps:         d.config.MaxSlippageBps,
+		WaitConfirmation:    d.config.WaitConfirmation,
 	}
 
 	// Выполняем свап
-	signature, err := d.client.ExecuteSwap(params)
+	signature, err := d.client.Swap(ctx, params)
 	if err != nil {
 		return fmt.Errorf("swap failed: %w", err)
 	}
 
+	// Если требуется ожидание подтверждения
+	if params.WaitConfirmation {
+		if err := d.client.WaitForConfirmation(ctx, signature); err != nil {
+			return fmt.Errorf("failed to confirm transaction: %w", err)
+		}
+	}
+
 	d.logger.Info("Swap executed successfully",
-		zap.String("signature", signature),
+		zap.String("signature", signature.String()),
 		zap.String("pool", pool.ID.String()),
 		zap.String("wallet", w.PublicKey.String()))
 

@@ -30,13 +30,14 @@ type Client struct {
 }
 
 type ClientMetrics struct {
-	AccountInfoRequests    uint64
-	TransactionRequests    uint64
-	FailedRequests         uint64
-	ProgramAccountRequests uint64
-	LastError              error
-	LastErrorTime          time.Time
-	BalanceRequests        uint64
+	AccountInfoRequests     uint64
+	TransactionRequests     uint64
+	FailedRequests          uint64
+	ProgramAccountRequests  uint64
+	LastError               error
+	LastErrorTime           time.Time
+	BalanceRequests         uint64
+	SuccessfulConfirmations int64
 }
 
 // IncrementProgramAccountRequests атомарно увеличивает счетчик запросов

@@ -198,3 +198,45 @@ func (c *Client) GetWalletKey() (solana.PrivateKey, error) {
 	}
 	return c.privateKey, nil
 }
+func (c *Client) WaitForTransactionConfirmation(ctx context.Context, signature solana.Signature, commitment solanarpc.CommitmentType) error {
+	c.logger.Debug("waiting for transaction confirmation",
+		zap.String("signature", signature.String()),
+		zap.String("commitment", string(commitment)))
+
+	for i := 0; i < 30; i++ {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("context cancelled while waiting for confirmation: %w", ctx.Err())
+		default:
+			status, err := c.GetSignatureStatuses(ctx, signature)
+			if err != nil {
+				c.metrics.FailedRequests++
+				return fmt.Errorf("failed to get signature status: %w", err)
+			}
+
+			if status != nil && len(status.Value) > 0 && status.Value[0] != nil {
+				if status.Value[0].Err != nil {
+					c.metrics.FailedRequests++
+					return fmt.Errorf("transaction failed: %v", status.Value[0].Err)
+				}
+
+				confirmStatus := string(status.Value[0].ConfirmationStatus)
+				switch {
+				case commitment == solanarpc.CommitmentConfirmed &&
+					(confirmStatus == string(solanarpc.CommitmentConfirmed) || confirmStatus == string(solanarpc.CommitmentFinalized)):
+					c.metrics.SuccessfulConfirmations++
+					return nil
+				case commitment == solanarpc.CommitmentFinalized &&
+					confirmStatus == string(solanarpc.CommitmentFinalized):
+					c.metrics.SuccessfulConfirmations++
+					return nil
+				}
+			}
+
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+
+	c.metrics.FailedRequests++
+	return fmt.Errorf("confirmation timeout after 30 attempts")
+}

@@ -17,11 +17,11 @@ type TokenAmount struct {
 }
 
 // Нужно добавить
-type SwapDirection string
+type SwapDirection uint8
 
 const (
-	SwapDirectionIn  SwapDirection = "in"
-	SwapDirectionOut SwapDirection = "out"
+	SwapDirectionOut SwapDirection = iota
+	SwapDirectionIn
 )
 
 // Нужно добавить
@@ -58,6 +58,40 @@ type Pool struct {
 	IsFromAPI   bool             `json:"-"` // Флаг для отслеживания источника данных
 }
 
+// Clone создает глубокую копию пула
+func (p *Pool) Clone() *Pool {
+	if p == nil {
+		return nil
+	}
+
+	return &Pool{
+		ID:            p.ID, // PublicKey можно копировать напрямую, это [32]byte
+		Authority:     p.Authority,
+		BaseMint:      p.BaseMint,
+		QuoteMint:     p.QuoteMint,
+		BaseVault:     p.BaseVault,
+		QuoteVault:    p.QuoteVault,
+		BaseDecimals:  p.BaseDecimals,
+		QuoteDecimals: p.QuoteDecimals,
+		DefaultFeeBps: p.DefaultFeeBps,
+		Version:       p.Version,
+		State: PoolState{ // Создаем новую копию PoolState
+			BaseReserve:  p.State.BaseReserve,
+			QuoteReserve: p.State.QuoteReserve,
+			Status:       p.State.Status,
+		},
+		// API поля
+		MarketID:    p.MarketID,
+		LPMint:      p.LPMint,
+		Creator:     p.Creator,
+		TokenSymbol: p.TokenSymbol,
+		TokenName:   p.TokenName,
+		OpenTimeMs:  p.OpenTimeMs,
+		Timestamp:   p.Timestamp,
+		IsFromAPI:   p.IsFromAPI,
+	}
+}
+
 type PoolState struct {
 	BaseReserve  uint64 // Резерв базового токена в пуле
 	QuoteReserve uint64 // Резерв котируемого токена в пуле
@@ -67,16 +101,15 @@ type PoolState struct {
 type SwapParams struct {
 	UserWallet              solana.PublicKey   // Публичный ключ кошелька пользователя
 	PrivateKey              *solana.PrivateKey // Приватный ключ для подписания транзакции
-	AmountIn                uint64             // Количество входного токена для обмена
+	AmountIn                uint64             // Количество входного токена
 	MinAmountOut            uint64             // Минимальное количество выходного токена
-	Pool                    *Pool              // Указатель на пул для обмена
-	SourceTokenAccount      solana.PublicKey   // Аккаунт исходного токена
-	DestinationTokenAccount solana.PublicKey   // Аккаунт целевого токена
-	PriorityFeeLamports     uint64             // Приоритетная комиссия в лампортах
-
-	Direction   SwapDirection
-	SlippageBps uint16
-	Deadline    time.Time // таймаут для транзакции
+	Pool                    *Pool              // Пул для свапа
+	SourceTokenAccount      solana.PublicKey   // Токен аккаунт источника
+	DestinationTokenAccount solana.PublicKey   // Токен аккаунт назначения
+	PriorityFeeLamports     uint64             // Приоритетная комиссия
+	Direction               SwapDirection      // Направление свапа
+	SlippageBps             uint16             // Допустимое проскальзывание в базисных пунктах
+	WaitConfirmation        bool               // Ожидать ли подтверждения транзакции
 }
 
 // Client представляет клиент для работы с Raydium DEX
@@ -100,13 +133,6 @@ type SwapInstruction struct {
 	solana.AccountMetaSlice `bin:"-" borsh_skip:"true"`
 }
 
-// RaydiumSwapInstruction реализует интерфейс solana.Instruction
-type ExecutableSwapInstruction struct {
-	programID solana.PublicKey
-	accounts  []*solana.AccountMeta
-	data      []byte
-}
-
 // RaydiumError represents a custom error type
 type Error struct {
 	Code    string
@@ -127,17 +153,19 @@ type Sniper struct {
 	logger *zap.Logger
 	config *SniperConfig // Конфигурация снайпинга
 }
-type SniperConfig struct {
-	// Существующие поля
-	MaxSlippageBps   uint16 // экспортируемые поля
-	MinAmountSOL     uint64 // использовать lamports вместо float64
-	MaxAmountSOL     uint64
-	PriorityFee      uint64
-	WaitConfirmation bool
-	MonitorInterval  time.Duration
-	MaxRetries       int
 
-	// Добавляем новые необходимые поля
+// SniperConfig содержит настройки для снайпера
+type SniperConfig struct {
+	// Параметры сделок
+	MaxSlippageBps   uint16        // Максимальное проскальзывание в базисных пунктах
+	MinAmountSOL     uint64        // Минимальная сумма в SOL (в lamports)
+	MaxAmountSOL     uint64        // Максимальная сумма в SOL (в lamports)
+	PriorityFee      uint64        // Приоритетная комиссия
+	WaitConfirmation bool          // Ждать ли подтверждения транзакции
+	MonitorInterval  time.Duration // Интервал мониторинга
+	MaxRetries       int           // Максимальное количество попыток
+
+	// Параметры токенов
 	BaseMint  solana.PublicKey // Mint address базового токена
 	QuoteMint solana.PublicKey // Mint address котируемого токена
 }
@@ -145,4 +173,16 @@ type SniperConfig struct {
 // IsValid проверяет валидность версии пула
 func (v PoolVersion) IsValid() bool {
 	return v == PoolVersionV3 || v == PoolVersionV4
+}
+
+type TokenAccounts struct {
+	SourceATA      solana.PublicKey
+	DestinationATA solana.PublicKey
+	Created        bool // флаг, были ли созданы новые ATA
+}
+
+type APIMetadata struct {
+	Symbol   string
+	Name     string
+	Decimals uint8
 }

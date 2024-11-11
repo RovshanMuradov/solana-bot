@@ -10,68 +10,96 @@ import (
 	"go.uber.org/zap"
 )
 
-// CacheEntry представляет запись в кэше с временем жизни
+const (
+	defaultCacheTTL = 15 * time.Minute
+	minCacheTTL     = time.Minute
+	maxCacheTTL     = time.Hour
+	cleanupInterval = 5 * time.Minute
+)
+
+// CacheEntry представляет запись в кэше с временем жизни и метаданными
 type CacheEntry struct {
-	Pool     *Pool
-	ExpireAt time.Time
+	Pool           *Pool
+	ExpireAt       time.Time
+	LastUpdateTime time.Time
+	UpdateCount    int
+	Source         string // "api" или "blockchain"
 }
 
-// PoolCache предоставляет временное хранилище для пулов
+// PoolCache предоставляет потокобезопасное временное хранилище для пулов
 type PoolCache struct {
 	entries map[string]CacheEntry
 	mu      sync.RWMutex
 	logger  *zap.Logger
 	ttl     time.Duration
+
+	// Метрики кэша
+	stats CacheStats
+
+	// Канал для остановки очистки
+	stopCleanup chan struct{}
+}
+
+// CacheStats содержит метрики использования кэша
+type CacheStats struct {
+	Hits        int64
+	Misses      int64
+	Expirations int64
+	Updates     int64
+	mu          sync.Mutex
 }
 
 // NewPoolCache создает новый экземпляр кэша пулов
 func NewPoolCache(logger *zap.Logger) *PoolCache {
-	return &PoolCache{
-		entries: make(map[string]CacheEntry),
-		logger:  logger.Named("pool-cache"),
-		ttl:     15 * time.Minute, // Дефолтное время жизни кэша
+	pc := &PoolCache{
+		entries:     make(map[string]CacheEntry),
+		logger:      logger.Named("pool-cache"),
+		ttl:         defaultCacheTTL,
+		stopCleanup: make(chan struct{}),
 	}
+
+	// Запускаем горутину для периодической очистки
+	go pc.startCleanupRoutine()
+
+	return pc
 }
 
-// SetTTL устанавливает время жизни для записей кэша
-func (pc *PoolCache) SetTTL(ttl time.Duration) {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-	pc.ttl = ttl
-}
-
-// AddPool добавляет пул в кэш
+// AddPool добавляет или обновляет пул в кэше
 func (pc *PoolCache) AddPool(pool *Pool) error {
-	if pool == nil {
-		return fmt.Errorf("cannot add nil pool")
-	}
-	if err := pc.validatePool(pool); err != nil {
-		return fmt.Errorf("invalid pool data: %w", err)
+	if err := pc.validatePoolForCache(pool); err != nil {
+		return fmt.Errorf("pool validation failed: %w", err)
 	}
 
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 
-	// Создаем ключи для обоих направлений (base->quote и quote->base)
-	keys := []string{
-		fmt.Sprintf("%s-%s", pool.BaseMint.String(), pool.QuoteMint.String()),
-		fmt.Sprintf("%s-%s", pool.QuoteMint.String(), pool.BaseMint.String()),
-	}
-
+	now := time.Now()
 	entry := CacheEntry{
-		Pool:     pool,
-		ExpireAt: time.Now().Add(pc.ttl),
+		Pool:           pool.Clone(), // Создаем копию пула для безопасности
+		ExpireAt:       now.Add(pc.ttl),
+		LastUpdateTime: now,
+		UpdateCount:    1,
+		Source:         "api",
 	}
 
-	// Сохраняем пул под обоими ключами
+	// Создаем ключи для обоих направлений
+	keys := pc.generatePoolKeys(pool)
+
+	// Проверяем существующие записи
 	for _, key := range keys {
+		if existing, exists := pc.entries[key]; exists {
+			entry.UpdateCount = existing.UpdateCount + 1
+			pc.logPoolUpdate(pool, existing)
+		}
 		pc.entries[key] = entry
 	}
 
+	pc.updateStats(1, 0, 0, 0)
+
 	pc.logger.Debug("pool added to cache",
 		zap.String("pool_id", pool.ID.String()),
-		zap.String("base_mint", pool.BaseMint.String()),
-		zap.String("quote_mint", pool.QuoteMint.String()),
+		zap.String("market_id", pool.MarketID.String()),
+		zap.String("token_symbol", pool.TokenSymbol),
 		zap.Time("expire_at", entry.ExpireAt))
 
 	return nil
@@ -83,8 +111,6 @@ func (pc *PoolCache) GetPool(baseMint, quoteMint solana.PublicKey) *Pool {
 	defer pc.mu.RUnlock()
 
 	now := time.Now()
-
-	// Пробуем оба варианта ключей
 	keys := []string{
 		fmt.Sprintf("%s-%s", baseMint.String(), quoteMint.String()),
 		fmt.Sprintf("%s-%s", quoteMint.String(), baseMint.String()),
@@ -92,13 +118,47 @@ func (pc *PoolCache) GetPool(baseMint, quoteMint solana.PublicKey) *Pool {
 
 	for _, key := range keys {
 		if entry, exists := pc.entries[key]; exists {
-			// Проверяем не истекло ли время жизни записи
 			if now.Before(entry.ExpireAt) {
-				return entry.Pool
+				pc.updateStats(0, 1, 0, 0)
+				return entry.Pool.Clone() // Возвращаем копию
 			}
-			// Удаляем устаревшую запись
-			delete(pc.entries, key)
+			// Помечаем как устаревшую
+			pc.updateStats(0, 0, 1, 0)
 		}
+	}
+
+	pc.updateStats(0, 0, 0, 1)
+	return nil
+}
+
+// validatePoolForCache проводит комплексную валидацию пула для кэширования
+func (pc *PoolCache) validatePoolForCache(pool *Pool) error {
+	if pool == nil {
+		return fmt.Errorf("pool cannot be nil")
+	}
+
+	// Проверка обязательных полей
+	requiredChecks := []struct {
+		condition bool
+		message   string
+	}{
+		{pool.ID.IsZero(), "zero pool ID"},
+		{pool.MarketID.IsZero(), "zero market ID"},
+		{pool.LPMint.IsZero(), "zero LP mint"},
+		{pool.TokenSymbol == "", "empty token symbol"},
+		{pool.TokenName == "", "empty token name"},
+		{!pool.Version.IsValid(), "invalid pool version"},
+	}
+
+	for _, check := range requiredChecks {
+		if check.condition {
+			return fmt.Errorf(check.message)
+		}
+	}
+
+	// Проверка состояния пула
+	if pool.State.Status == PoolStatusUninitialized {
+		return fmt.Errorf("pool is uninitialized")
 	}
 
 	return nil
@@ -108,12 +168,45 @@ func (pc *PoolCache) GetPool(baseMint, quoteMint solana.PublicKey) *Pool {
 func (pc *PoolCache) Clear() {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
+
 	pc.entries = make(map[string]CacheEntry)
-	pc.logger.Debug("cache cleared")
+	pc.logger.Info("cache cleared")
 }
 
-// RemoveExpired удаляет все истекшие записи из кэша
-func (pc *PoolCache) RemoveExpired() {
+// SetTTL устанавливает время жизни для записей кэша
+func (pc *PoolCache) SetTTL(ttl time.Duration) error {
+	if ttl < minCacheTTL || ttl > maxCacheTTL {
+		return fmt.Errorf("TTL must be between %v and %v", minCacheTTL, maxCacheTTL)
+	}
+
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	pc.ttl = ttl
+	return nil
+}
+
+// Close останавливает фоновые процессы
+func (pc *PoolCache) Close() {
+	close(pc.stopCleanup)
+}
+
+// Вспомогательные методы
+
+func (pc *PoolCache) startCleanupRoutine() {
+	ticker := time.NewTicker(cleanupInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			pc.removeExpired()
+		case <-pc.stopCleanup:
+			return
+		}
+	}
+}
+
+func (pc *PoolCache) removeExpired() {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 
@@ -122,15 +215,58 @@ func (pc *PoolCache) RemoveExpired() {
 		if now.After(entry.ExpireAt) {
 			delete(pc.entries, key)
 			pc.logger.Debug("removed expired pool from cache",
-				zap.String("pool_id", entry.Pool.ID.String()))
+				zap.String("pool_id", entry.Pool.ID.String()),
+				zap.String("key", key))
 		}
 	}
 }
 
-// GetStats возвращает статистику использования кэша
+func (pc *PoolCache) generatePoolKeys(pool *Pool) []string {
+	// Генерируем ключи для различных комбинаций токенов
+	keys := make([]string, 0, 2)
+
+	// Base-Quote направление
+	if !pool.BaseMint.IsZero() && !pool.QuoteMint.IsZero() {
+		keys = append(keys, fmt.Sprintf("%s-%s",
+			pool.BaseMint.String(),
+			pool.QuoteMint.String()))
+	}
+
+	// Quote-Base направление
+	if !pool.QuoteMint.IsZero() && !pool.BaseMint.IsZero() {
+		keys = append(keys, fmt.Sprintf("%s-%s",
+			pool.QuoteMint.String(),
+			pool.BaseMint.String()))
+	}
+
+	return keys
+}
+
+func (pc *PoolCache) logPoolUpdate(newPool *Pool, existing CacheEntry) {
+	pc.logger.Debug("updating existing pool",
+		zap.String("pool_id", newPool.ID.String()),
+		zap.Int("update_count", existing.UpdateCount+1),
+		zap.Time("last_update", existing.LastUpdateTime),
+		zap.String("token_symbol", newPool.TokenSymbol))
+}
+
+func (pc *PoolCache) updateStats(updates, hits, expirations, misses int64) {
+	pc.stats.mu.Lock()
+	defer pc.stats.mu.Unlock()
+
+	pc.stats.Updates += updates
+	pc.stats.Hits += hits
+	pc.stats.Expirations += expirations
+	pc.stats.Misses += misses
+}
+
+// GetStats возвращает текущую статистику кэша
 func (pc *PoolCache) GetStats() map[string]interface{} {
 	pc.mu.RLock()
 	defer pc.mu.RUnlock()
+
+	pc.stats.mu.Lock()
+	defer pc.stats.mu.Unlock()
 
 	now := time.Now()
 	var expired, valid int
@@ -148,31 +284,9 @@ func (pc *PoolCache) GetStats() map[string]interface{} {
 		"valid_entries":   valid,
 		"expired_entries": expired,
 		"ttl_seconds":     pc.ttl.Seconds(),
+		"hits":            pc.stats.Hits,
+		"misses":          pc.stats.Misses,
+		"updates":         pc.stats.Updates,
+		"expirations":     pc.stats.Expirations,
 	}
-}
-
-// validatePool проверяет валидность пула
-func (pc *PoolCache) validatePool(pool *Pool) error {
-	if pool.ID.IsZero() {
-		return fmt.Errorf("zero pool ID")
-	}
-	if pool.Authority.IsZero() {
-		return fmt.Errorf("zero authority")
-	}
-	if pool.BaseMint.IsZero() {
-		return fmt.Errorf("zero base mint")
-	}
-	if pool.QuoteMint.IsZero() {
-		return fmt.Errorf("zero quote mint")
-	}
-	if pool.BaseVault.IsZero() {
-		return fmt.Errorf("zero base vault")
-	}
-	if pool.QuoteVault.IsZero() {
-		return fmt.Errorf("zero quote vault")
-	}
-	if !pool.Version.IsValid() {
-		return fmt.Errorf("invalid pool version")
-	}
-	return nil
 }

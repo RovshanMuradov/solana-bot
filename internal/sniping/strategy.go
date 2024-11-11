@@ -35,8 +35,6 @@ func LoadTasks(path string) ([]*types.Task, error) {
 	return tasks, nil
 }
 
-// internal/sniping/strategy.go
-
 func parseTask(record []string) (*types.Task, error) {
 	// Было 16 полей (включая AMMID), стало 15
 	if len(record) != 15 {
