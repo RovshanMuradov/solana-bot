@@ -29,7 +29,7 @@ func (s *Sniper) ExecuteSnipe() error {
 		return fmt.Errorf("failed to validate parameters: %w", err)
 	}
 
-	// 2. Получение информации о пуле через кэш или on-chain поиск
+	// 2. Получение информации о пуле через API и кэш
 	pool, err := s.client.GetPool(ctx, s.config.BaseMint, s.config.QuoteMint)
 	if err != nil {
 		// Пробуем в обратном порядке
@@ -39,13 +39,12 @@ func (s *Sniper) ExecuteSnipe() error {
 		}
 	}
 
-	// 3. Проверка состояния пула
-	poolManager := NewPoolManager(s.client.client, s.logger, pool)
-	if err := poolManager.ValidatePool(ctx); err != nil {
-		return fmt.Errorf("pool validation failed: %w", err)
+	// 3. Проверяем состояние пула
+	if pool.State.Status != 1 { // 1 = активный статус
+		return fmt.Errorf("pool is not active")
 	}
 
-	// 4. Получаем или создаем Associated Token Accounts
+	// 4. Получаем Associated Token Accounts
 	sourceATA, _, err := solana.FindAssociatedTokenAddress(
 		s.client.privateKey.PublicKey(),
 		s.config.BaseMint,
@@ -62,37 +61,37 @@ func (s *Sniper) ExecuteSnipe() error {
 		return fmt.Errorf("failed to get destination ATA: %w", err)
 	}
 
-	// 5. Расчет параметров свапа с учетом slippage
-	amounts, err := poolManager.CalculateAmounts(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to calculate swap amounts: %w", err)
+	// 5. Расчет параметров свапа
+	amountIn := s.config.MinAmountSOL
+	amountOut := (amountIn * pool.State.QuoteReserve) / (pool.State.BaseReserve + amountIn)
+	slippage := uint64(float64(amountOut) * float64(s.config.MaxSlippageBps) / 10000)
+	minAmountOut := amountOut - slippage
+
+	// 6. Проверяем минимальные и максимальные лимиты
+	if amountIn < s.config.MinAmountSOL {
+		return fmt.Errorf("amount too small: %d < %d", amountIn, s.config.MinAmountSOL)
+	}
+	if amountIn > s.config.MaxAmountSOL {
+		return fmt.Errorf("amount too large: %d > %d", amountIn, s.config.MaxAmountSOL)
 	}
 
-	// Проверяем минимальные и максимальные лимиты
-	if amounts.AmountIn < s.config.MinAmountSOL {
-		return fmt.Errorf("amount too small: %d < %d", amounts.AmountIn, s.config.MinAmountSOL)
-	}
-	if amounts.AmountIn > s.config.MaxAmountSOL {
-		return fmt.Errorf("amount too large: %d > %d", amounts.AmountIn, s.config.MaxAmountSOL)
-	}
-
-	// 6. Проверяем баланс
+	// 7. Проверяем баланс
 	balance, err := s.client.CheckWalletBalance(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to check balance: %w", err)
 	}
 
-	requiredBalance := amounts.AmountIn + s.config.PriorityFee + 5000 // 5000 lamports для комиссии
+	requiredBalance := amountIn + s.config.PriorityFee + 5000 // 5000 lamports для комиссии
 	if balance < requiredBalance {
 		return fmt.Errorf("insufficient balance: required %d, got %d", requiredBalance, balance)
 	}
 
-	// 7. Подготовка параметров для свапа
+	// 8. Подготовка параметров для свапа
 	swapParams := &SwapParams{
 		UserWallet:              s.client.privateKey.PublicKey(),
 		PrivateKey:              &s.client.privateKey,
-		AmountIn:                amounts.AmountIn,
-		MinAmountOut:            amounts.MinAmountOut,
+		AmountIn:                amountIn,
+		MinAmountOut:            minAmountOut,
 		Pool:                    pool,
 		SourceTokenAccount:      sourceATA,
 		DestinationTokenAccount: destinationATA,
@@ -102,18 +101,18 @@ func (s *Sniper) ExecuteSnipe() error {
 		Deadline:                time.Now().Add(30 * time.Second),
 	}
 
-	// 8. Симуляция свапа
+	// 9. Симуляция свапа
 	if err := s.client.SimulateSwap(ctx, swapParams); err != nil {
 		return fmt.Errorf("swap simulation failed: %w", err)
 	}
 
-	// 9. Выполнение свапа
+	// 10. Выполнение свапа
 	signature, err := s.client.ExecuteSwap(swapParams)
 	if err != nil {
 		return fmt.Errorf("swap execution failed: %w", err)
 	}
 
-	// 10. Ждем подтверждения если настроено
+	// 11. Ждем подтверждения если настроено
 	if s.config.WaitConfirmation {
 		s.logger.Info("waiting for confirmation...",
 			zap.String("signature", signature))
@@ -127,14 +126,75 @@ func (s *Sniper) ExecuteSnipe() error {
 		}
 	}
 
-	// Логируем успешное выполнение
 	s.logger.Info("snipe executed successfully",
 		zap.String("signature", signature),
-		zap.Uint64("amountIn", amounts.AmountIn),
-		zap.Uint64("amountOut", amounts.AmountOut),
-		zap.Uint64("minAmountOut", amounts.MinAmountOut),
+		zap.Uint64("amountIn", amountIn),
+		zap.Uint64("amountOut", amountOut),
+		zap.Uint64("minAmountOut", minAmountOut),
 		zap.String("explorer", fmt.Sprintf("https://explorer.solana.com/tx/%s", signature)),
 	)
+
+	return nil
+}
+
+// TODO: Потенциальные улучшения на основе TS версии:
+// 1. Добавить отслеживание изменений цены
+// 2. Добавить отслеживание объема ликвидности
+// 3. Добавить механизм подписки на события пула
+// 4. Добавить отслеживание транзакций в мемпуле
+// 5. Добавить механизм websocket подключения
+// 6. Добавить механизм агрегации данных по нескольким RPC
+func (s *Sniper) MonitorPoolChanges(ctx context.Context) error {
+	s.logger.Debug("starting pool monitoring")
+
+	ticker := time.NewTicker(s.config.MonitorInterval)
+	defer ticker.Stop()
+
+	// Получаем начальное состояние пула
+	pool, err := s.client.GetPool(ctx, s.config.BaseMint, s.config.QuoteMint)
+	if err != nil {
+		return fmt.Errorf("failed to get initial pool state: %w", err)
+	}
+
+	initialState := pool.State
+
+	var retryCount int
+	for range ticker.C {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("monitoring stopped: %w", err)
+		}
+
+		// Получаем актуальное состояние пула
+		currentPool, err := s.client.GetPool(ctx, s.config.BaseMint, s.config.QuoteMint)
+		if err != nil {
+			retryCount++
+			s.logger.Error("failed to get current pool state",
+				zap.Error(err),
+				zap.Int("retry", retryCount),
+			)
+			if retryCount >= s.config.MaxRetries {
+				return fmt.Errorf("max retries exceeded while monitoring pool")
+			}
+			continue
+		}
+		retryCount = 0
+
+		// Проверяем изменения в пуле
+		if s.hasSignificantChanges(&initialState, &currentPool.State) {
+			s.logger.Info("detected significant pool changes",
+				zap.Uint64("oldBaseReserve", initialState.BaseReserve),
+				zap.Uint64("newBaseReserve", currentPool.State.BaseReserve),
+				zap.Uint64("oldQuoteReserve", initialState.QuoteReserve),
+				zap.Uint64("newQuoteReserve", currentPool.State.QuoteReserve),
+			)
+
+			if currentPool.State.Status != 1 {
+				return fmt.Errorf("pool became inactive")
+			}
+
+			initialState = currentPool.State
+		}
+	}
 
 	return nil
 }
@@ -216,75 +276,6 @@ func (s *Sniper) ValidateAndPrepare() error {
 
 	if s.config.MaxRetries < 1 {
 		return fmt.Errorf("invalid max retries value")
-	}
-
-	return nil
-}
-
-// TODO: Потенциальные улучшения на основе TS версии:
-// 1. Добавить отслеживание изменений цены
-// 2. Добавить отслеживание объема ликвидности
-// 3. Добавить механизм подписки на события пула
-// 4. Добавить отслеживание транзакций в мемпуле
-// 5. Добавить механизм websocket подключения
-// 6. Добавить механизм агрегации данных по нескольким RPC
-func (s *Sniper) MonitorPoolChanges(ctx context.Context) error {
-	s.logger.Debug("starting pool monitoring")
-
-	ticker := time.NewTicker(s.config.MonitorInterval)
-	defer ticker.Stop()
-
-	// Получаем начальное состояние пула
-	pool, err := s.client.GetPool(ctx, s.config.BaseMint, s.config.QuoteMint)
-	if err != nil {
-		return fmt.Errorf("failed to get initial pool state: %w", err)
-	}
-
-	poolManager := NewPoolManager(s.client.client, s.logger, pool)
-	initialState, err := poolManager.GetPoolState(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get initial pool state: %w", err)
-	}
-
-	var retryCount int
-	for range ticker.C {
-		// Проверяем контекст перед каждой итерацией
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("monitoring stopped: %w", err)
-		}
-
-		// Получаем текущее состояние пула
-		currentState, err := poolManager.GetPoolState(ctx)
-		if err != nil {
-			retryCount++
-			s.logger.Error("failed to get current pool state",
-				zap.Error(err),
-				zap.Int("retry", retryCount),
-			)
-			if retryCount >= s.config.MaxRetries {
-				return fmt.Errorf("max retries exceeded while monitoring pool")
-			}
-			continue
-		}
-		retryCount = 0
-
-		// Проверяем изменения в пуле
-		if s.hasSignificantChanges(initialState, currentState) {
-			s.logger.Info("detected significant pool changes",
-				zap.Uint64("oldBaseReserve", initialState.BaseReserve),
-				zap.Uint64("newBaseReserve", currentState.BaseReserve),
-				zap.Uint64("oldQuoteReserve", initialState.QuoteReserve),
-				zap.Uint64("newQuoteReserve", currentState.QuoteReserve),
-			)
-
-			// Если пул неактивен, прекращаем мониторинг
-			if currentState.Status != 1 {
-				return fmt.Errorf("pool became inactive")
-			}
-
-			// Обновляем начальное состояние
-			initialState = currentState
-		}
 	}
 
 	return nil

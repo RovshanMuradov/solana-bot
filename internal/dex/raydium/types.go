@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
+	solanarpc "github.com/gagliardetto/solana-go/rpc"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"go.uber.org/zap"
 )
@@ -34,6 +34,7 @@ const (
 )
 
 type Pool struct {
+	// Основные поля из блокчейна
 	ID            solana.PublicKey // Идентификатор пула
 	Authority     solana.PublicKey // Публичный ключ, который имеет полномочия управлять пулом
 	BaseMint      solana.PublicKey // Публичный ключ базового токена
@@ -43,34 +44,18 @@ type Pool struct {
 	BaseDecimals  uint8            // Количество десятичных знаков базового токена
 	QuoteDecimals uint8            // Количество десятичных знаков котируемого токена
 	DefaultFeeBps uint16           // Комиссия по умолчанию в базисных пунктах (bps)
-	// Только необходимые поля для V4
+	Version       PoolVersion
+	State         PoolState // встроенное состояние
 
-	Version PoolVersion
-	State   PoolState // встроенное состояние
-}
-
-type PoolJSONInfo struct {
-	ID            string `json:"id"`
-	BaseMint      string `json:"baseMint"`
-	QuoteMint     string `json:"quoteMint"`
-	LpMint        string `json:"lpMint"`
-	BaseDecimals  int    `json:"baseDecimals"`
-	QuoteDecimals int    `json:"quoteDecimals"`
-	LpDecimals    int    `json:"lpDecimals"`
-	Version       int    `json:"version"`
-	ProgramID     string `json:"programId"`
-	Authority     string `json:"authority"`
-	BaseVault     string `json:"baseVault"`
-	QuoteVault    string `json:"quoteVault"`
-	MarketID      string `json:"marketId"`
-	OpenOrders    string `json:"openOrders"`
-	TargetOrders  string `json:"targetOrders"`
-	Status        string `json:"status"`
-}
-
-type PoolList struct {
-	Official   []PoolJSONInfo `json:"official"`
-	Unofficial []PoolJSONInfo `json:"unofficial"`
+	// Дополнительные поля из API
+	MarketID    solana.PublicKey `json:"marketID"`
+	LPMint      solana.PublicKey `json:"lpMint"`
+	Creator     solana.PublicKey `json:"creator"`
+	TokenSymbol string           `json:"tokenSymbol"`
+	TokenName   string           `json:"tokenName"`
+	OpenTimeMs  int64            `json:"openTimeMs"`
+	Timestamp   time.Time        `json:"timestamp"`
+	IsFromAPI   bool             `json:"-"` // Флаг для отслеживания источника данных
 }
 
 type PoolState struct {
@@ -94,6 +79,7 @@ type SwapParams struct {
 	Deadline    time.Time // таймаут для транзакции
 }
 
+// Client представляет клиент для работы с Raydium DEX
 type Client struct {
 	client      blockchain.Client
 	logger      *zap.Logger
@@ -101,17 +87,10 @@ type Client struct {
 	timeout     time.Duration
 	retries     int
 	priorityFee uint64
-	commitment  rpc.CommitmentType
+	commitment  solanarpc.CommitmentType
 	poolCache   *PoolCache
+	api         *APIService
 }
-
-// type clientOptions struct {
-// 	timeout     time.Duration      // Таймаут для операций
-// 	retries     int                // Количество повторных попыток
-// 	priorityFee uint64             // Приоритетная комиссия в лампортах
-// 	commitment  rpc.CommitmentType // Уровень подтверждения транзакций
-// }
-
 type SwapInstruction struct {
 	Amount     *uint64
 	MinimumOut *uint64
@@ -167,4 +146,9 @@ type SniperConfig struct {
 	// Добавляем новые необходимые поля
 	BaseMint  solana.PublicKey // Mint address базового токена
 	QuoteMint solana.PublicKey // Mint address котируемого токена
+}
+
+// IsValid проверяет валидность версии пула
+func (v PoolVersion) IsValid() bool {
+	return v == PoolVersionV3 || v == PoolVersionV4
 }

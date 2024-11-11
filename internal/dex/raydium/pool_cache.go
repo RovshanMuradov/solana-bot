@@ -2,64 +2,42 @@
 package raydium
 
 import (
-	"encoding/json"
 	"fmt"
-	"math"
-	"os"
 	"sync"
+	"time"
 
 	"github.com/gagliardetto/solana-go"
 	"go.uber.org/zap"
 )
 
-type PoolCache struct {
-	pools     map[string]*Pool
-	jsonPools *PoolList
-	mu        sync.RWMutex
-	logger    *zap.Logger
+// CacheEntry представляет запись в кэше с временем жизни
+type CacheEntry struct {
+	Pool     *Pool
+	ExpireAt time.Time
 }
 
+// PoolCache предоставляет временное хранилище для пулов
+type PoolCache struct {
+	entries map[string]CacheEntry
+	mu      sync.RWMutex
+	logger  *zap.Logger
+	ttl     time.Duration
+}
+
+// NewPoolCache создает новый экземпляр кэша пулов
 func NewPoolCache(logger *zap.Logger) *PoolCache {
 	return &PoolCache{
-		pools:  make(map[string]*Pool),
-		logger: logger,
+		entries: make(map[string]CacheEntry),
+		logger:  logger.Named("pool-cache"),
+		ttl:     15 * time.Minute, // Дефолтное время жизни кэша
 	}
 }
 
-func (pc *PoolCache) LoadPoolsFromFile(path string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("failed to read pools file: %w", err)
-	}
-
-	var poolList PoolList
-	if err := json.Unmarshal(data, &poolList); err != nil {
-		return fmt.Errorf("failed to unmarshal pools: %w", err)
-	}
-
+// SetTTL устанавливает время жизни для записей кэша
+func (pc *PoolCache) SetTTL(ttl time.Duration) {
 	pc.mu.Lock()
-	pc.jsonPools = &poolList
-	pc.mu.Unlock()
-
-	return nil
-}
-
-// GetPoolsCount возвращает количество пулов в кэше
-func (pc *PoolCache) GetPoolsCount() int {
-	pc.mu.RLock()
-	defer pc.mu.RUnlock()
-
-	if pc.jsonPools == nil {
-		return len(pc.pools)
-	}
-	return len(pc.jsonPools.Official) + len(pc.jsonPools.Unofficial)
-}
-
-// IsLoaded проверяет загружены ли пулы из файла
-func (pc *PoolCache) IsLoaded() bool {
-	pc.mu.RLock()
-	defer pc.mu.RUnlock()
-	return pc.jsonPools != nil
+	defer pc.mu.Unlock()
+	pc.ttl = ttl
 }
 
 // AddPool добавляет пул в кэш
@@ -67,152 +45,134 @@ func (pc *PoolCache) AddPool(pool *Pool) error {
 	if pool == nil {
 		return fmt.Errorf("cannot add nil pool")
 	}
-	if !pc.isValidPool(pool) {
-		return fmt.Errorf("invalid pool data")
+	if err := pc.validatePool(pool); err != nil {
+		return fmt.Errorf("invalid pool data: %w", err)
 	}
 
-	cacheKey := fmt.Sprintf("%s-%s", pool.BaseMint.String(), pool.QuoteMint.String())
 	pc.mu.Lock()
-	pc.pools[cacheKey] = pool
-	pc.mu.Unlock()
+	defer pc.mu.Unlock()
+
+	// Создаем ключи для обоих направлений (base->quote и quote->base)
+	keys := []string{
+		fmt.Sprintf("%s-%s", pool.BaseMint.String(), pool.QuoteMint.String()),
+		fmt.Sprintf("%s-%s", pool.QuoteMint.String(), pool.BaseMint.String()),
+	}
+
+	entry := CacheEntry{
+		Pool:     pool,
+		ExpireAt: time.Now().Add(pc.ttl),
+	}
+
+	// Сохраняем пул под обоими ключами
+	for _, key := range keys {
+		pc.entries[key] = entry
+	}
+
+	pc.logger.Debug("pool added to cache",
+		zap.String("pool_id", pool.ID.String()),
+		zap.String("base_mint", pool.BaseMint.String()),
+		zap.String("quote_mint", pool.QuoteMint.String()),
+		zap.Time("expire_at", entry.ExpireAt))
+
 	return nil
 }
 
 // GetPool получает пул из кэша
 func (pc *PoolCache) GetPool(baseMint, quoteMint solana.PublicKey) *Pool {
-	cacheKey := fmt.Sprintf("%s-%s", baseMint.String(), quoteMint.String())
-	pc.mu.RLock()
-	pool := pc.pools[cacheKey]
-	pc.mu.RUnlock()
-	return pool
-}
-
-// findPoolInJson ищет пул в загруженном JSON файле
-func (pc *PoolCache) findPoolInJSON(baseMint, quoteMint solana.PublicKey) *Pool {
 	pc.mu.RLock()
 	defer pc.mu.RUnlock()
 
-	if pc.jsonPools == nil {
-		return nil
+	now := time.Now()
+
+	// Пробуем оба варианта ключей
+	keys := []string{
+		fmt.Sprintf("%s-%s", baseMint.String(), quoteMint.String()),
+		fmt.Sprintf("%s-%s", quoteMint.String(), baseMint.String()),
 	}
 
-	// Функция для поиска в списке пулов
-	findInPoolList := func(pools []PoolJSONInfo) *Pool {
-		for _, info := range pools {
-			if (info.BaseMint == baseMint.String() && info.QuoteMint == quoteMint.String()) ||
-				(info.BaseMint == quoteMint.String() && info.QuoteMint == baseMint.String()) {
-
-				pool := pc.convertJSONToPool(info)
-				if pool != nil && pc.isValidPool(pool) {
-					pc.logger.Debug("found valid pool in JSON",
-						zap.String("pool_id", pool.ID.String()),
-						zap.String("base_mint", pool.BaseMint.String()),
-						zap.String("quote_mint", pool.QuoteMint.String()))
-					return pool
-				}
+	for _, key := range keys {
+		if entry, exists := pc.entries[key]; exists {
+			// Проверяем не истекло ли время жизни записи
+			if now.Before(entry.ExpireAt) {
+				return entry.Pool
 			}
+			// Удаляем устаревшую запись
+			delete(pc.entries, key)
 		}
-		return nil
 	}
 
-	// Сначала ищем в официальных пулах
-	if pool := findInPoolList(pc.jsonPools.Official); pool != nil {
-		return pool
-	}
-
-	// Затем в неофициальных
-	return findInPoolList(pc.jsonPools.Unofficial)
+	return nil
 }
 
-func (pc *PoolCache) convertJSONToPool(info PoolJSONInfo) *Pool {
-	defer func() {
-		if r := recover(); r != nil {
-			pc.logger.Error("failed to convert pool info",
-				zap.String("id", info.ID),
-				zap.Any("panic", r))
-		}
-	}()
-
-	// Создаем безопасные конвертеры для uint8
-	safeUint8 := func(n int) (uint8, error) {
-		if n < 0 || n > math.MaxUint8 {
-			return 0, fmt.Errorf("value %d outside uint8 range", n)
-		}
-		return uint8(n), nil
-	}
-
-	// Безопасно конвертируем decimals
-	baseDecimals, err := safeUint8(info.BaseDecimals)
-	if err != nil {
-		pc.logger.Error("invalid base decimals",
-			zap.String("pool_id", info.ID),
-			zap.Int("decimals", info.BaseDecimals),
-			zap.Error(err))
-		return nil
-	}
-
-	quoteDecimals, err := safeUint8(info.QuoteDecimals)
-	if err != nil {
-		pc.logger.Error("invalid quote decimals",
-			zap.String("pool_id", info.ID),
-			zap.Int("quote_decimals", info.QuoteDecimals),
-			zap.Error(err))
-		return nil
-	}
-
-	// Проверяем версию пула
-	var version PoolVersion
-	switch info.Version {
-	case 3:
-		version = PoolVersionV3
-	case 4:
-		version = PoolVersionV4
-	default:
-		pc.logger.Error("unsupported pool version",
-			zap.String("pool_id", info.ID),
-			zap.Int("version", info.Version))
-		return nil
-	}
-
-	try := func() *Pool {
-		return &Pool{
-			ID:            solana.MustPublicKeyFromBase58(info.ID),
-			Authority:     solana.MustPublicKeyFromBase58(info.Authority),
-			BaseMint:      solana.MustPublicKeyFromBase58(info.BaseMint),
-			QuoteMint:     solana.MustPublicKeyFromBase58(info.QuoteMint),
-			BaseVault:     solana.MustPublicKeyFromBase58(info.BaseVault),
-			QuoteVault:    solana.MustPublicKeyFromBase58(info.QuoteVault),
-			BaseDecimals:  baseDecimals,  // Используем безопасно сконвертированное значение
-			QuoteDecimals: quoteDecimals, // Используем безопасно сконвертированное значение
-			Version:       version,       // Используем проверенную версию
-		}
-	}
-
-	pool := try()
-	if pool == nil {
-		return nil
-	}
-
-	// Дополнительная проверка созданного пула
-	if !pc.isValidPool(pool) {
-		pc.logger.Error("created invalid pool",
-			zap.String("pool_id", info.ID))
-		return nil
-	}
-
-	return pool
+// Clear очищает все записи из кэша
+func (pc *PoolCache) Clear() {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	pc.entries = make(map[string]CacheEntry)
+	pc.logger.Debug("cache cleared")
 }
 
-// Добавим метод для валидации версии
-func (v PoolVersion) IsValid() bool {
-	return v == PoolVersionV3 || v == PoolVersionV4
+// RemoveExpired удаляет все истекшие записи из кэша
+func (pc *PoolCache) RemoveExpired() {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+
+	now := time.Now()
+	for key, entry := range pc.entries {
+		if now.After(entry.ExpireAt) {
+			delete(pc.entries, key)
+			pc.logger.Debug("removed expired pool from cache",
+				zap.String("pool_id", entry.Pool.ID.String()))
+		}
+	}
 }
 
-func (pc *PoolCache) isValidPool(pool *Pool) bool {
-	return !pool.ID.IsZero() &&
-		!pool.Authority.IsZero() &&
-		!pool.BaseMint.IsZero() &&
-		!pool.QuoteMint.IsZero() &&
-		!pool.BaseVault.IsZero() &&
-		!pool.QuoteVault.IsZero()
+// GetStats возвращает статистику использования кэша
+func (pc *PoolCache) GetStats() map[string]interface{} {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+
+	now := time.Now()
+	var expired, valid int
+
+	for _, entry := range pc.entries {
+		if now.After(entry.ExpireAt) {
+			expired++
+		} else {
+			valid++
+		}
+	}
+
+	return map[string]interface{}{
+		"total_entries":   len(pc.entries),
+		"valid_entries":   valid,
+		"expired_entries": expired,
+		"ttl_seconds":     pc.ttl.Seconds(),
+	}
+}
+
+// validatePool проверяет валидность пула
+func (pc *PoolCache) validatePool(pool *Pool) error {
+	if pool.ID.IsZero() {
+		return fmt.Errorf("zero pool ID")
+	}
+	if pool.Authority.IsZero() {
+		return fmt.Errorf("zero authority")
+	}
+	if pool.BaseMint.IsZero() {
+		return fmt.Errorf("zero base mint")
+	}
+	if pool.QuoteMint.IsZero() {
+		return fmt.Errorf("zero quote mint")
+	}
+	if pool.BaseVault.IsZero() {
+		return fmt.Errorf("zero base vault")
+	}
+	if pool.QuoteVault.IsZero() {
+		return fmt.Errorf("zero quote vault")
+	}
+	if !pool.Version.IsValid() {
+		return fmt.Errorf("invalid pool version")
+	}
+	return nil
 }
