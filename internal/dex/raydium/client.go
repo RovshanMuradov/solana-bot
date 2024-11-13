@@ -50,31 +50,45 @@ func (c *Client) GetPool(ctx context.Context, baseMint, quoteMint solana.PublicK
 		zap.String("baseMint", baseMint.String()),
 		zap.String("quoteMint", quoteMint.String()))
 
-	// Проверяем кэш в обоих направлениях
-	if pool := c.poolCache.GetPool(baseMint, quoteMint); pool != nil {
-		// Проверяем ликвидность закэшированного пула
-		if err := c.checkPoolLiquidity(ctx, pool); err == nil {
-			return pool, nil
-		}
-		c.logger.Debug("cached pool has insufficient liquidity, searching new pool")
-	}
-
-	// Пробуем найти пул через API в обоих направлениях
-	pool, err := c.api.GetPoolByToken(ctx, baseMint)
-	if err == nil {
-		if err := c.enrichAndValidatePool(ctx, pool, baseMint, quoteMint); err == nil {
-			return c.cacheAndReturn(pool), nil
+	// Try to get the best pool from cache first
+	if pool := c.poolCache.GetBestPool(baseMint, quoteMint); pool != nil {
+		if err := c.api.ValidatePool(ctx, pool, baseMint, quoteMint); err == nil {
+			if err := c.api.IsPoolViable(ctx, pool); err == nil {
+				return pool, nil
+			}
+			c.logger.Debug("cached pool is not viable", zap.Error(err))
 		}
 	}
 
-	pool, err = c.api.GetPoolByToken(ctx, quoteMint)
-	if err == nil {
-		if err := c.enrichAndValidatePool(ctx, pool, baseMint, quoteMint); err == nil {
-			return c.cacheAndReturn(pool), nil
+	// If cache miss or invalid pool, try to get pool directly from API
+	pool, err := c.api.GetPoolByPair(ctx, baseMint, quoteMint)
+	if err != nil {
+		c.logger.Debug("failed to get pool by pair, falling back to best pool search",
+			zap.Error(err))
+
+		// Fallback to FindBestPool if GetPoolByPair fails
+		pool, err = c.FindBestPool(ctx, baseMint, quoteMint)
+		if err != nil {
+			return nil, fmt.Errorf("failed to find best pool: %w", err)
 		}
 	}
 
-	return nil, fmt.Errorf("pool not found for tokens %s and %s", baseMint, quoteMint)
+	// Validate the found pool
+	if err := c.api.ValidatePool(ctx, pool, baseMint, quoteMint); err != nil {
+		return nil, fmt.Errorf("pool validation failed: %w", err)
+	}
+
+	// Check pool viability
+	if err := c.api.IsPoolViable(ctx, pool); err != nil {
+		return nil, fmt.Errorf("pool is not viable: %w", err)
+	}
+
+	// Enrich pool data and validate
+	if err := c.enrichAndValidatePool(ctx, pool, baseMint, quoteMint); err != nil {
+		return nil, fmt.Errorf("failed to enrich pool data: %w", err)
+	}
+
+	return c.cacheAndReturn(pool), nil
 }
 
 // enrichAndValidatePool обогащает пул данными и проверяет его валидность
@@ -132,8 +146,29 @@ func (c *Client) checkPoolLiquidity(ctx context.Context, pool *Pool) error {
 		return fmt.Errorf("pool is not active")
 	}
 
+	// Проверяем базовую ликвидность
 	if pool.State.BaseReserve == 0 || pool.State.QuoteReserve == 0 {
 		return fmt.Errorf("pool has no liquidity")
+	}
+
+	// Добавляем расширенную проверку ликвидности
+	if err := CheckLiquiditySufficiency(pool, 0); err != nil {
+		return fmt.Errorf("liquidity check failed: %w", err)
+	}
+
+	// Обновляем состояние пула в кэше
+	if err := c.poolCache.UpdatePoolState(pool); err != nil {
+		c.logger.Warn("failed to update pool state in cache",
+			zap.Error(err),
+			zap.String("pool_id", pool.ID.String()))
+	}
+
+	// Проверяем критические метрики пула
+	baseToQuoteRatio := float64(pool.State.BaseReserve) / float64(pool.State.QuoteReserve)
+	const maxRatioDeviation = 10.0
+
+	if baseToQuoteRatio > maxRatioDeviation || baseToQuoteRatio < 1/maxRatioDeviation {
+		return fmt.Errorf("pool reserves too imbalanced: ratio=%.2f", baseToQuoteRatio)
 	}
 
 	return nil
@@ -189,13 +224,40 @@ func (c *Client) ensureTokenAccounts(ctx context.Context, sourceToken, targetTok
 
 // prepareSwap подготавливает параметры для свапа
 func (c *Client) prepareSwap(ctx context.Context, params *SwapParams) error {
+	// Проверяем жизнеспособность пула
+	if err := c.api.IsPoolViable(ctx, params.Pool); err != nil {
+		return fmt.Errorf("pool is not viable: %w", err)
+	}
+
+	// Проверяем валидность пары токенов
+	if err := c.ValidateTokenPair(params.Pool, params.Pool.BaseMint, params.Pool.QuoteMint); err != nil {
+		return fmt.Errorf("invalid token pair: %w", err)
+	}
+
+	// Проверяем достаточность ликвидности
+	if err := CheckLiquiditySufficiency(params.Pool, params.AmountIn); err != nil {
+		return fmt.Errorf("insufficient liquidity: %w", err)
+	}
+
+	// Рассчитываем влияние на цену
+	impact, err := CalculateSwapImpact(params.Pool, params.AmountIn)
+	if err != nil {
+		return fmt.Errorf("failed to calculate price impact: %w", err)
+	}
+
+	// Проверяем, не превышает ли влияние допустимый предел
+	if impact > float64(params.SlippageBps)/100 {
+		return fmt.Errorf("price impact too high: %.2f%% > %.2f%%",
+			impact, float64(params.SlippageBps)/100)
+	}
+
 	// Проверяем балансы
 	balance, err := c.client.GetBalance(ctx, params.UserWallet, c.commitment)
 	if err != nil {
 		return fmt.Errorf("failed to get wallet balance: %w", err)
 	}
 
-	requiredBalance := params.AmountIn + params.PriorityFeeLamports + 5000 // 5000 lamports для комиссии
+	requiredBalance := params.AmountIn + params.PriorityFeeLamports + 5000
 	if balance < requiredBalance {
 		return fmt.Errorf("insufficient balance: required %d, got %d", requiredBalance, balance)
 	}

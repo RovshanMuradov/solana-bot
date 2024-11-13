@@ -19,6 +19,7 @@ import (
 	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
 type Sniper struct {
@@ -163,7 +164,6 @@ func (s *Sniper) monitorErrors(ctx context.Context) {
 		}
 	}
 }
-
 func (s *Sniper) executeTask(ctx context.Context, task *types.Task) error {
 	s.logger.Info("Starting task execution",
 		zap.String("task_name", task.TaskName),
@@ -182,7 +182,6 @@ func (s *Sniper) executeTask(ctx context.Context, task *types.Task) error {
 	}
 
 	// Валидируем токены
-	// Получаем токен минты
 	sourceMint, targetMint, err := s.validateTokens(ctx, task)
 	if err != nil {
 		return fmt.Errorf("token validation failed: %w", err)
@@ -215,22 +214,58 @@ func (s *Sniper) executeTask(ctx context.Context, task *types.Task) error {
 	task.UserSourceTokenAccount = sourceATA
 	task.UserDestinationTokenAccount = targetATA
 
-	// Получаем метаданные токенов с таймаутом
+	// Получаем метаданные токенов параллельно с использованием errgroup
 	tokenCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	metadata, err := s.tokenCache.GetMultipleTokenMetadata(
-		tokenCtx,
-		s.client,
-		[]solana.PublicKey{sourceMint, targetMint},
+	var (
+		sourceMetadata *solbc.TokenMetadata
+		targetMetadata *solbc.TokenMetadata
+		g              errgroup.Group
 	)
-	if err != nil {
+
+	// Получаем метаданные source токена
+	g.Go(func() error {
+		metadata, err := s.tokenCache.GetTokenMetadata(tokenCtx, s.client, sourceMint)
+		if err != nil {
+			return fmt.Errorf("failed to get source token metadata: %w", err)
+		}
+		sourceMetadata = metadata
+		return nil
+	})
+
+	// Получаем метаданные target токена
+	g.Go(func() error {
+		metadata, err := s.tokenCache.GetTokenMetadata(tokenCtx, s.client, targetMint)
+		if err != nil {
+			return fmt.Errorf("failed to get target token metadata: %w", err)
+		}
+		targetMetadata = metadata
+		return nil
+	})
+
+	// Ждем завершения получения метаданных
+	if err := g.Wait(); err != nil {
 		return fmt.Errorf("failed to get token metadata: %w", err)
 	}
 
-	// Устанавливаем decimals из метаданных
-	if err := s.updateTaskWithMetadata(task, metadata, sourceMint, targetMint); err != nil {
-		return err
+	// Логируем полученные метаданные
+	s.logger.Debug("Token metadata loaded",
+		zap.String("source_symbol", sourceMetadata.Symbol),
+		zap.Uint8("source_decimals", sourceMetadata.Decimals),
+		zap.String("target_symbol", targetMetadata.Symbol),
+		zap.Uint8("target_decimals", targetMetadata.Decimals))
+
+	// Обновляем task с полученными метаданными
+	// Конвертируем uint8 в int для совместимости с типами в Task
+	task.SourceTokenDecimals = int(sourceMetadata.Decimals)
+	task.TargetTokenDecimals = int(targetMetadata.Decimals)
+
+	// Проверяем, что получили все необходимые данные
+	if task.SourceTokenDecimals == 0 || task.TargetTokenDecimals == 0 {
+		return fmt.Errorf("invalid token decimals: source=%d, target=%d",
+			task.SourceTokenDecimals,
+			task.TargetTokenDecimals)
 	}
 
 	// Выполняем свап

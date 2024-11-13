@@ -7,14 +7,19 @@ import (
 	"time"
 
 	"github.com/gagliardetto/solana-go"
-	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
 	"github.com/gagliardetto/solana-go/rpc"
+	"go.uber.org/zap"
 )
 
-// Swap выполняет одну транзакцию свапа
+// Swap выполняет одну транзакцию свапа с расширенной валидацией и мониторингом
 func (c *Client) Swap(ctx context.Context, params *SwapParams) (solana.Signature, error) {
 	if params == nil {
 		return solana.Signature{}, fmt.Errorf("swap params cannot be nil")
+	}
+
+	// Подготовка и валидация параметров свапа
+	if err := c.prepareSwap(ctx, params); err != nil {
+		return solana.Signature{}, fmt.Errorf("swap preparation failed: %w", err)
 	}
 
 	// Получаем последний блокхэш
@@ -23,25 +28,13 @@ func (c *Client) Swap(ctx context.Context, params *SwapParams) (solana.Signature
 		return solana.Signature{}, fmt.Errorf("failed to get recent blockhash: %w", err)
 	}
 
-	// Создаем инструкции для свапа
-	computeLimitIx := computebudget.NewSetComputeUnitLimitInstructionBuilder().
-		SetUnits(MaxComputeUnitLimit).
-		Build()
-
-	computePriceIx := computebudget.NewSetComputeUnitPriceInstructionBuilder().
-		SetMicroLamports(params.PriorityFeeLamports).
-		Build()
-
-	instructions := []solana.Instruction{computeLimitIx, computePriceIx}
-
-	// Добавляем инструкцию свапа
-	swapIx, err := c.buildSwapInstruction(params)
+	// Подготавливаем инструкции через единый метод
+	instructions, err := c.PrepareSwapInstructions(params)
 	if err != nil {
-		return solana.Signature{}, fmt.Errorf("failed to build swap instruction: %w", err)
+		return solana.Signature{}, fmt.Errorf("failed to prepare swap instructions: %w", err)
 	}
-	instructions = append(instructions, swapIx)
 
-	// Создаем транзакцию
+	// Создаем транзакцию со всеми подготовленными инструкциями
 	tx, err := solana.NewTransaction(
 		instructions,
 		recentBlockHash,
@@ -51,24 +44,36 @@ func (c *Client) Swap(ctx context.Context, params *SwapParams) (solana.Signature
 		return solana.Signature{}, fmt.Errorf("failed to create transaction: %w", err)
 	}
 
-	// Если предоставлен приватный ключ, подписываем транзакцию
+	// Подписываем транзакцию если предоставлен приватный ключ
 	if params.PrivateKey != nil {
-		signatures, err := tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+		if _, err := tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
 			if key.Equals(params.UserWallet) {
 				return params.PrivateKey
 			}
 			return nil
-		})
-		if err != nil {
+		}); err != nil {
 			return solana.Signature{}, fmt.Errorf("failed to sign transaction: %w", err)
 		}
-		_ = signatures
 	}
 
-	// Отправляем транзакцию
+	// Отправляем и получаем результат
 	sig, err := c.client.SendTransaction(ctx, tx)
 	if err != nil {
 		return solana.Signature{}, fmt.Errorf("failed to send transaction: %w", err)
+	}
+
+	// Ждем подтверждения если требуется
+	if params.WaitConfirmation {
+		if err := c.WaitForConfirmation(ctx, sig); err != nil {
+			return sig, fmt.Errorf("transaction confirmation failed: %w", err)
+		}
+	}
+
+	// Обновляем состояние пула в кэше
+	if err := c.poolCache.UpdatePoolState(params.Pool); err != nil {
+		c.logger.Warn("failed to update pool state in cache",
+			zap.Error(err),
+			zap.String("pool_id", params.Pool.ID.String()))
 	}
 
 	return sig, nil

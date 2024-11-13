@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/gagliardetto/solana-go"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"github.com/rovshanmuradov/solana-bot/internal/dex/raydium"
 	"github.com/rovshanmuradov/solana-bot/internal/types"
@@ -38,50 +37,28 @@ func (d *raydiumDEX) ExecuteSwap(ctx context.Context, task *types.Task, w *walle
 		zap.String("target_token", task.TargetToken),
 		zap.Float64("amount_in", task.AmountIn))
 
-	// Получаем информацию о пуле
-	pool, err := d.client.GetPool(ctx,
-		solana.MustPublicKeyFromBase58(task.SourceToken),
-		solana.MustPublicKeyFromBase58(task.TargetToken))
+	// 1. Валидация и подготовка параметров свапа
+	swapParams, err := d.validateAndPrepareSwap(ctx, task, w)
 	if err != nil {
-		return fmt.Errorf("failed to get pool info: %w", err)
+		return fmt.Errorf("failed to validate and prepare swap: %w", err)
 	}
 
-	// Конвертируем AmountIn в uint64
-	amountInLamports := uint64(task.AmountIn * float64(solana.LAMPORTS_PER_SOL))
-
-	// Рассчитываем минимальное количество выходных токенов с учетом слиппажа
-	amounts := raydium.CalculateSwapAmounts(pool, amountInLamports, d.config.MaxSlippageBps)
-
-	// Создаем параметры свапа
-	params := &raydium.SwapParams{
-		UserWallet:          w.PublicKey,
-		PrivateKey:          &w.PrivateKey,
-		AmountIn:            amounts.AmountIn,
-		MinAmountOut:        amounts.MinAmountOut,
-		Pool:                pool,
-		PriorityFeeLamports: uint64(task.PriorityFee * float64(solana.LAMPORTS_PER_SOL)),
-		Direction:           raydium.SwapDirectionIn,
-		SlippageBps:         d.config.MaxSlippageBps,
-		WaitConfirmation:    d.config.WaitConfirmation,
-	}
-
-	// Выполняем свап
-	signature, err := d.client.Swap(ctx, params)
+	// 2. Выполняем свап с повторными попытками
+	result, err := d.client.RetrySwap(ctx, swapParams)
 	if err != nil {
-		return fmt.Errorf("swap failed: %w", err)
+		return fmt.Errorf("swap execution failed: %w", err)
 	}
 
-	// Если требуется ожидание подтверждения
-	if params.WaitConfirmation {
-		if err := d.client.WaitForConfirmation(ctx, signature); err != nil {
-			return fmt.Errorf("failed to confirm transaction: %w", err)
-		}
+	// 3. Проверяем результат свапа
+	if err := d.client.ValidateSwapResult(ctx, result, swapParams); err != nil {
+		return fmt.Errorf("swap result validation failed: %w", err)
 	}
 
 	d.logger.Info("Swap executed successfully",
-		zap.String("signature", signature.String()),
-		zap.String("pool", pool.ID.String()),
-		zap.String("wallet", w.PublicKey.String()))
+		zap.String("signature", result.Signature.String()),
+		zap.Uint64("amount_in", result.AmountIn),
+		zap.Uint64("amount_out", result.AmountOut),
+		zap.Duration("execution_time", result.ExecutionTime))
 
 	return nil
 }

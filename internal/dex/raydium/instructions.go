@@ -46,15 +46,20 @@ func NewExecutableSwapInstruction(
 
 // buildSwapInstruction создает инструкцию для свапа
 func (c *Client) buildSwapInstruction(params *SwapParams) (solana.Instruction, error) {
+	if params == nil {
+		return nil, fmt.Errorf("swap params cannot be nil")
+	}
+
+	// Создаем список аккаунтов для инструкции
 	accounts := []*solana.AccountMeta{
-		solana.Meta(params.Pool.ID).WRITE(),
-		solana.Meta(params.Pool.Authority),
-		solana.Meta(params.UserWallet).SIGNER(),
-		solana.Meta(params.SourceTokenAccount).WRITE(),
-		solana.Meta(params.DestinationTokenAccount).WRITE(),
-		solana.Meta(params.Pool.BaseVault).WRITE(),
-		solana.Meta(params.Pool.QuoteVault).WRITE(),
-		solana.Meta(TokenProgramID),
+		solana.Meta(params.Pool.ID).WRITE(),                 // Pool
+		solana.Meta(params.Pool.Authority),                  // Pool Authority
+		solana.Meta(params.UserWallet).SIGNER(),             // User wallet
+		solana.Meta(params.SourceTokenAccount).WRITE(),      // Source token account
+		solana.Meta(params.DestinationTokenAccount).WRITE(), // Destination token account
+		solana.Meta(params.Pool.BaseVault).WRITE(),          // Base vault
+		solana.Meta(params.Pool.QuoteVault).WRITE(),         // Quote vault
+		solana.Meta(TokenProgramID),                         // Token program
 	}
 
 	// Создаем данные инструкции
@@ -73,6 +78,12 @@ func (c *Client) buildSwapInstruction(params *SwapParams) (solana.Instruction, e
 	// Записываем AmountIn и MinAmountOut
 	binary.LittleEndian.PutUint64(data[2:10], params.AmountIn)
 	binary.LittleEndian.PutUint64(data[10:], params.MinAmountOut)
+
+	c.logger.Debug("built swap instruction",
+		zap.String("pool_id", params.Pool.ID.String()),
+		zap.Uint64("amount_in", params.AmountIn),
+		zap.Uint64("min_amount_out", params.MinAmountOut),
+		zap.Uint8("direction", dirByte))
 
 	return NewExecutableSwapInstruction(
 		RaydiumV4ProgramID,
@@ -163,30 +174,11 @@ func (c *Client) PrepareSwapInstructions(params *SwapParams) ([]solana.Instructi
 	}
 	params.Direction = swapDirection
 
-	// 6. Создаем основную инструкцию свапа
-	swapAccounts := []*solana.AccountMeta{
-		solana.Meta(params.Pool.ID).WRITE(),                 // Pool
-		solana.Meta(params.Pool.Authority),                  // Pool Authority
-		solana.Meta(params.UserWallet).SIGNER(),             // User wallet
-		solana.Meta(params.SourceTokenAccount).WRITE(),      // Source token account
-		solana.Meta(params.DestinationTokenAccount).WRITE(), // Destination token account
-		solana.Meta(params.Pool.BaseVault).WRITE(),          // Base vault
-		solana.Meta(params.Pool.QuoteVault).WRITE(),         // Quote vault
-		solana.Meta(TokenProgramID),                         // Token program
+	// 6. Создаем основную инструкцию свапа используя buildSwapInstruction
+	swapIx, err := c.buildSwapInstruction(params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build swap instruction: %w", err)
 	}
-
-	// Создаем данные инструкции свапа
-	swapData := make([]byte, 17) // 1 + 8 + 8 bytes
-	swapData[0] = 0x02           // swap instruction discriminator
-	swapData[1] = byte(params.Direction)
-	binary.LittleEndian.PutUint64(swapData[2:10], params.AmountIn)
-	binary.LittleEndian.PutUint64(swapData[10:], params.MinAmountOut)
-
-	swapIx := NewExecutableSwapInstruction(
-		RaydiumV4ProgramID,
-		swapAccounts,
-		swapData,
-	)
 	instructions = append(instructions, swapIx)
 
 	// Логируем итоговый набор инструкций

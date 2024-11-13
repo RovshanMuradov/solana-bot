@@ -153,7 +153,7 @@ func (pc *PoolCache) validatePoolForCache(pool *Pool) error {
 
 	for _, check := range requiredChecks {
 		if check.condition {
-			return fmt.Errorf(check.message)
+			return fmt.Errorf("%s", check.message)
 		}
 	}
 

@@ -2,7 +2,6 @@
 package solbc
 
 import (
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -13,12 +12,6 @@ import (
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc/rpc"
 )
-
-// TokenMetadataCache кэширует метаданные токенов
-type TokenMetadataCache struct {
-	cache  sync.Map
-	logger *zap.Logger
-}
 
 // Client представляет основной клиент Solana
 type Client struct {
