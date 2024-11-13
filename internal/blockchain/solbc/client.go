@@ -240,3 +240,22 @@ func (c *Client) WaitForTransactionConfirmation(ctx context.Context, signature s
 	c.metrics.FailedRequests++
 	return fmt.Errorf("confirmation timeout after 30 attempts")
 }
+
+// GetTransaction получает информацию о транзакции с метриками и логированием
+func (c *Client) GetTransaction(
+	ctx context.Context,
+	signature solana.Signature,
+) (*solanarpc.GetTransactionResult, error) {
+	c.logger.Debug("getting transaction info",
+		zap.String("signature", signature.String()))
+
+	result, err := c.rpc.GetTransaction(ctx, signature)
+	if err != nil {
+		c.metrics.FailedRequests++
+		c.metrics.LastError = err
+		c.metrics.LastErrorTime = time.Now()
+		return nil, fmt.Errorf("failed to get transaction: %w", err)
+	}
+
+	return result, nil
+}

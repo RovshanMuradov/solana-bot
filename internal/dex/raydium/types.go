@@ -112,6 +112,19 @@ type SwapParams struct {
 	WaitConfirmation        bool               // Ожидать ли подтверждения транзакции
 }
 
+// SwapResult представляет результат выполнения свапа
+type SwapResult struct {
+	Signature     solana.Signature
+	AmountIn      uint64
+	AmountOut     uint64
+	FeesPaid      uint64
+	ExecutionTime time.Duration
+	BlockTime     time.Time
+	Confirmed     bool
+	RetryCount    int
+	Error         error
+}
+
 // Client представляет клиент для работы с Raydium DEX
 type Client struct {
 	client      blockchain.Client

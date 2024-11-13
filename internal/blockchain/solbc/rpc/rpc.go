@@ -303,3 +303,34 @@ func (c *Client) GetCurrentURL() string {
 	// Возвращаем текущий активный URL
 	return c.urls[c.current]
 }
+
+// GetTransaction получает информацию о транзакции
+func (c *Client) GetTransaction(
+	ctx context.Context,
+	signature solana.Signature,
+) (*solanarpc.GetTransactionResult, error) {
+	var result *solanarpc.GetTransactionResult
+
+	err := c.ExecuteWithRetry(ctx, func(client *solanarpc.Client) error {
+		var err error
+		opts := &solanarpc.GetTransactionOpts{
+			Encoding:   solana.EncodingBase64,
+			Commitment: solanarpc.CommitmentConfirmed,
+			// Используем nil для MaxSupportedTransactionVersion,
+			// чтобы получать транзакции любой версии
+			MaxSupportedTransactionVersion: nil,
+		}
+
+		result, err = client.GetTransaction(ctx, signature, opts)
+		if err != nil {
+			return fmt.Errorf("RPC GetTransaction failed: %w", err)
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get transaction after retries: %w", err)
+	}
+
+	return result, nil
+}

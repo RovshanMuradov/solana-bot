@@ -3,6 +3,7 @@ package raydium
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -289,4 +290,130 @@ func (pc *PoolCache) GetStats() map[string]interface{} {
 		"updates":         pc.stats.Updates,
 		"expirations":     pc.stats.Expirations,
 	}
+}
+
+// Улучшить существующий кэш:
+
+// UpdatePoolState обновляет состояние пула
+func (pc *PoolCache) UpdatePoolState(pool *Pool) error {
+	if pool == nil {
+		return fmt.Errorf("pool cannot be nil")
+	}
+
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+
+	// 1. Обновляем данные о ликвидности
+	now := time.Now()
+	key := fmt.Sprintf("%s-%s", pool.BaseMint.String(), pool.QuoteMint.String())
+
+	if existingEntry, exists := pc.entries[key]; exists {
+		// 2. Обновляем статус пула
+		oldStatus := existingEntry.Pool.State.Status
+		if oldStatus != pool.State.Status {
+			pc.logger.Info("pool status changed",
+				zap.String("pool_id", pool.ID.String()),
+				zap.Uint8("old_status", oldStatus),
+				zap.Uint8("new_status", pool.State.Status))
+		}
+
+		// 3. Обновляем временные метки
+		entry := CacheEntry{
+			Pool:           pool.Clone(), // Создаем копию для безопасности
+			ExpireAt:       now.Add(pc.ttl),
+			LastUpdateTime: now,
+			UpdateCount:    existingEntry.UpdateCount + 1,
+			Source:         "update",
+		}
+
+		// 4. Логируем изменения
+		baseReserveChange := float64(pool.State.BaseReserve) - float64(existingEntry.Pool.State.BaseReserve)
+		reserveChangePercent := (baseReserveChange / float64(existingEntry.Pool.State.BaseReserve)) * 100
+
+		pc.logger.Debug("pool state updated",
+			zap.String("pool_id", pool.ID.String()),
+			zap.Float64("base_reserve_change_%", reserveChangePercent),
+			zap.Uint64("new_base_reserve", pool.State.BaseReserve),
+			zap.Uint64("new_quote_reserve", pool.State.QuoteReserve),
+			zap.Int("update_count", entry.UpdateCount))
+
+		// Обновляем запись в кэше
+		pc.entries[key] = entry
+
+		// Обновляем реверсивный ключ для поиска в обоих направлениях
+		reverseKey := fmt.Sprintf("%s-%s", pool.QuoteMint.String(), pool.BaseMint.String())
+		pc.entries[reverseKey] = entry
+
+	} else {
+		return fmt.Errorf("pool %s not found in cache", pool.ID)
+	}
+
+	return nil
+}
+
+// GetBestPool получает лучший пул из кэша
+func (pc *PoolCache) GetBestPool(baseToken, quoteToken solana.PublicKey) *Pool {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+
+	// 1. Ищем все подходящие пулы в кэше
+	var validPools []*Pool
+	now := time.Now()
+
+	// Проверяем оба направления пары токенов
+	keys := []string{
+		fmt.Sprintf("%s-%s", baseToken.String(), quoteToken.String()),
+		fmt.Sprintf("%s-%s", quoteToken.String(), baseToken.String()),
+	}
+
+	seenPools := make(map[string]bool)
+
+	for _, key := range keys {
+		if entry, exists := pc.entries[key]; exists && now.Before(entry.ExpireAt) {
+			if !seenPools[entry.Pool.ID.String()] {
+				validPools = append(validPools, entry.Pool)
+				seenPools[entry.Pool.ID.String()] = true
+			}
+		}
+	}
+
+	if len(validPools) == 0 {
+		return nil
+	}
+
+	// 2. Фильтруем по активности
+	activePools := make([]*Pool, 0, len(validPools))
+	for _, pool := range validPools {
+		if pool.State.Status == PoolStatusActive &&
+			pool.State.BaseReserve > 0 &&
+			pool.State.QuoteReserve > 0 {
+			activePools = append(activePools, pool)
+		}
+	}
+
+	if len(activePools) == 0 {
+		return nil
+	}
+
+	// 3. Сортируем по ликвидности
+	sort.Slice(activePools, func(i, j int) bool {
+		liquidityI := activePools[i].State.BaseReserve + activePools[i].State.QuoteReserve
+		liquidityJ := activePools[j].State.BaseReserve + activePools[j].State.QuoteReserve
+		return liquidityI > liquidityJ
+	})
+
+	// 4. Возвращаем лучший вариант
+	bestPool := activePools[0].Clone() // Возвращаем копию лучшего пула
+
+	pc.logger.Debug("best pool selected",
+		zap.String("pool_id", bestPool.ID.String()),
+		zap.Uint64("base_reserve", bestPool.State.BaseReserve),
+		zap.Uint64("quote_reserve", bestPool.State.QuoteReserve),
+		zap.Int("total_pools_found", len(validPools)),
+		zap.Int("active_pools", len(activePools)))
+
+	// Обновляем статистику использования кэша
+	pc.updateStats(0, 1, 0, 0)
+
+	return bestPool
 }

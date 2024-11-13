@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/gagliardetto/solana-go"
+	solanarpc "github.com/gagliardetto/solana-go/rpc"
 	"go.uber.org/zap"
 )
 
@@ -53,4 +54,23 @@ func (s *Blockchain) GetRecentBlockhash(ctx context.Context) (solana.Hash, error
 		return solana.Hash{}, fmt.Errorf("failed to get recent blockhash: %w", err)
 	}
 	return hash, nil
+}
+func (s *Blockchain) GetTransaction(ctx context.Context, signature string) (*solanarpc.GetTransactionResult, error) {
+	sig, err := solana.SignatureFromBase58(signature)
+	if err != nil {
+		s.logger.Error("Invalid transaction signature",
+			zap.String("signature", signature),
+			zap.Error(err))
+		return nil, fmt.Errorf("invalid transaction signature: %w", err)
+	}
+
+	result, err := s.client.GetTransaction(ctx, sig)
+	if err != nil {
+		s.logger.Error("Failed to get transaction",
+			zap.String("signature", signature),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to get transaction: %w", err)
+	}
+
+	return result, nil
 }

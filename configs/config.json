@@ -1,11 +1,10 @@
 {
     "license": "TEST-LICENSE-123456789",
     "rpc_list": [
-        "http://rpc-lax-a.thornode.io/e711fbc80050bff888e8584d9e2521ca",
-        "http://ny.rpc.urbanaio.com/"
+        "http://rpc-lax-a.thornode.io/e711fbc80050bff888e8584d9e2521ca"
 
 ],
-    "websocket_url": "ws://ny.rpc.urbanaio.com",
+    "websocket_url": "ws://rpc-lax-a.thornode.io/e711fbc80050bff888e8584d9e2521ca",
     "monitor_delay": 1000,
     "rpc_delay": 100,
     "price_delay": 500,

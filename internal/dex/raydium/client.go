@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
@@ -268,4 +271,565 @@ func (c *Client) GetPublicKey() solana.PublicKey {
 
 func (c *Client) GetBaseClient() blockchain.Client {
 	return c.client
+}
+
+// Добавить методы:
+
+// FindBestPool находит лучший пул для свапа
+func (c *Client) FindBestPool(ctx context.Context, baseToken, quoteToken solana.PublicKey) (*Pool, error) {
+	c.logger.Debug("searching for best pool",
+		zap.String("base_token", baseToken.String()),
+		zap.String("quote_token", quoteToken.String()))
+
+	// 1. Получаем список пулов через API
+	pools := make([]*Pool, 0)
+
+	// Пробуем получить пул для базового токена
+	basePool, err := c.api.GetPoolByToken(ctx, baseToken)
+	if err == nil {
+		pools = append(pools, basePool)
+	}
+
+	// Пробуем получить пул для котируемого токена
+	quotePool, err := c.api.GetPoolByToken(ctx, quoteToken)
+	if err == nil && (basePool == nil || !basePool.ID.Equals(quotePool.ID)) {
+		pools = append(pools, quotePool)
+	}
+
+	if len(pools) == 0 {
+		return nil, fmt.Errorf("no pools found for tokens %s and %s", baseToken, quoteToken)
+	}
+
+	var bestPool *Pool
+	var maxLiquidity uint64
+	var minFeeBps uint16 = math.MaxUint16
+
+	// 2. Оцениваем каждый пул
+	for _, pool := range pools {
+		// Загружаем данные из блокчейна и обогащаем пул
+		if err := c.enrichAndValidatePool(ctx, pool, baseToken, quoteToken); err != nil {
+			c.logger.Debug("pool validation failed",
+				zap.String("pool_id", pool.ID.String()),
+				zap.Error(err))
+			continue
+		}
+
+		// Проверяем ликвидность
+		if err := c.checkPoolLiquidity(ctx, pool); err != nil {
+			continue
+		}
+
+		// Оцениваем пул по критериям:
+		// - Суммарная ликвидность (baseReserve + quoteReserve)
+		// - Комиссия пула
+		totalLiquidity := pool.State.BaseReserve + pool.State.QuoteReserve
+
+		if totalLiquidity > maxLiquidity || (totalLiquidity == maxLiquidity && pool.DefaultFeeBps < minFeeBps) {
+			maxLiquidity = totalLiquidity
+			minFeeBps = pool.DefaultFeeBps
+			bestPool = pool
+		}
+	}
+
+	if bestPool == nil {
+		return nil, fmt.Errorf("no suitable pools found")
+	}
+
+	// 3. Логируем детали выбранного пула
+	c.logger.Info("found best pool",
+		zap.String("pool_id", bestPool.ID.String()),
+		zap.String("market_id", bestPool.MarketID.String()),
+		zap.Uint64("base_reserve", bestPool.State.BaseReserve),
+		zap.Uint64("quote_reserve", bestPool.State.QuoteReserve),
+		zap.Uint16("fee_bps", bestPool.DefaultFeeBps))
+
+	// 4. Кэшируем результат
+	return c.cacheAndReturn(bestPool), nil
+}
+
+// ValidateSwapConditions проверяет условия для свапа
+func (c *Client) ValidateSwapConditions(ctx context.Context, params *SwapParams) error {
+	if params == nil {
+		return fmt.Errorf("swap params cannot be nil")
+	}
+
+	// 1. Проверяем баланс кошелька
+	balance, err := c.client.GetBalance(ctx, params.UserWallet, c.commitment)
+	if err != nil {
+		return fmt.Errorf("failed to get wallet balance: %w", err)
+	}
+
+	// Расчет необходимого баланса (сумма свапа + комиссия + приоритетная комиссия)
+	requiredBalance := params.AmountIn + params.PriorityFeeLamports + 5000 // 5000 lamports для комиссии сети
+	if balance < requiredBalance {
+		return fmt.Errorf("insufficient balance: required %d, got %d", requiredBalance, balance)
+	}
+
+	// 2. Проверяем существование токен-аккаунтов
+	accounts, err := c.ensureTokenAccounts(ctx, params.Pool.BaseMint, params.Pool.QuoteMint)
+	if err != nil {
+		return fmt.Errorf("failed to validate token accounts: %w", err)
+	}
+	params.SourceTokenAccount = accounts.SourceATA
+	params.DestinationTokenAccount = accounts.DestinationATA
+
+	// 3. Проверяем разрешения (для токенов)
+	if err := c.validateTokenPermissions(ctx, params); err != nil {
+		return fmt.Errorf("permission check failed: %w", err)
+	}
+
+	// 4. Проверяем ликвидность пула
+	if err := c.checkPoolLiquidity(ctx, params.Pool); err != nil {
+		return fmt.Errorf("pool liquidity check failed: %w", err)
+	}
+
+	// 5. Проверяем влияние на цену
+	priceImpact := GetPriceImpact(params.Pool, params.AmountIn)
+	if priceImpact > float64(params.SlippageBps)/100 {
+		return fmt.Errorf("price impact too high: %.2f%% > %.2f%%",
+			priceImpact,
+			float64(params.SlippageBps)/100)
+	}
+
+	c.logger.Debug("swap conditions validated successfully",
+		zap.String("pool_id", params.Pool.ID.String()),
+		zap.Uint64("amount_in", params.AmountIn),
+		zap.Float64("price_impact", priceImpact))
+
+	return nil
+}
+
+// validateTokenPermissions проверяет разрешения для токен-аккаунтов
+func (c *Client) validateTokenPermissions(ctx context.Context, params *SwapParams) error {
+	// Проверяем source token account
+	sourceAcc, err := c.client.GetTokenAccountBalance(ctx, params.SourceTokenAccount, c.commitment)
+	if err != nil {
+		return fmt.Errorf("failed to get source token balance: %w", err)
+	}
+
+	if sourceAcc == nil || sourceAcc.Value == nil {
+		return fmt.Errorf("invalid source token account")
+	}
+
+	// Конвертируем строковое значение баланса в uint64 для корректного сравнения
+	sourceBalance, err := strconv.ParseUint(sourceAcc.Value.Amount, 10, 64)
+	if err != nil {
+		return fmt.Errorf("failed to parse source balance: %w", err)
+	}
+
+	if sourceBalance < params.AmountIn {
+		return fmt.Errorf("insufficient token balance: required %d, got %d",
+			params.AmountIn, sourceBalance)
+	}
+
+	// Проверяем destination token account
+	destAcc, err := c.client.GetTokenAccountBalance(ctx, params.DestinationTokenAccount, c.commitment)
+	if err != nil && !strings.Contains(err.Error(), "could not find account") {
+		return fmt.Errorf("failed to get destination token balance: %w", err)
+	}
+
+	if destAcc != nil && destAcc.Value != nil && destAcc.Value.Decimals != params.Pool.QuoteDecimals {
+		return fmt.Errorf("destination token decimals mismatch: expected %d, got %d",
+			params.Pool.QuoteDecimals, destAcc.Value.Decimals)
+	}
+
+	return nil
+}
+
+// DetermineSwapDirection определяет направление свапа на основе пары токенов
+func (c *Client) DetermineSwapDirection(pool *Pool, sourceToken, targetToken solana.PublicKey) (SwapDirection, error) {
+	if pool == nil {
+		return SwapDirectionIn, fmt.Errorf("pool cannot be nil")
+	}
+
+	c.logger.Debug("determining swap direction",
+		zap.String("source_token", sourceToken.String()),
+		zap.String("target_token", targetToken.String()),
+		zap.String("pool_base", pool.BaseMint.String()),
+		zap.String("pool_quote", pool.QuoteMint.String()))
+
+	// Проверяем соответствие токенов пулу
+	isSourceBase := sourceToken.Equals(pool.BaseMint)
+	isSourceQuote := sourceToken.Equals(pool.QuoteMint)
+	isTargetBase := targetToken.Equals(pool.BaseMint)
+	isTargetQuote := targetToken.Equals(pool.QuoteMint)
+
+	// Определяем направление
+	switch {
+	case isSourceBase && isTargetQuote:
+		c.logger.Debug("swap direction: base to quote (IN)")
+		return SwapDirectionIn, nil
+	case isSourceQuote && isTargetBase:
+		c.logger.Debug("swap direction: quote to base (OUT)")
+		return SwapDirectionOut, nil
+	default:
+		return SwapDirectionIn, fmt.Errorf("invalid token pair: source=%s, target=%s",
+			sourceToken.String(), targetToken.String())
+	}
+}
+
+// ValidateTokenPair проверяет валидность пары токенов для свапа
+func (c *Client) ValidateTokenPair(pool *Pool, sourceToken, targetToken solana.PublicKey) error {
+	if pool == nil {
+		return fmt.Errorf("pool cannot be nil")
+	}
+
+	c.logger.Debug("validating token pair",
+		zap.String("source_token", sourceToken.String()),
+		zap.String("target_token", targetToken.String()))
+
+	// Проверяем существование токенов
+	if sourceToken.IsZero() || targetToken.IsZero() {
+		return fmt.Errorf("invalid token addresses: source=%s, target=%s",
+			sourceToken.String(), targetToken.String())
+	}
+
+	// Проверяем decimals
+	if pool.BaseDecimals == 0 || pool.QuoteDecimals == 0 {
+		return fmt.Errorf("invalid token decimals: base=%d, quote=%d",
+			pool.BaseDecimals, pool.QuoteDecimals)
+	}
+
+	// Проверяем поддержку токенов в пуле
+	isSourceSupported := sourceToken.Equals(pool.BaseMint) || sourceToken.Equals(pool.QuoteMint)
+	isTargetSupported := targetToken.Equals(pool.BaseMint) || targetToken.Equals(pool.QuoteMint)
+
+	if !isSourceSupported {
+		return fmt.Errorf("source token %s not supported in pool %s",
+			sourceToken.String(), pool.ID.String())
+	}
+	if !isTargetSupported {
+		return fmt.Errorf("target token %s not supported in pool %s",
+			targetToken.String(), pool.ID.String())
+	}
+
+	// Проверяем возможность прямого свапа
+	if sourceToken.Equals(targetToken) {
+		return fmt.Errorf("source and target tokens are the same: %s",
+			sourceToken.String())
+	}
+
+	// Проверяем состояние пула для этой пары
+	if pool.State.Status != PoolStatusActive {
+		return fmt.Errorf("pool %s is not active for token pair %s-%s",
+			pool.ID.String(), sourceToken.String(), targetToken.String())
+	}
+
+	c.logger.Debug("token pair validation successful",
+		zap.String("pool_id", pool.ID.String()),
+		zap.String("source_token", sourceToken.String()),
+		zap.String("target_token", targetToken.String()))
+
+	return nil
+}
+
+// MonitorPoolState отслеживает состояние пула
+func (c *Client) MonitorPoolState(ctx context.Context, pool *Pool) error {
+	if pool == nil {
+		return fmt.Errorf("pool cannot be nil")
+	}
+
+	ticker := time.NewTicker(500 * time.Millisecond) // Частота проверки
+	defer ticker.Stop()
+
+	var lastState PoolState
+	var significantChangesCount int
+
+	c.logger.Info("starting pool monitoring",
+		zap.String("pool_id", pool.ID.String()),
+		zap.String("base_mint", pool.BaseMint.String()),
+		zap.String("quote_mint", pool.QuoteMint.String()))
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			// Получаем актуальное состояние пула
+			account, err := c.client.GetAccountInfo(ctx, pool.ID)
+			if err != nil {
+				c.logger.Error("failed to get pool account",
+					zap.Error(err),
+					zap.String("pool_id", pool.ID.String()))
+				continue
+			}
+
+			if account == nil || account.Value == nil {
+				c.logger.Warn("pool account not found",
+					zap.String("pool_id", pool.ID.String()))
+				continue
+			}
+
+			// Обновляем состояние пула
+			currentState := PoolState{
+				BaseReserve:  binary.LittleEndian.Uint64(account.Value.Data.GetBinary()[64:72]),
+				QuoteReserve: binary.LittleEndian.Uint64(account.Value.Data.GetBinary()[72:80]),
+				Status:       account.Value.Data.GetBinary()[88],
+			}
+
+			// Проверяем изменение статуса
+			if currentState.Status != lastState.Status {
+				c.logger.Warn("pool status changed",
+					zap.Uint8("old_status", lastState.Status),
+					zap.Uint8("new_status", currentState.Status))
+
+				if currentState.Status != PoolStatusActive {
+					return fmt.Errorf("pool became inactive: status=%d", currentState.Status)
+				}
+			}
+
+			// Проверяем изменения в ликвидности
+			baseChange := float64(currentState.BaseReserve-lastState.BaseReserve) / float64(lastState.BaseReserve)
+			quoteChange := float64(currentState.QuoteReserve-lastState.QuoteReserve) / float64(lastState.QuoteReserve)
+
+			const significantChangeThreshold = 0.02 // 2%
+			if math.Abs(baseChange) > significantChangeThreshold || math.Abs(quoteChange) > significantChangeThreshold {
+				significantChangesCount++
+				c.logger.Info("significant liquidity change detected",
+					zap.Float64("base_change_percent", baseChange*100),
+					zap.Float64("quote_change_percent", quoteChange*100),
+					zap.Uint64("base_reserve", currentState.BaseReserve),
+					zap.Uint64("quote_reserve", currentState.QuoteReserve))
+
+				// Если слишком много существенных изменений за короткий период
+				if significantChangesCount > 5 {
+					c.logger.Warn("high volatility detected in pool",
+						zap.String("pool_id", pool.ID.String()),
+						zap.Int("changes_count", significantChangesCount))
+				}
+			} else {
+				significantChangesCount = 0 // Сбрасываем счетчик при стабилизации
+			}
+
+			lastState = currentState
+		}
+	}
+}
+
+// RetrySwap выполняет свап с механизмом повторных попыток
+func (c *Client) RetrySwap(ctx context.Context, params *SwapParams) (*SwapResult, error) {
+	if params == nil {
+		return nil, fmt.Errorf("swap params cannot be nil")
+	}
+
+	result := &SwapResult{
+		AmountIn:   params.AmountIn,
+		RetryCount: 0,
+	}
+
+	// Конфигурация retry
+	const (
+		maxRetries = 3
+		baseDelay  = 1 * time.Second
+	)
+
+	var lastError error
+	startTime := time.Now()
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Проверяем контекст перед каждой попыткой
+		if err := ctx.Err(); err != nil {
+			return result, fmt.Errorf("context cancelled during retry: %w", err)
+		}
+
+		// Логируем попытку
+		if attempt > 0 {
+			c.logger.Info("retrying swap",
+				zap.Int("attempt", attempt),
+				zap.Duration("elapsed", time.Since(startTime)),
+				zap.Error(lastError))
+		}
+
+		// Выполняем свап
+		signature, err := c.Swap(ctx, params)
+		if err == nil {
+			result.Signature = signature
+			result.ExecutionTime = time.Since(startTime)
+			result.RetryCount = attempt
+
+			// Ждем подтверждения, если требуется
+			if params.WaitConfirmation {
+				if err := c.WaitForConfirmation(ctx, signature); err != nil {
+					lastError = fmt.Errorf("confirmation failed: %w", err)
+					continue
+				}
+				result.Confirmed = true
+			}
+
+			// Получаем информацию о транзакции
+			tx, err := c.client.GetTransaction(ctx, signature)
+			if err == nil && tx != nil {
+				result.BlockTime = time.Unix(int64(*tx.BlockTime), 0)
+				// Можно добавить расчет фактического AmountOut и FeesPaid
+			}
+
+			return result, nil
+		}
+
+		lastError = err
+
+		// Определяем, стоит ли повторять попытку
+		if !c.shouldRetry(err) {
+			c.logger.Error("non-retriable error occurred",
+				zap.Error(err),
+				zap.Int("attempt", attempt))
+			break
+		}
+
+		// Экспоненциальная задержка между попытками
+		if attempt < maxRetries {
+			delay := time.Duration(math.Pow(2, float64(attempt))) * baseDelay
+			select {
+			case <-ctx.Done():
+				return result, ctx.Err()
+			case <-time.After(delay):
+				continue
+			}
+		}
+	}
+
+	result.Error = lastError
+	return result, fmt.Errorf("max retries exceeded: %w", lastError)
+}
+
+// shouldRetry определяет, следует ли повторить попытку на основе типа ошибки
+func (c *Client) shouldRetry(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Список ошибок, при которых стоит повторить попытку
+	retriableErrors := []string{
+		"timeout",
+		"connection refused",
+		"no recent blockhash",
+		"blockhash not found",
+		"insufficient funds for transaction",
+	}
+
+	errStr := strings.ToLower(err.Error())
+	for _, retriableErr := range retriableErrors {
+		if strings.Contains(errStr, retriableErr) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ValidateSwapResult проверяет результат свапа
+func (c *Client) ValidateSwapResult(ctx context.Context, result *SwapResult, params *SwapParams) error {
+	if result == nil || params == nil {
+		return fmt.Errorf("result and params cannot be nil")
+	}
+
+	c.logger.Debug("validating swap result",
+		zap.String("signature", result.Signature.String()),
+		zap.Uint64("amount_in", params.AmountIn),
+		zap.Uint64("min_amount_out", params.MinAmountOut))
+
+	// Проверяем успешность транзакции
+	status, err := c.client.GetSignatureStatuses(ctx, result.Signature)
+	if err != nil {
+		return fmt.Errorf("failed to get transaction status: %w", err)
+	}
+
+	if status == nil || len(status.Value) == 0 || status.Value[0] == nil {
+		return fmt.Errorf("transaction status not found")
+	}
+
+	if status.Value[0].Err != nil {
+		return fmt.Errorf("transaction failed: %v", status.Value[0].Err)
+	}
+
+	// Получаем балансы после свапа
+	sourceBalance, err := c.getTokenBalance(ctx, params.SourceTokenAccount)
+	if err != nil {
+		return fmt.Errorf("failed to get source token balance: %w", err)
+	}
+
+	destinationBalance, err := c.getTokenBalance(ctx, params.DestinationTokenAccount)
+	if err != nil {
+		return fmt.Errorf("failed to get destination token balance: %w", err)
+	}
+
+	// Проверяем соответствие слиппажу
+	if result.AmountOut < params.MinAmountOut {
+		return fmt.Errorf("received amount %d is less than minimum expected %d",
+			result.AmountOut, params.MinAmountOut)
+	}
+
+	// Проверяем изменение баланса source токена
+	expectedSourceBalance := sourceBalance + params.AmountIn
+	if math.Abs(float64(expectedSourceBalance-sourceBalance)) > float64(params.AmountIn)*0.001 { // допуск 0.1%
+		c.logger.Warn("unexpected source balance change",
+			zap.Uint64("expected", expectedSourceBalance),
+			zap.Uint64("actual", sourceBalance))
+	}
+
+	// Проверяем изменение баланса destination токена
+	if destinationBalance < result.AmountOut {
+		c.logger.Warn("unexpected destination balance",
+			zap.Uint64("expected_min", result.AmountOut),
+			zap.Uint64("actual", destinationBalance))
+	}
+
+	// Рассчитываем реальный слиппаж
+	expectedPrice := float64(params.AmountIn) / float64(params.MinAmountOut)
+	actualPrice := float64(params.AmountIn) / float64(result.AmountOut)
+	actualSlippage := math.Abs((actualPrice-expectedPrice)/expectedPrice) * 100
+
+	// Проверяем, не превышен ли максимальный слиппаж
+	if actualSlippage > float64(params.SlippageBps)/100 {
+		c.logger.Warn("high slippage detected",
+			zap.Float64("expected_price", expectedPrice),
+			zap.Float64("actual_price", actualPrice),
+			zap.Float64("slippage_percent", actualSlippage))
+	}
+
+	// Проверяем время исполнения
+	if result.ExecutionTime > 30*time.Second {
+		c.logger.Warn("slow transaction execution",
+			zap.Duration("execution_time", result.ExecutionTime))
+	}
+
+	// Проверяем комиссии
+	if result.FeesPaid > params.PriorityFeeLamports*2 {
+		c.logger.Warn("high transaction fees",
+			zap.Uint64("expected_fee", params.PriorityFeeLamports),
+			zap.Uint64("actual_fee", result.FeesPaid))
+	}
+
+	// Формируем детальный отчет о свапе
+	c.logger.Info("swap validation completed",
+		zap.String("signature", result.Signature.String()),
+		zap.Uint64("amount_in", params.AmountIn),
+		zap.Uint64("amount_out", result.AmountOut),
+		zap.Uint64("min_amount_out", params.MinAmountOut),
+		zap.Float64("slippage_percent", actualSlippage),
+		zap.Uint64("fees_paid", result.FeesPaid),
+		zap.Duration("execution_time", result.ExecutionTime),
+		zap.Time("block_time", result.BlockTime),
+		zap.Int("retry_count", result.RetryCount))
+
+	return nil
+}
+
+// getTokenBalance получает баланс токена для аккаунта
+func (c *Client) getTokenBalance(ctx context.Context, account solana.PublicKey) (uint64, error) {
+	resp, err := c.client.GetTokenAccountBalance(ctx, account, c.commitment)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get token balance: %w", err)
+	}
+
+	if resp == nil || resp.Value == nil {
+		return 0, fmt.Errorf("empty token balance response")
+	}
+
+	balance, err := strconv.ParseUint(resp.Value.Amount, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse token balance: %w", err)
+	}
+
+	return balance, nil
 }

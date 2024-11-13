@@ -39,4 +39,6 @@ type Client interface {
 	GetBalance(ctx context.Context, pubkey solana.PublicKey, commitment rpc.CommitmentType) (uint64, error)
 	// Добавляем новый метод
 	WaitForTransactionConfirmation(ctx context.Context, signature solana.Signature, commitment rpc.CommitmentType) error
+	// Добавляем метод для получения информации о транзакции
+	GetTransaction(ctx context.Context, signature solana.Signature) (*rpc.GetTransactionResult, error) //TODO: реализовать этот метод в клиенте
 }
