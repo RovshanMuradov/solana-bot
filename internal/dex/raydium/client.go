@@ -44,51 +44,43 @@ func NewRaydiumClient(rpcEndpoint string, wallet solana.PrivateKey, logger *zap.
 	}, nil
 }
 
-// GetPool получает информацию о пуле с поддержкой поиска в обоих направлениях
+// GetPool получает информацию о пуле для пары токенов
 func (c *Client) GetPool(ctx context.Context, baseMint, quoteMint solana.PublicKey) (*Pool, error) {
 	c.logger.Debug("searching pool",
 		zap.String("baseMint", baseMint.String()),
 		zap.String("quoteMint", quoteMint.String()))
 
-	// Try to get the best pool from cache first
+	// Пробуем получить пул из кэша
 	if pool := c.poolCache.GetBestPool(baseMint, quoteMint); pool != nil {
-		if err := c.api.ValidatePool(ctx, pool, baseMint, quoteMint); err == nil {
-			if err := c.api.IsPoolViable(ctx, pool); err == nil {
-				return pool, nil
+		if err := c.api.ValidatePool(ctx, pool); err == nil {
+			return pool, nil
+		}
+	}
+
+	// Получаем пул через API для базового токена
+	basePool, err := c.api.GetPoolByToken(ctx, baseMint)
+	if err == nil && basePool != nil &&
+		(basePool.BaseMint.Equals(quoteMint) || basePool.QuoteMint.Equals(quoteMint)) {
+
+		if err := c.enrichAndValidatePool(ctx, basePool, baseMint, quoteMint); err == nil {
+			return c.cacheAndReturn(basePool), nil
+		}
+	}
+
+	// Если не нашли через базовый токен, пробуем через котируемый
+	if !quoteMint.Equals(baseMint) {
+		quotePool, err := c.api.GetPoolByToken(ctx, quoteMint)
+		if err == nil && quotePool != nil &&
+			(quotePool.BaseMint.Equals(baseMint) || quotePool.QuoteMint.Equals(baseMint)) {
+
+			if err := c.enrichAndValidatePool(ctx, quotePool, baseMint, quoteMint); err == nil {
+				return c.cacheAndReturn(quotePool), nil
 			}
-			c.logger.Debug("cached pool is not viable", zap.Error(err))
 		}
 	}
 
-	// If cache miss or invalid pool, try to get pool directly from API
-	pool, err := c.api.GetPoolByPair(ctx, baseMint, quoteMint)
-	if err != nil {
-		c.logger.Debug("failed to get pool by pair, falling back to best pool search",
-			zap.Error(err))
-
-		// Fallback to FindBestPool if GetPoolByPair fails
-		pool, err = c.FindBestPool(ctx, baseMint, quoteMint)
-		if err != nil {
-			return nil, fmt.Errorf("failed to find best pool: %w", err)
-		}
-	}
-
-	// Validate the found pool
-	if err := c.api.ValidatePool(ctx, pool, baseMint, quoteMint); err != nil {
-		return nil, fmt.Errorf("pool validation failed: %w", err)
-	}
-
-	// Check pool viability
-	if err := c.api.IsPoolViable(ctx, pool); err != nil {
-		return nil, fmt.Errorf("pool is not viable: %w", err)
-	}
-
-	// Enrich pool data and validate
-	if err := c.enrichAndValidatePool(ctx, pool, baseMint, quoteMint); err != nil {
-		return nil, fmt.Errorf("failed to enrich pool data: %w", err)
-	}
-
-	return c.cacheAndReturn(pool), nil
+	return nil, fmt.Errorf("no viable pools found for tokens %s and %s",
+		baseMint.String(), quoteMint.String())
 }
 
 // enrichAndValidatePool обогащает пул данными и проверяет его валидность
@@ -222,64 +214,7 @@ func (c *Client) ensureTokenAccounts(ctx context.Context, sourceToken, targetTok
 	return accounts, nil
 }
 
-// prepareSwap подготавливает параметры для свапа
-func (c *Client) prepareSwap(ctx context.Context, params *SwapParams) error {
-	// Проверяем жизнеспособность пула
-	if err := c.api.IsPoolViable(ctx, params.Pool); err != nil {
-		return fmt.Errorf("pool is not viable: %w", err)
-	}
-
-	// Проверяем валидность пары токенов
-	if err := c.ValidateTokenPair(params.Pool, params.Pool.BaseMint, params.Pool.QuoteMint); err != nil {
-		return fmt.Errorf("invalid token pair: %w", err)
-	}
-
-	// Проверяем достаточность ликвидности
-	if err := CheckLiquiditySufficiency(params.Pool, params.AmountIn); err != nil {
-		return fmt.Errorf("insufficient liquidity: %w", err)
-	}
-
-	// Рассчитываем влияние на цену
-	impact, err := CalculateSwapImpact(params.Pool, params.AmountIn)
-	if err != nil {
-		return fmt.Errorf("failed to calculate price impact: %w", err)
-	}
-
-	// Проверяем, не превышает ли влияние допустимый предел
-	if impact > float64(params.SlippageBps)/100 {
-		return fmt.Errorf("price impact too high: %.2f%% > %.2f%%",
-			impact, float64(params.SlippageBps)/100)
-	}
-
-	// Проверяем балансы
-	balance, err := c.client.GetBalance(ctx, params.UserWallet, c.commitment)
-	if err != nil {
-		return fmt.Errorf("failed to get wallet balance: %w", err)
-	}
-
-	requiredBalance := params.AmountIn + params.PriorityFeeLamports + 5000
-	if balance < requiredBalance {
-		return fmt.Errorf("insufficient balance: required %d, got %d", requiredBalance, balance)
-	}
-
-	// Проверяем и создаем ATA если необходимо
-	accounts, err := c.ensureTokenAccounts(ctx, params.Pool.BaseMint, params.Pool.QuoteMint)
-	if err != nil {
-		return fmt.Errorf("failed to ensure token accounts: %w", err)
-	}
-	params.SourceTokenAccount = accounts.SourceATA
-	params.DestinationTokenAccount = accounts.DestinationATA
-
-	// Проверяем пул
-	if err := c.checkPoolLiquidity(ctx, params.Pool); err != nil {
-		return fmt.Errorf("pool liquidity check failed: %w", err)
-	}
-
-	return nil
-}
-
 // Вспомогательные методы
-
 func (c *Client) checkTokenAccount(ctx context.Context, account solana.PublicKey) (bool, error) {
 	acc, err := c.client.GetAccountInfo(ctx, account)
 	if err != nil {
@@ -334,8 +269,6 @@ func (c *Client) GetPublicKey() solana.PublicKey {
 func (c *Client) GetBaseClient() blockchain.Client {
 	return c.client
 }
-
-// Добавить методы:
 
 // FindBestPool находит лучший пул для свапа
 func (c *Client) FindBestPool(ctx context.Context, baseToken, quoteToken solana.PublicKey) (*Pool, error) {
@@ -409,13 +342,30 @@ func (c *Client) FindBestPool(ctx context.Context, baseToken, quoteToken solana.
 	return c.cacheAndReturn(bestPool), nil
 }
 
-// ValidateSwapConditions проверяет условия для свапа
-func (c *Client) ValidateSwapConditions(ctx context.Context, params *SwapParams) error {
+// validateAndPrepareSwap объединяет подготовку и валидацию свапа
+func (c *Client) validateAndPrepareSwap(ctx context.Context, params *SwapParams) error {
 	if params == nil {
 		return fmt.Errorf("swap params cannot be nil")
 	}
 
-	// 1. Проверяем баланс кошелька
+	c.logger.Debug("preparing swap parameters",
+		zap.String("pool_id", params.Pool.ID.String()),
+		zap.Uint64("amount_in", params.AmountIn))
+
+	// Проверяем валидность пула через API
+	if err := c.api.ValidatePool(ctx, params.Pool); err != nil {
+		return fmt.Errorf("pool validation failed: %w", err)
+	}
+
+	// Проверяем и подготавливаем токен-аккаунты
+	accounts, err := c.ensureTokenAccounts(ctx, params.Pool.BaseMint, params.Pool.QuoteMint)
+	if err != nil {
+		return fmt.Errorf("failed to ensure token accounts: %w", err)
+	}
+	params.SourceTokenAccount = accounts.SourceATA
+	params.DestinationTokenAccount = accounts.DestinationATA
+
+	// Проверяем баланс кошелька
 	balance, err := c.client.GetBalance(ctx, params.UserWallet, c.commitment)
 	if err != nil {
 		return fmt.Errorf("failed to get wallet balance: %w", err)
@@ -427,73 +377,17 @@ func (c *Client) ValidateSwapConditions(ctx context.Context, params *SwapParams)
 		return fmt.Errorf("insufficient balance: required %d, got %d", requiredBalance, balance)
 	}
 
-	// 2. Проверяем существование токен-аккаунтов
-	accounts, err := c.ensureTokenAccounts(ctx, params.Pool.BaseMint, params.Pool.QuoteMint)
-	if err != nil {
-		return fmt.Errorf("failed to validate token accounts: %w", err)
-	}
-	params.SourceTokenAccount = accounts.SourceATA
-	params.DestinationTokenAccount = accounts.DestinationATA
-
-	// 3. Проверяем разрешения (для токенов)
-	if err := c.validateTokenPermissions(ctx, params); err != nil {
-		return fmt.Errorf("permission check failed: %w", err)
-	}
-
-	// 4. Проверяем ликвидность пула
-	if err := c.checkPoolLiquidity(ctx, params.Pool); err != nil {
-		return fmt.Errorf("pool liquidity check failed: %w", err)
-	}
-
-	// 5. Проверяем влияние на цену
-	priceImpact := GetPriceImpact(params.Pool, params.AmountIn)
-	if priceImpact > float64(params.SlippageBps)/100 {
+	// Проверяем влияние на цену
+	impact := GetPriceImpact(params.Pool, params.AmountIn)
+	if impact > float64(params.SlippageBps)/100 {
 		return fmt.Errorf("price impact too high: %.2f%% > %.2f%%",
-			priceImpact,
-			float64(params.SlippageBps)/100)
+			impact, float64(params.SlippageBps)/100)
 	}
 
-	c.logger.Debug("swap conditions validated successfully",
-		zap.String("pool_id", params.Pool.ID.String()),
-		zap.Uint64("amount_in", params.AmountIn),
-		zap.Float64("price_impact", priceImpact))
-
-	return nil
-}
-
-// validateTokenPermissions проверяет разрешения для токен-аккаунтов
-func (c *Client) validateTokenPermissions(ctx context.Context, params *SwapParams) error {
-	// Проверяем source token account
-	sourceAcc, err := c.client.GetTokenAccountBalance(ctx, params.SourceTokenAccount, c.commitment)
-	if err != nil {
-		return fmt.Errorf("failed to get source token balance: %w", err)
-	}
-
-	if sourceAcc == nil || sourceAcc.Value == nil {
-		return fmt.Errorf("invalid source token account")
-	}
-
-	// Конвертируем строковое значение баланса в uint64 для корректного сравнения
-	sourceBalance, err := strconv.ParseUint(sourceAcc.Value.Amount, 10, 64)
-	if err != nil {
-		return fmt.Errorf("failed to parse source balance: %w", err)
-	}
-
-	if sourceBalance < params.AmountIn {
-		return fmt.Errorf("insufficient token balance: required %d, got %d",
-			params.AmountIn, sourceBalance)
-	}
-
-	// Проверяем destination token account
-	destAcc, err := c.client.GetTokenAccountBalance(ctx, params.DestinationTokenAccount, c.commitment)
-	if err != nil && !strings.Contains(err.Error(), "could not find account") {
-		return fmt.Errorf("failed to get destination token balance: %w", err)
-	}
-
-	if destAcc != nil && destAcc.Value != nil && destAcc.Value.Decimals != params.Pool.QuoteDecimals {
-		return fmt.Errorf("destination token decimals mismatch: expected %d, got %d",
-			params.Pool.QuoteDecimals, destAcc.Value.Decimals)
-	}
+	c.logger.Debug("swap preparation completed",
+		zap.String("source_ata", accounts.SourceATA.String()),
+		zap.String("destination_ata", accounts.DestinationATA.String()),
+		zap.Float64("price_impact", impact))
 
 	return nil
 }

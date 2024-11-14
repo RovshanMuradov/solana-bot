@@ -408,26 +408,26 @@ func (s *Sniper) validateTokens(ctx context.Context, task *types.Task) (solana.P
 	return sourceMint, targetMint, nil
 }
 
-func (s *Sniper) updateTaskWithMetadata(
-	task *types.Task,
-	metadata map[string]*solbc.TokenMetadata,
-	sourceMint, targetMint solana.PublicKey,
-) error {
-	sourceMetadata := metadata[sourceMint.String()]
-	targetMetadata := metadata[targetMint.String()]
+// func (s *Sniper) updateTaskWithMetadata(
+// 	task *types.Task,
+// 	metadata map[string]*solbc.TokenMetadata,
+// 	sourceMint, targetMint solana.PublicKey,
+// ) error {
+// 	sourceMetadata := metadata[sourceMint.String()]
+// 	targetMetadata := metadata[targetMint.String()]
 
-	if sourceMetadata == nil || targetMetadata == nil {
-		return fmt.Errorf("metadata not found for tokens")
-	}
+// 	if sourceMetadata == nil || targetMetadata == nil {
+// 		return fmt.Errorf("metadata not found for tokens")
+// 	}
 
-	task.SourceTokenDecimals = int(sourceMetadata.Decimals)
-	task.TargetTokenDecimals = int(targetMetadata.Decimals)
+// 	task.SourceTokenDecimals = int(sourceMetadata.Decimals)
+// 	task.TargetTokenDecimals = int(targetMetadata.Decimals)
 
-	s.logger.Debug("Token metadata loaded",
-		zap.String("source_symbol", sourceMetadata.Symbol),
-		zap.Int("source_decimals", task.SourceTokenDecimals),
-		zap.String("target_symbol", targetMetadata.Symbol),
-		zap.Int("target_decimals", task.TargetTokenDecimals))
+// 	s.logger.Debug("Token metadata loaded",
+// 		zap.String("source_symbol", sourceMetadata.Symbol),
+// 		zap.Int("source_decimals", task.SourceTokenDecimals),
+// 		zap.String("target_symbol", targetMetadata.Symbol),
+// 		zap.Int("target_decimals", task.TargetTokenDecimals))
 
-	return nil
-}
+// 	return nil
+// }

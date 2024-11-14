@@ -191,7 +191,8 @@ func (v PoolVersion) IsValid() bool {
 type TokenAccounts struct {
 	SourceATA      solana.PublicKey
 	DestinationATA solana.PublicKey
-	Created        bool // флаг, были ли созданы новые ATA
+	SourceBalance  uint64
+	Created        bool
 }
 
 type APIMetadata struct {
