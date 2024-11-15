@@ -39,7 +39,6 @@ func NewRaydiumClient(rpcEndpoint string, wallet solana.PrivateKey, logger *zap.
 		retries:     3,
 		priorityFee: 1000,
 		commitment:  solanarpc.CommitmentConfirmed,
-		poolCache:   NewPoolCache(logger),
 		api:         NewAPIService(logger),
 	}, nil
 }
@@ -50,20 +49,13 @@ func (c *Client) GetPool(ctx context.Context, baseMint, quoteMint solana.PublicK
 		zap.String("baseMint", baseMint.String()),
 		zap.String("quoteMint", quoteMint.String()))
 
-	// Пробуем получить пул из кэша
-	if pool := c.poolCache.GetBestPool(baseMint, quoteMint); pool != nil {
-		if err := c.api.ValidatePool(ctx, pool); err == nil {
-			return pool, nil
-		}
-	}
-
 	// Получаем пул через API для базового токена
 	basePool, err := c.api.GetPoolByToken(ctx, baseMint)
 	if err == nil && basePool != nil &&
 		(basePool.BaseMint.Equals(quoteMint) || basePool.QuoteMint.Equals(quoteMint)) {
 
 		if err := c.enrichAndValidatePool(ctx, basePool, baseMint, quoteMint); err == nil {
-			return c.cacheAndReturn(basePool), nil
+			return basePool, nil
 		}
 	}
 
@@ -74,7 +66,7 @@ func (c *Client) GetPool(ctx context.Context, baseMint, quoteMint solana.PublicK
 			(quotePool.BaseMint.Equals(baseMint) || quotePool.QuoteMint.Equals(baseMint)) {
 
 			if err := c.enrichAndValidatePool(ctx, quotePool, baseMint, quoteMint); err == nil {
-				return c.cacheAndReturn(quotePool), nil
+				return quotePool, nil
 			}
 		}
 	}
@@ -147,14 +139,6 @@ func (c *Client) checkPoolLiquidity(ctx context.Context, pool *Pool) error {
 	if err := CheckLiquiditySufficiency(pool, 0); err != nil {
 		return fmt.Errorf("liquidity check failed: %w", err)
 	}
-
-	// Обновляем состояние пула в кэше
-	if err := c.poolCache.UpdatePoolState(pool); err != nil {
-		c.logger.Warn("failed to update pool state in cache",
-			zap.Error(err),
-			zap.String("pool_id", pool.ID.String()))
-	}
-
 	// Проверяем критические метрики пула
 	baseToQuoteRatio := float64(pool.State.BaseReserve) / float64(pool.State.QuoteReserve)
 	const maxRatioDeviation = 10.0
@@ -255,13 +239,6 @@ func (c *Client) createTokenAccount(ctx context.Context, mint solana.PublicKey) 
 	return nil
 }
 
-func (c *Client) cacheAndReturn(pool *Pool) *Pool {
-	if err := c.poolCache.AddPool(pool); err != nil {
-		c.logger.Warn("failed to cache pool", zap.Error(err))
-	}
-	return pool
-}
-
 func (c *Client) GetPublicKey() solana.PublicKey {
 	return c.privateKey.PublicKey()
 }
@@ -339,7 +316,7 @@ func (c *Client) FindBestPool(ctx context.Context, baseToken, quoteToken solana.
 		zap.Uint16("fee_bps", bestPool.DefaultFeeBps))
 
 	// 4. Кэшируем результат
-	return c.cacheAndReturn(bestPool), nil
+	return bestPool, nil
 }
 
 // validateAndPrepareSwap объединяет подготовку и валидацию свапа
