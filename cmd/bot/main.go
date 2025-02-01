@@ -34,7 +34,6 @@ func main() {
 	logConfig.Development = true
 	logConfig.DisableCaller = false
 	logConfig.DisableStacktrace = false
-
 	logger, err := logConfig.Build()
 	if err != nil {
 		fmt.Printf("Failed to initialize logger: %v\n", err)

@@ -1,7 +1,7 @@
 {
     "license": "TEST-LICENSE-123456789",
     "rpc_list": [
-        "http://rpc-lax-a.thornode.io/e711fbc80050bff888e8584d9e2521ca"
+        "https://proximus.dev/rpc/solana?api-key=rG5ospzyR5ePlD9ESHAbuKmZQsPFw03MmpzjmfGzN2w"
 
 ],
     "websocket_url": "ws://rpc-lax-a.thornode.io/e711fbc80050bff888e8584d9e2521ca",
