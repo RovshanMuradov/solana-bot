@@ -13,19 +13,21 @@ import (
 
 // GraduateParams содержит параметры для транзакции graduate.
 type GraduateParams struct {
-	// Mint токена, созданного через Pump.fun.
+	// TokenMint — адрес mint-а токена, созданного через Pump.fun.
 	TokenMint solana.PublicKey
-	// Bonding curve аккаунт.
+	// BondingCurveAccount — адрес аккаунта bonding curve.
 	BondingCurveAccount solana.PublicKey
-	// Дополнительные параметры (например, ликвидность, fee и т.д.).
+	// ExtraData — дополнительные данные (например, ликвидность, fee и т.д.).
 	ExtraData []byte
 }
 
 // GraduateToken выполняет транзакцию graduate, переводя токен на Raydium.
-func GraduateToken(ctx context.Context, client *solbc.Client, logger *zap.Logger, params *GraduateParams) (solana.Signature, error) {
+// Обратите внимание: второй параметр (programID) — это адрес смарт-контракта Pump.fun,
+// а не адрес mint-а токена.
+func GraduateToken(ctx context.Context, client *solbc.Client, logger *zap.Logger, params *GraduateParams, programID solana.PublicKey) (solana.Signature, error) {
 	logger.Info("Initiating graduate process", zap.String("token_mint", params.TokenMint.String()))
 
-	graduateIx, err := BuildGraduateInstruction(params)
+	graduateIx, err := BuildGraduateInstruction(params, programID)
 	if err != nil {
 		return solana.Signature{}, fmt.Errorf("failed to build graduate instruction: %w", err)
 	}
@@ -63,7 +65,8 @@ func GraduateToken(ctx context.Context, client *solbc.Client, logger *zap.Logger
 }
 
 // BuildGraduateInstruction собирает инструкцию для graduate.
-func BuildGraduateInstruction(params *GraduateParams) (solana.Instruction, error) {
+// Принимает два параметра: параметры транзакции и programID (адрес смарт-контракта).
+func BuildGraduateInstruction(params *GraduateParams, programID solana.PublicKey) (solana.Instruction, error) {
 	discriminator := byte(0x22)
 	name := "PumpToken"
 	symbol := "PUMP"
@@ -71,14 +74,12 @@ func BuildGraduateInstruction(params *GraduateParams) (solana.Instruction, error
 
 	data := BuildGraduateInstructionData(discriminator, name, symbol, uri, params.ExtraData)
 
-	accounts := []solana.AccountMeta{
-		*solana.Meta(params.TokenMint).WRITE(),
-		*solana.Meta(params.BondingCurveAccount).WRITE(),
-		// Добавьте остальные необходимые аккаунты согласно спецификации.
+	// Формируем список аккаунтов в виде среза указателей.
+	accounts := []*solana.AccountMeta{
+		solana.Meta(params.TokenMint).WRITE(),
+		solana.Meta(params.BondingCurveAccount).WRITE(),
+		// Добавьте здесь остальные необходимые аккаунты согласно спецификации.
 	}
-
-	// Используйте корректный programID (замените placeholder при необходимости).
-	programID := params.TokenMint
 
 	return solana.NewInstruction(programID, accounts, data), nil
 }

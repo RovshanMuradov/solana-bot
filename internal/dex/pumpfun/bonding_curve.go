@@ -26,7 +26,7 @@ type BondingCurveMonitor struct {
 	logger          *zap.Logger
 	monitorInterval time.Duration
 	currentState    *BondingCurveInfo
-	// Можно добавить канал уведомлений о достижении порогового значения
+	// Канал уведомлений о новых данных
 	notify chan *BondingCurveInfo
 }
 
@@ -61,7 +61,7 @@ func (m *BondingCurveMonitor) Start(ctx context.Context) {
 				zap.Float64("progress", state.Progress),
 				zap.Float64("total_sol", state.TotalSOL),
 				zap.Float64("market_cap", state.MarketCap))
-			// Если требуется уведомление, можно отправить новое состояние в канал
+			// Отправляем новое состояние в канал уведомлений (если канал не заблокирован)
 			select {
 			case m.notify <- state:
 			default:
@@ -85,7 +85,7 @@ func (m *BondingCurveMonitor) Subscribe() <-chan *BondingCurveInfo {
 
 // queryBondingCurve осуществляет запрос данных из аккаунта bonding curve.
 func (m *BondingCurveMonitor) queryBondingCurve(ctx context.Context) (*BondingCurveInfo, error) {
-	// Здесь предполагается, что адрес bonding curve берётся из конфигурации (например, через PumpfunConfig)
+	// Здесь предполагается, что адрес bonding curve берётся из конфигурации.
 	// Замените "BONDING_CURVE_ADDRESS" на реальный адрес или передавайте его через конфигурацию.
 	bondingCurveAddr, err := solana.PublicKeyFromBase58("BONDING_CURVE_ADDRESS")
 	if err != nil {
@@ -99,10 +99,17 @@ func (m *BondingCurveMonitor) queryBondingCurve(ctx context.Context) (*BondingCu
 		return nil, fmt.Errorf("bonding curve account not found")
 	}
 	data := accountInfo.Value.Data.GetBinary()
+
+	// Логируем сырые данные для отладки
+	m.logger.Debug("Raw bonding curve data", zap.ByteString("data", data))
+
 	if len(data) < 24 {
 		return nil, fmt.Errorf("insufficient bonding curve data length: %d", len(data))
 	}
-	// Пример: первые 8 байт – TotalSOL (в лампортах), следующие 8 – Progress (в сотых процентах), следующие 8 – MarketCap (в лампортах)
+	// Предполагается, что:
+	// - первые 8 байт: TotalSOL (в лампортах)
+	// - следующие 8 байт: Progress (в сотых процентах)
+	// - следующие 8 байт: MarketCap (в лампортах)
 	totalSOLLamports := binary.LittleEndian.Uint64(data[0:8])
 	progressRaw := binary.LittleEndian.Uint64(data[8:16])
 	marketCapLamports := binary.LittleEndian.Uint64(data[16:24])

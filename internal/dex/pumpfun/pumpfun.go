@@ -11,26 +11,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// PumpfunConfig содержит конфигурационные параметры для Pump.fun.
-type PumpfunConfig struct {
-	// Адрес контракта Pump.fun, отвечающего за создание и продажу токена.
-	ContractAddress solana.PublicKey
-	// Порог для graduation (например, 85.0 или 100.0 %).
-	GraduationThreshold float64
-	// Разрешить продажу токена до 100% bonding curve.
-	AllowSellBeforeFull bool
-	// Интервал опроса состояния bonding curve (например, "5s").
-	MonitorInterval string
-	MonitorDuration func() (d time.Duration)
-	// Дополнительные аккаунты, необходимые для создания, покупки и продажи токена.
-	Global                 solana.PublicKey
-	FeeRecipient           solana.PublicKey
-	Mint                   solana.PublicKey
-	BondingCurve           solana.PublicKey
-	AssociatedBondingCurve solana.PublicKey
-	EventAuthority         solana.PublicKey
-}
-
 // DEX реализует интерфейс DEX для Pump.fun.
 type DEX struct {
 	client  *solbc.Client // Solana клиент для отправки транзакций.
