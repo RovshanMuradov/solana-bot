@@ -89,20 +89,20 @@ func initializeRaydiumDEX(client blockchain.Client, logger *zap.Logger) (types.D
 	}, nil
 }
 
-// // initializePumpFunDEX инициализирует Pump.fun DEX
-// func initializePumpFunDEX(_ blockchain.Client, logger *zap.Logger) (types.DEX, error) {
-// 	logger.Debug("Initializing Pump.fun DEX")
-
-// 	// Создаем новый экземпляр Pump.fun DEX
-// 	dex := pumpfun.NewDEX()
-// 	if dex == nil {
-// 		logger.Error("Failed to create Pump.fun DEX instance")
-// 		return nil, fmt.Errorf("failed to create Pump.fun DEX instance")
-// 	}
-
-// 	logger.Info("Pump.fun DEX initialized successfully")
-// 	return dex, nil
-// }
+//// initializePumpFunDEX инициализирует Pump.fun DEX
+//func initializePumpFunDEX(_ blockchain.Client, logger *zap.Logger) (types.DEX, error) {
+//	logger.Debug("Initializing Pump.fun DEX")
+//
+//	// Создаем новый экземпляр Pump.fun DEX
+//	dex := pumpfun.NewDEX()
+//	if dex == nil {
+//		logger.Error("Failed to create Pump.fun DEX instance")
+//		return nil, fmt.Errorf("failed to create Pump.fun DEX instance")
+//	}
+//
+//	logger.Info("Pump.fun DEX initialized successfully")
+//	return dex, nil
+//}
 
 // Улучшить имплементацию raydiumDEX:
 

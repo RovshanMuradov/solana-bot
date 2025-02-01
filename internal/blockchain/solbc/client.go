@@ -4,6 +4,7 @@ package solbc
 import (
 	"context"
 	"fmt"
+	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
@@ -12,6 +13,68 @@ import (
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc/rpc"
 	"go.uber.org/zap"
 )
+
+// CreateAndSendTransaction принимает список инструкций, формирует транзакцию, подписывает её и отправляет.
+func (c *Client) CreateAndSendTransaction(ctx context.Context, instructions []solana.Instruction) (solana.Signature, error) {
+	// Получаем последний blockhash
+	blockhash, err := c.GetRecentBlockhash(ctx)
+	if err != nil {
+		return solana.Signature{}, fmt.Errorf("failed to get recent blockhash: %w", err)
+	}
+
+	// Создаем транзакцию. В качестве payer используем публичный ключ из приватного ключа клиента.
+	tx, err := solana.NewTransaction(
+		instructions,
+		blockhash,
+		solana.TransactionPayer(c.privateKey.PublicKey()),
+	)
+	if err != nil {
+		return solana.Signature{}, fmt.Errorf("failed to create transaction: %w", err)
+	}
+
+	// Подписываем транзакцию
+	_, err = tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+		if key.Equals(c.privateKey.PublicKey()) {
+			return &c.privateKey
+		}
+		return nil
+	})
+	if err != nil {
+		return solana.Signature{}, fmt.Errorf("failed to sign transaction: %w", err)
+	}
+
+	// Отправляем транзакцию с использованием уже реализованного метода SendTransaction.
+	sig, err := c.SendTransaction(ctx, tx)
+	if err != nil {
+		return solana.Signature{}, fmt.Errorf("failed to send transaction: %w", err)
+	}
+
+	return sig, nil
+}
+
+// GetWalletPublicKey возвращает публичный ключ кошелька клиента.
+func (c *Client) GetWalletPublicKey() solana.PublicKey {
+	return c.privateKey.PublicKey()
+}
+
+// SignTransaction подписывает транзакцию с использованием приватного ключа.
+func (c *Client) SignTransaction(tx *solana.Transaction) error {
+	_, err := tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+		if key.Equals(c.privateKey.PublicKey()) {
+			return &c.privateKey
+		}
+		return nil
+	})
+	return err
+}
+
+// GetWallet возвращает объект кошелька, созданный на основе приватного ключа клиента.
+func (c *Client) GetWallet() *wallet.Wallet {
+	return &wallet.Wallet{
+		PrivateKey: c.privateKey,
+		PublicKey:  c.privateKey.PublicKey(),
+	}
+}
 
 // NewClient создает новый экземпляр клиента с улучшенным мониторингом
 func NewClient(rpcURLs []string, privateKey solana.PrivateKey, logger *zap.Logger) (*Client, error) {
