@@ -12,7 +12,7 @@ import (
 )
 
 // PumpfunConfig содержит конфигурационные параметры для Pump.fun.
-type PumpfunConfig struct {
+type Config struct {
 	// Адрес контракта Pump.fun, отвечающего за покупку/продажу токена.
 	ContractAddress solana.PublicKey
 	// Порог для graduation (например, 100.0 означает 100%).
@@ -53,13 +53,13 @@ func GetTargetTokenFromCSV(filePath string) (string, error) {
 
 // GetDefaultConfig возвращает конфигурацию для Pump.fun.
 // Адрес контракта (target token) берётся из файла tast.csv.
-func GetDefaultConfig(logger *zap.Logger) *PumpfunConfig {
+func GetDefaultConfig(logger *zap.Logger) *Config {
 	tokenContractStr, err := GetTargetTokenFromCSV("tast.csv")
 	if err != nil {
 		logger.Error("Error reading target token from CSV", zap.Error(err))
 	}
 
-	return &PumpfunConfig{
+	return &Config{
 		ContractAddress:        solana.MustPublicKeyFromBase58(tokenContractStr),
 		GraduationThreshold:    100.0,
 		AllowSellBeforeFull:    true,

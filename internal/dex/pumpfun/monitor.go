@@ -9,31 +9,31 @@ import (
 	"go.uber.org/zap"
 )
 
-// PumpfunEvent используется для уведомлений (например, о достижении graduation или обновлении bonding curve).
-type PumpfunEvent struct {
+// Event используется для уведомлений (например, о достижении graduation или обновлении bonding curve).
+type Event struct {
 	Type      string                 // "snipe", "sell", "graduate", "bonding_update"
 	TokenMint solana.PublicKey       // Mint токена
 	Data      map[string]interface{} // Дополнительные данные (например, progress, totalSOL, marketCap)
 }
 
 // PumpfunMonitor осуществляет асинхронный мониторинг событий на Pump.fun.
-type PumpfunMonitor struct {
+type Monitor struct {
 	logger    *zap.Logger
 	interval  time.Duration
-	eventChan chan PumpfunEvent
+	eventChan chan Event
 }
 
 // NewPumpfunMonitor создаёт новый экземпляр мониторинга событий.
-func NewPumpfunMonitor(logger *zap.Logger, interval time.Duration) *PumpfunMonitor {
-	return &PumpfunMonitor{
+func NewPumpfunMonitor(logger *zap.Logger, interval time.Duration) *Monitor {
+	return &Monitor{
 		logger:    logger.Named("pumpfun-monitor"),
 		interval:  interval,
-		eventChan: make(chan PumpfunEvent, 10),
+		eventChan: make(chan Event, 10),
 	}
 }
 
 // Start запускает мониторинг в отдельной горутине.
-func (m *PumpfunMonitor) Start(ctx context.Context) {
+func (m *Monitor) Start(ctx context.Context) {
 	ticker := time.NewTicker(m.interval)
 	defer ticker.Stop()
 
@@ -46,7 +46,7 @@ func (m *PumpfunMonitor) Start(ctx context.Context) {
 		case <-ticker.C:
 			// Здесь можно реализовать логику получения событий (например, через подписку или опрос контракта).
 			// В этом примере генерируется тестовое событие обновления bonding curve.
-			event := PumpfunEvent{
+			event := Event{
 				Type:      "bonding_update",
 				TokenMint: solana.PublicKey{}, // placeholder – установить, если необходимо
 				Data: map[string]interface{}{
@@ -59,6 +59,6 @@ func (m *PumpfunMonitor) Start(ctx context.Context) {
 }
 
 // GetEvents возвращает канал для получения событий.
-func (m *PumpfunMonitor) GetEvents() <-chan PumpfunEvent {
+func (m *Monitor) GetEvents() <-chan Event {
 	return m.eventChan
 }

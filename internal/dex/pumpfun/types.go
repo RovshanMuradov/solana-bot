@@ -4,7 +4,7 @@ package pumpfun
 import "github.com/gagliardetto/solana-go"
 
 // PumpfunToken содержит базовую информацию о токене, созданном через Pump.fun.
-type PumpfunToken struct {
+type Token struct {
 	Mint         solana.PublicKey // Mint токена
 	BondingCurve solana.PublicKey // Аккаунт bonding curve
 	Name         string

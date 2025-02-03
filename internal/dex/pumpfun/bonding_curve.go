@@ -1,4 +1,5 @@
 // internal/dex/pumpfun/bonding_curve.go
+
 package pumpfun
 
 import (

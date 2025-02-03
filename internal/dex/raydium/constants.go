@@ -1,19 +1,15 @@
 // internal/dex/raydium/constants.go
 package raydium
 
-import (
-	"github.com/gagliardetto/solana-go"
-)
-
 // Program IDs
-var (
+/*var (
 	// Используем MPK для краткости, так как это константы
-	//TokenProgramID     = solana.MPK("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+	TokenProgramID     = solana.MPK("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
 	RaydiumV4ProgramID = solana.MPK("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")
 	SystemProgramID    = solana.MPK("11111111111111111111111111111111")
 	SysvarRentPubkey   = solana.MPK("SysvarRent111111111111111111111111111111111")
 	WrappedSolMint     = solana.MPK("So11111111111111111111111111111111111111112")
-)
+)*/
 
 const (
 	MaxComputeUnitLimit = 300000

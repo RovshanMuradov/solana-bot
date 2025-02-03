@@ -16,15 +16,15 @@ import (
 type DEX struct {
 	client        *solbc.Client // Клиент для отправки транзакций
 	logger        *zap.Logger
-	config        *PumpfunConfig // Конфигурация Pump.fun
+	config        *Config // Конфигурация Pump.fun
 	monitor       *BondingCurveMonitor
-	events        *PumpfunMonitor
+	events        *Monitor
 	graduated     bool            // Флаг, показывающий, что токен перешёл в режим Raydium
 	raydiumClient *raydium.Client // Клиент для работы с Raydium
 }
 
 // NewDEX создает новый экземпляр Pump.fun DEX.
-func NewDEX(client *solbc.Client, logger *zap.Logger, config *PumpfunConfig, monitorIntervalDuration string) (*DEX, error) {
+func NewDEX(client *solbc.Client, logger *zap.Logger, config *Config, monitorIntervalDuration string) (*DEX, error) {
 	interval, err := parseDuration(monitorIntervalDuration)
 	if err != nil {
 		return nil, err
