@@ -2,7 +2,6 @@
 package raydium
 
 import (
-	"context"
 	"encoding/binary"
 	"fmt"
 
@@ -11,219 +10,66 @@ import (
 	"go.uber.org/zap"
 )
 
-// ExecutableSwapInstruction реализует solana.Instruction
-type ExecutableSwapInstruction struct {
-	programID solana.PublicKey
-	accounts  []*solana.AccountMeta
-	data      []byte
-}
+// BuildSwapInstructions builds the instructions needed for a Raydium swap.
+func BuildSwapInstructions(params *SwapParams, logger *zap.Logger) ([]solana.Instruction, error) {
+	var instructions []solana.Instruction
 
-// Реализация интерфейса solana.Instruction
-func (ix *ExecutableSwapInstruction) ProgramID() solana.PublicKey {
-	return ix.programID
-}
-
-func (ix *ExecutableSwapInstruction) Accounts() []*solana.AccountMeta {
-	return ix.accounts
-}
-
-func (ix *ExecutableSwapInstruction) Data() ([]byte, error) {
-	return ix.data, nil
-}
-
-// Добавляем вспомогательный конструктор
-func NewExecutableSwapInstruction(
-	programID solana.PublicKey,
-	accounts []*solana.AccountMeta,
-	data []byte,
-) *ExecutableSwapInstruction {
-	return &ExecutableSwapInstruction{
-		programID: programID,
-		accounts:  accounts,
-		data:      data,
-	}
-}
-
-// buildSwapInstruction создает инструкцию для свапа
-func (c *Client) buildSwapInstruction(params *SwapParams) (solana.Instruction, error) {
-	if params == nil {
-		return nil, fmt.Errorf("swap params cannot be nil")
-	}
-
-	// Создаем список аккаунтов для инструкции
-	accounts := []*solana.AccountMeta{
-		solana.Meta(params.Pool.ID).WRITE(),                 // Pool
-		solana.Meta(params.Pool.Authority),                  // Pool Authority
-		solana.Meta(params.UserWallet).SIGNER(),             // User wallet
-		solana.Meta(params.SourceTokenAccount).WRITE(),      // Source token account
-		solana.Meta(params.DestinationTokenAccount).WRITE(), // Destination token account
-		solana.Meta(params.Pool.BaseVault).WRITE(),          // Base vault
-		solana.Meta(params.Pool.QuoteVault).WRITE(),         // Quote vault
-		solana.Meta(TokenProgramID),                         // Token program
-	}
-
-	// Создаем данные инструкции
-	data := make([]byte, 17) // 1 + 8 + 8 bytes
-	data[0] = 0x02           // swap instruction discriminator
-
-	// Конвертируем SwapDirection в byte
-	var dirByte byte
-	if params.Direction == SwapDirectionIn {
-		dirByte = 1
-	} else {
-		dirByte = 0
-	}
-	data[1] = dirByte
-
-	// Записываем AmountIn и MinAmountOut
-	binary.LittleEndian.PutUint64(data[2:10], params.AmountIn)
-	binary.LittleEndian.PutUint64(data[10:], params.MinAmountOut)
-
-	c.logger.Debug("built swap instruction",
-		zap.String("pool_id", params.Pool.ID.String()),
-		zap.Uint64("amount_in", params.AmountIn),
-		zap.Uint64("min_amount_out", params.MinAmountOut),
-		zap.Uint8("direction", dirByte))
-
-	return NewExecutableSwapInstruction(
-		RaydiumV4ProgramID,
-		accounts,
-		data,
-	), nil
-}
-
-// Добавить методы:
-
-// PrepareSwapInstructions подготавливает все инструкции для свапа
-func (c *Client) PrepareSwapInstructions(params *SwapParams) ([]solana.Instruction, error) {
-	if params == nil {
-		return nil, fmt.Errorf("swap params cannot be nil")
-	}
-
-	c.logger.Debug("preparing swap instructions",
-		zap.String("user_wallet", params.UserWallet.String()),
-		zap.String("pool_id", params.Pool.ID.String()),
-		zap.Uint64("amount_in", params.AmountIn))
-
-	instructions := make([]solana.Instruction, 0)
-
-	// 1. Добавляем инструкцию для установки compute budget
-	computeLimitIx := computebudget.NewSetComputeUnitLimitInstructionBuilder().
-		SetUnits(MaxComputeUnitLimit).
-		Build()
-	instructions = append(instructions, computeLimitIx)
-
-	// 2. Добавляем инструкцию для установки приоритетной комиссии
+	// 1. Optionally add compute budget instructions if PriorityFeeLamports > 0
 	if params.PriorityFeeLamports > 0 {
-		computePriceIx := computebudget.NewSetComputeUnitPriceInstructionBuilder().
+		ix1 := computebudget.NewSetComputeUnitLimitInstructionBuilder().
+			SetUnits(params.ComputeUnits).
+			Build()
+		ix2 := computebudget.NewSetComputeUnitPriceInstructionBuilder().
 			SetMicroLamports(params.PriorityFeeLamports).
 			Build()
-		instructions = append(instructions, computePriceIx)
+		instructions = append(instructions, ix1, ix2)
 	}
 
-	// 3. Проверяем необходимость создания токен-аккаунтов
-	sourceExists, err := c.checkTokenAccount(context.Background(), params.SourceTokenAccount)
+	// 2. Prepare the main Raydium swap instruction
+	swapIx, err := buildRaydiumSwapIx(params, logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to check source token account: %w", err)
-	}
-
-	destExists, err := c.checkTokenAccount(context.Background(), params.DestinationTokenAccount)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check destination token account: %w", err)
-	}
-
-	// 4. Добавляем инструкции создания токен-аккаунтов если необходимо
-	if !sourceExists {
-		createSourceATAIx, err := createAssociatedTokenAccountInstruction(
-			params.UserWallet,
-			params.UserWallet,
-			params.Pool.BaseMint,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create source ATA instruction: %w", err)
-		}
-		instructions = append(instructions, createSourceATAIx)
-
-		c.logger.Debug("adding create source ATA instruction",
-			zap.String("mint", params.Pool.BaseMint.String()))
-	}
-
-	if !destExists {
-		createDestATAIx, err := createAssociatedTokenAccountInstruction(
-			params.UserWallet,
-			params.UserWallet,
-			params.Pool.QuoteMint,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create destination ATA instruction: %w", err)
-		}
-		instructions = append(instructions, createDestATAIx)
-
-		c.logger.Debug("adding create destination ATA instruction",
-			zap.String("mint", params.Pool.QuoteMint.String()))
-	}
-
-	// 5. Определяем направление свапа
-	swapDirection, err := c.DetermineSwapDirection(
-		params.Pool,
-		params.Pool.BaseMint,
-		params.Pool.QuoteMint,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to determine swap direction: %w", err)
-	}
-	params.Direction = swapDirection
-
-	// 6. Создаем основную инструкцию свапа используя buildSwapInstruction
-	swapIx, err := c.buildSwapInstruction(params)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build swap instruction: %w", err)
+		return nil, err
 	}
 	instructions = append(instructions, swapIx)
-
-	// Логируем итоговый набор инструкций
-	c.logger.Info("swap instructions prepared",
-		zap.Int("total_instructions", len(instructions)),
-		zap.Bool("includes_ata_creation", !sourceExists || !destExists),
-		zap.String("direction", fmt.Sprintf("%d", swapDirection)),
-		zap.Uint64("amount_in", params.AmountIn),
-		zap.Uint64("min_amount_out", params.MinAmountOut))
 
 	return instructions, nil
 }
 
-// createAssociatedTokenAccountInstruction создает инструкцию для создания ATA
-func createAssociatedTokenAccountInstruction(
-	payer solana.PublicKey,
-	owner solana.PublicKey,
-	mint solana.PublicKey,
-) (solana.Instruction, error) {
-	// Находим адрес ATA
-	ata, _, err := solana.FindAssociatedTokenAddress(
-		owner,
-		mint,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find ATA address: %w", err)
+// buildRaydiumSwapIx is an internal function that encodes the Raydium swap logic.
+func buildRaydiumSwapIx(params *SwapParams, logger *zap.Logger) (solana.Instruction, error) {
+	if params.PoolAddress.IsZero() || params.AmmAuthority.IsZero() {
+		return nil, fmt.Errorf("missing pool addresses (Pool or AmmAuthority)")
 	}
 
-	// Создаем инструкцию с правильным списком аккаунтов
+	// Example layout for data: [ u8(0x02) = swap, direction(1byte), amountIn(uint64), minOut(uint64) ]
+	data := make([]byte, 1+1+8+8)
+	data[0] = 0x02                   // Suppose 0x02 is "swap" instruction code in Raydium
+	data[1] = byte(params.Direction) // 0 or 1
+	binary.LittleEndian.PutUint64(data[2:10], params.AmountInLamports)
+	binary.LittleEndian.PutUint64(data[10:18], params.MinAmountOut)
+
 	accounts := []*solana.AccountMeta{
-		solana.Meta(payer).SIGNER().WRITE(), // Плательщик комиссии
-		solana.Meta(ata).WRITE(),            // Создаваемый ATA аккаунт
-		solana.Meta(owner),                  // Владелец
-		solana.Meta(mint),                   // Mint токена
-		solana.Meta(SystemProgramID),        // System Program
-		solana.Meta(TokenProgramID),         // Token Program
-		solana.Meta(SysvarRentPubkey),       // Sysvar Rent
+		// Main pool account
+		{PublicKey: params.PoolAddress, IsWritable: true, IsSigner: false},
+		// Amm Authority
+		{PublicKey: params.AmmAuthority, IsWritable: false, IsSigner: false},
+		// Payer signature
+		{PublicKey: params.UserPublicKey, IsWritable: true, IsSigner: true},
+		// Source user token account
+		{PublicKey: params.UserSourceTokenAccount, IsWritable: true, IsSigner: false},
+		// Destination user token account
+		{PublicKey: params.UserDestinationTokenAccount, IsWritable: true, IsSigner: false},
+		// Additional Raydium vaults, token program, etc. (simplified)
+		{PublicKey: params.BaseVault, IsWritable: true, IsSigner: false},
+		{PublicKey: params.QuoteVault, IsWritable: true, IsSigner: false},
+		{PublicKey: TokenProgramID, IsWritable: false, IsSigner: false},
 	}
 
-	// Создаем данные инструкции (для создания ATA не требуются дополнительные данные)
-	data := []byte{1} // Discriminator для создания ATA
+	logger.Debug("Building Raydium swap instruction",
+		zap.String("pool", params.PoolAddress.String()),
+		zap.Uint64("amount_in", params.AmountInLamports),
+		zap.Uint64("min_amount_out", params.MinAmountOut),
+	)
 
-	return &ExecutableSwapInstruction{
-		programID: TokenProgramID,
-		accounts:  accounts,
-		data:      data,
-	}, nil
+	return solana.NewInstruction(RaydiumProgramID, accounts, data), nil
 }
