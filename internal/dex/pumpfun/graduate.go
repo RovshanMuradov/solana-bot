@@ -20,7 +20,7 @@ type GraduateParams struct {
 	// ExtraData — дополнительные данные (например, ликвидность, fee и т.д.).
 	ExtraData []byte
 }
-	
+
 // GraduateToken выполняет транзакцию graduate, переводя токен на Raydium.
 // Обратите внимание: второй параметр (programID) — это адрес смарт-контракта Pump.fun,
 // а не адрес mint-а токена.

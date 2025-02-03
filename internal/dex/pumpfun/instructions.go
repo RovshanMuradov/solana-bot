@@ -112,24 +112,3 @@ func BuildSellTokenInstruction(
 
 	return solana.NewInstruction(accounts.Program, insAccounts, data), nil
 }
-
-// BuildCreateTokenInstruction собирает инструкцию создания токена.
-func BuildCreateTokenInstruction(programID solana.PublicKey, name, symbol, uri string) (solana.Instruction, error) {
-	discriminator := byte(0x01)
-	data := []byte{discriminator}
-	data = append(data, []byte(name)...)
-	data = append(data, 0) // разделитель
-	data = append(data, []byte(symbol)...)
-	data = append(data, 0)
-	data = append(data, []byte(uri)...)
-
-	// Здесь необходимо собрать список аккаунтов согласно спецификации create-инструкции.
-	// Пока что сгенерирован пустой срез аккаунтов (измените в соответствии с реальными данными).
-	var accounts []*solana.AccountMeta
-	// Если аккаунты не определены, возвращаем ошибку.
-	if len(accounts) == 0 {
-		return nil, fmt.Errorf("не определён список аккаунтов для инструкции create")
-	}
-
-	return solana.NewInstruction(programID, accounts, data), nil
-}
