@@ -4,6 +4,7 @@ package pumpfun
 import (
 	"context"
 	"fmt"
+	"github.com/rovshanmuradov/solana-bot/internal/dex/raydium"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
@@ -11,13 +12,15 @@ import (
 	"go.uber.org/zap"
 )
 
-// DEX реализует интерфейс DEX для Pump.fun.
+// DEX реализует интерфейс для работы с Pump.fun.
 type DEX struct {
-	client  *solbc.Client // Solana клиент для отправки транзакций.
-	logger  *zap.Logger
-	config  *PumpfunConfig       // Конфигурация Pump.fun.
-	monitor *BondingCurveMonitor // Модуль мониторинга bonding curve.
-	events  *PumpfunMonitor      // Монитор событий Pump.fun.
+	client        *solbc.Client // Клиент для отправки транзакций
+	logger        *zap.Logger
+	config        *PumpfunConfig // Конфигурация Pump.fun
+	monitor       *BondingCurveMonitor
+	events        *PumpfunMonitor
+	graduated     bool            // Флаг, показывающий, что токен перешёл в режим Raydium
+	raydiumClient *raydium.Client // Клиент для работы с Raydium
 }
 
 // NewDEX создает новый экземпляр Pump.fun DEX.
@@ -40,24 +43,63 @@ func parseDuration(s string) (time.Duration, error) {
 	return time.ParseDuration(s)
 }
 
-// ExecuteSnipe выполняет быстрый снайпинг токена через Pump.fun.
-func (d *DEX) ExecuteSnipe(ctx context.Context, tokenContract solana.PublicKey) error {
-	d.logger.Info("Executing Pump.fun snipe", zap.String("contract", tokenContract.String()))
+// ExecuteSnipe выполняет покупку токена через Pump.fun.
+// Если токен уже graduated, перенаправляет снайпинг на Raydium.
+func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error {
+	// Если токен уже перешёл в режим Raydium, перенаправляем операцию.
+	if d.graduated {
+		d.logger.Info("Token has graduated. Redirecting snipe operation to Raydium.")
+		// Здесь создаём параметры для Raydium Snipe.
+		// Заполните необходимые поля SnipeParams согласно вашей логике.
+		snipeParams := &raydium.SnipeParams{
+			TokenMint: d.config.Mint,
+			// Остальные параметры, например:
+			SourceMint:    solana.MustPublicKeyFromBase58("SOURCE_MINT"), // например, USDC или wSOL
+			AmmAuthority:  solana.MustPublicKeyFromBase58("AMM_AUTHORITY"),
+			BaseVault:     solana.MustPublicKeyFromBase58("BASE_VAULT"),
+			QuoteVault:    solana.MustPublicKeyFromBase58("QUOTE_VAULT"),
+			UserPublicKey: d.client.GetWallet().PublicKey,
+			PrivateKey:    &d.client.GetWallet().PrivateKey,
+			// ATA пользователя и суммы:
+			UserSourceATA:       solana.MustPublicKeyFromBase58("USER_SOURCE_ATA"),
+			UserDestATA:         solana.MustPublicKeyFromBase58("USER_DEST_ATA"),
+			AmountInLamports:    amount,
+			MinOutLamports:      maxSolCost, // или другой параметр минимального выхода
+			PriorityFeeLamports: 0,
+		}
+		_, err := d.raydiumClient.Snipe(ctx, snipeParams)
+		return err
+	}
 
-	// Формируем инструкцию создания токена через Pump.fun.
-	createIx, err := BuildCreateTokenInstruction(d.config.ContractAddress, "PumpToken", "PUMP", "https://ipfs.io/ipfs/QmExample")
+	d.logger.Info("Executing Pump.fun snipe")
+	// Собираем структуру аккаунтов для инструкции покупки.
+	buyAccounts := BuyInstructionAccounts{
+		Global:                 d.config.Global,
+		FeeRecipient:           d.config.FeeRecipient,
+		Mint:                   d.config.Mint,
+		BondingCurve:           d.config.BondingCurve,
+		AssociatedBondingCurve: d.config.AssociatedBondingCurve,
+		EventAuthority:         d.config.EventAuthority,
+		Program:                d.config.ContractAddress,
+	}
+
+	// Получаем пользовательский кошелёк.
+	userWallet := d.client.GetWallet()
+
+	// Строим инструкцию покупки токена.
+	buyIx, err := BuildBuyTokenInstruction(buyAccounts, userWallet, amount, maxSolCost)
 	if err != nil {
-		return fmt.Errorf("failed to build create token instruction: %w", err)
+		return fmt.Errorf("failed to build buy token instruction: %w", err)
 	}
 
 	// Отправляем транзакцию.
-	txSig, err := d.client.CreateAndSendTransaction(ctx, []solana.Instruction{createIx})
+	txSig, err := d.client.CreateAndSendTransaction(ctx, []solana.Instruction{buyIx})
 	if err != nil {
 		return fmt.Errorf("failed to send pumpfun snipe transaction: %w", err)
 	}
-	d.logger.Info("Pumpfun snipe transaction sent", zap.String("tx", txSig.String()))
+	d.logger.Info("Pump.fun snipe transaction sent", zap.String("tx", txSig.String()))
 
-	// Запускаем мониторинг bonding curve после снайпа.
+	// Запускаем мониторинг bonding curve.
 	go d.monitor.Start(ctx)
 	go d.events.Start(ctx)
 
@@ -99,11 +141,29 @@ func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64) erro
 }
 
 // CheckForGraduation проверяет, достигла ли bonding curve порога graduation.
+// Если достигнуто и токен ещё не переведён в режим Raydium, вызывается GraduateToken.
 func (d *DEX) CheckForGraduation(ctx context.Context) (bool, error) {
 	state, err := d.monitor.GetCurrentState()
 	if err != nil {
 		return false, err
 	}
 	d.logger.Debug("Bonding curve progress", zap.Float64("progress", state.Progress))
-	return state.Progress >= d.config.GraduationThreshold, nil
+	if state.Progress >= d.config.GraduationThreshold {
+		if !d.graduated {
+			params := &GraduateParams{
+				TokenMint:           d.config.Mint,
+				BondingCurveAccount: d.config.BondingCurve,
+				ExtraData:           []byte{}, // при необходимости можно добавить дополнительные данные
+			}
+			sig, err := GraduateToken(ctx, d.client, d.logger, params, d.config.ContractAddress)
+			if err != nil {
+				d.logger.Error("Graduation transaction failed", zap.Error(err))
+			} else {
+				d.logger.Info("Graduation transaction sent", zap.String("signature", sig.String()))
+				d.graduated = true
+			}
+		}
+		return true, nil
+	}
+	return false, nil
 }

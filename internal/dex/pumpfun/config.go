@@ -1,6 +1,10 @@
+// internal/dex/pumpfun/config.go
 package pumpfun
 
 import (
+	"encoding/csv"
+	"fmt"
+	"os"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
@@ -9,16 +13,16 @@ import (
 
 // PumpfunConfig содержит конфигурационные параметры для Pump.fun.
 type PumpfunConfig struct {
-	// Адрес контракта Pump.fun, отвечающего за создание и продажу токена.
+	// Адрес контракта Pump.fun, отвечающего за покупку/продажу токена.
 	ContractAddress solana.PublicKey
-	// Порог для graduation (например, 85.0 или 100.0 %).
+	// Порог для graduation (например, 100.0 означает 100%).
 	GraduationThreshold float64
 	// Разрешить продажу токена до 100% bonding curve.
 	AllowSellBeforeFull bool
 	// Интервал опроса состояния bonding curve (например, "5s").
 	MonitorInterval string
-	MonitorDuration func() (d time.Duration)
-	// Дополнительные аккаунты, необходимые для создания, покупки и продажи токена.
+	MonitorDuration func() time.Duration
+	// Дополнительные аккаунты, необходимые для операций.
 	Global                 solana.PublicKey
 	FeeRecipient           solana.PublicKey
 	Mint                   solana.PublicKey
@@ -27,12 +31,36 @@ type PumpfunConfig struct {
 	EventAuthority         solana.PublicKey
 }
 
+// GetTargetTokenFromCSV читает адрес целевого токена из CSV-файла tast.csv.
+// Предполагается, что в первой строке файла содержится нужный Base58‑адрес.
+func GetTargetTokenFromCSV(filePath string) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open CSV file: %w", err)
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	records, err := reader.ReadAll()
+	if err != nil {
+		return "", fmt.Errorf("failed to read CSV file: %w", err)
+	}
+	if len(records) == 0 || len(records[0]) == 0 {
+		return "", fmt.Errorf("CSV file is empty or missing target token")
+	}
+	return records[0][0], nil
+}
+
 // GetDefaultConfig возвращает конфигурацию для Pump.fun.
-// Здесь можно подставить реальные адреса и параметры либо получать их из файла конфигурации.
+// Адрес контракта (target token) берётся из файла tast.csv.
 func GetDefaultConfig(logger *zap.Logger) *PumpfunConfig {
-	// Примечание: замените строки-заменители на реальные Base58-адреса!
+	tokenContractStr, err := GetTargetTokenFromCSV("tast.csv")
+	if err != nil {
+		logger.Error("Error reading target token from CSV", zap.Error(err))
+	}
+
 	return &PumpfunConfig{
-		ContractAddress:        solana.MustPublicKeyFromBase58("PUMP_FUN_CONTRACT_ADDRESS"),
+		ContractAddress:        solana.MustPublicKeyFromBase58(tokenContractStr),
 		GraduationThreshold:    100.0,
 		AllowSellBeforeFull:    true,
 		MonitorInterval:        "5s",

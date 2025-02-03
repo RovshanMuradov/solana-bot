@@ -41,7 +41,7 @@ func BuildBuyTokenInstruction(
 	amount, maxSolCost uint64,
 ) (solana.Instruction, error) {
 	// Сериализация данных инструкции.
-	data := []byte{0x66, 0x06, 0x3d, 0x12}
+	data := []byte{0x66, 0x06, 0x3d, 0x12} // код инструкции Pump.fun для buy
 	amountBytes := make([]byte, 8)
 	binary.LittleEndian.PutUint64(amountBytes, amount)
 	data = append(data, amountBytes...)
@@ -50,26 +50,26 @@ func BuildBuyTokenInstruction(
 	data = append(data, maxSolBytes...)
 	data = append(data, make([]byte, 4)...) // padding
 
-	// Определяем associatedUser через ATA из кошелька.
+	// Получаем associated token account пользователя через ATA.
 	associatedUser, err := userWallet.GetATA(accounts.Mint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get associated token account: %w", err)
 	}
 
-	// Формируем список аккаунтов как срез указателей.
+	// Формируем список аккаунтов согласно спецификации.
 	insAccounts := []*solana.AccountMeta{
-		&solana.AccountMeta{PublicKey: accounts.Global, IsSigner: false, IsWritable: false},
-		&solana.AccountMeta{PublicKey: accounts.FeeRecipient, IsSigner: false, IsWritable: true},
-		&solana.AccountMeta{PublicKey: accounts.Mint, IsSigner: false, IsWritable: false},
-		&solana.AccountMeta{PublicKey: accounts.BondingCurve, IsSigner: false, IsWritable: true},
-		&solana.AccountMeta{PublicKey: accounts.AssociatedBondingCurve, IsSigner: false, IsWritable: true},
-		&solana.AccountMeta{PublicKey: associatedUser, IsSigner: false, IsWritable: true},
-		&solana.AccountMeta{PublicKey: userWallet.PublicKey, IsSigner: true, IsWritable: true},
-		&solana.AccountMeta{PublicKey: solana.SystemProgramID, IsSigner: false, IsWritable: false},
-		&solana.AccountMeta{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
-		&solana.AccountMeta{PublicKey: SysvarRentPubkey, IsSigner: false, IsWritable: false},
-		&solana.AccountMeta{PublicKey: accounts.EventAuthority, IsSigner: false, IsWritable: false},
-		&solana.AccountMeta{PublicKey: accounts.Program, IsSigner: false, IsWritable: false},
+		{PublicKey: accounts.Global, IsSigner: false, IsWritable: false},
+		{PublicKey: accounts.FeeRecipient, IsSigner: false, IsWritable: true},
+		{PublicKey: accounts.Mint, IsSigner: false, IsWritable: false},
+		{PublicKey: accounts.BondingCurve, IsSigner: false, IsWritable: true},
+		{PublicKey: accounts.AssociatedBondingCurve, IsSigner: false, IsWritable: true},
+		{PublicKey: associatedUser, IsSigner: false, IsWritable: true},
+		{PublicKey: userWallet.PublicKey, IsSigner: true, IsWritable: true},
+		{PublicKey: solana.SystemProgramID, IsSigner: false, IsWritable: false},
+		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
+		{PublicKey: SysvarRentPubkey, IsSigner: false, IsWritable: false},
+		{PublicKey: accounts.EventAuthority, IsSigner: false, IsWritable: false},
+		{PublicKey: accounts.Program, IsSigner: false, IsWritable: false},
 	}
 
 	return solana.NewInstruction(accounts.Program, insAccounts, data), nil
