@@ -135,7 +135,6 @@ type Client struct {
 	priorityFee uint64
 	commitment  solanarpc.CommitmentType
 	// poolCache   *PoolCache
-	api *APIService
 }
 type SwapInstruction struct {
 	Amount     *uint64
