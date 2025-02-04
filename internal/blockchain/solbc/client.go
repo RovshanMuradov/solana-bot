@@ -4,321 +4,138 @@ package solbc
 import (
 	"context"
 	"fmt"
-	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
-	solanarpc "github.com/gagliardetto/solana-go/rpc"
+	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc/rpc"
 	"go.uber.org/zap"
 )
 
-// CreateAndSendTransaction принимает список инструкций, формирует транзакцию, подписывает её и отправляет.
-func (c *Client) CreateAndSendTransaction(ctx context.Context, instructions []solana.Instruction) (solana.Signature, error) {
-	// Получаем последний blockhash
-	blockhash, err := c.GetRecentBlockhash(ctx)
-	if err != nil {
-		return solana.Signature{}, fmt.Errorf("failed to get recent blockhash: %w", err)
-	}
-
-	// Создаем транзакцию. В качестве payer используем публичный ключ из приватного ключа клиента.
-	tx, err := solana.NewTransaction(
-		instructions,
-		blockhash,
-		solana.TransactionPayer(c.privateKey.PublicKey()),
-	)
-	if err != nil {
-		return solana.Signature{}, fmt.Errorf("failed to create transaction: %w", err)
-	}
-
-	// Подписываем транзакцию
-	_, err = tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
-		if key.Equals(c.privateKey.PublicKey()) {
-			return &c.privateKey
-		}
-		return nil
-	})
-	if err != nil {
-		return solana.Signature{}, fmt.Errorf("failed to sign transaction: %w", err)
-	}
-
-	// Отправляем транзакцию с использованием уже реализованного метода SendTransaction.
-	sig, err := c.SendTransaction(ctx, tx)
-	if err != nil {
-		return solana.Signature{}, fmt.Errorf("failed to send transaction: %w", err)
-	}
-
-	return sig, nil
+// Client – тонкий адаптер для взаимодействия с блокчейном Solana через solana-go.
+type Client struct {
+	rpc    *rpc.Client
+	logger *zap.Logger
 }
 
-// GetWalletPublicKey возвращает публичный ключ кошелька клиента.
-func (c *Client) GetWalletPublicKey() solana.PublicKey {
-	return c.privateKey.PublicKey()
-}
-
-// SignTransaction подписывает транзакцию с использованием приватного ключа.
-func (c *Client) SignTransaction(tx *solana.Transaction) error {
-	_, err := tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
-		if key.Equals(c.privateKey.PublicKey()) {
-			return &c.privateKey
-		}
-		return nil
-	})
-	return err
-}
-
-// GetWallet возвращает объект кошелька, созданный на основе приватного ключа клиента.
-func (c *Client) GetWallet() *wallet.Wallet {
-	return &wallet.Wallet{
-		PrivateKey: c.privateKey,
-		PublicKey:  c.privateKey.PublicKey(),
-	}
-}
-
-// NewClient создает новый экземпляр клиента с улучшенным мониторингом
-func NewClient(rpcURLs []string, privateKey solana.PrivateKey, logger *zap.Logger) (*Client, error) {
-	logger = logger.Named("solana-client")
-
-	rpcClient, err := rpc.NewClient(rpcURLs, logger)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create RPC client: %w", err)
-	}
-
+// NewClient создаёт новый клиент, принимая RPC URL и логгер через dependency injection.
+func NewClient(rpcURL string, logger *zap.Logger) *Client {
 	return &Client{
-		rpc:        rpcClient,
-		logger:     logger,
-		metrics:    &ClientMetrics{},
-		privateKey: privateKey,
-	}, nil
-}
-
-// GetAccountInfo получает информацию об аккаунте с расширенной диагностикой
-func (c *Client) GetAccountInfo(ctx context.Context, pubkey solana.PublicKey) (*solanarpc.GetAccountInfoResult, error) {
-	result, err := c.rpc.GetAccountInfo(ctx, pubkey)
-	if err != nil {
-		c.metrics.FailedRequests++
-		return nil, err
+		rpc:    rpc.New(rpcURL),
+		logger: logger.Named("solbc-client"),
 	}
-	c.metrics.AccountInfoRequests++
-	return result, nil
 }
 
-// GetRecentBlockhash получает последний блокхеш с повторными попытками
+// GetRecentBlockhash получает последний blockhash с использованием стандартного метода solana-go.
 func (c *Client) GetRecentBlockhash(ctx context.Context) (solana.Hash, error) {
-	result, err := c.rpc.GetLatestBlockhash(ctx)
+	result, err := c.rpc.GetLatestBlockhash(ctx, rpc.CommitmentFinalized)
 	if err != nil {
+		c.logger.Error("GetRecentBlockhash error", zap.Error(err))
 		return solana.Hash{}, err
 	}
 	return result.Value.Blockhash, nil
 }
 
-// SendTransaction отправляет транзакцию с улучшенной обработкой ошибок
+// SendTransaction отправляет транзакцию.
 func (c *Client) SendTransaction(ctx context.Context, tx *solana.Transaction) (solana.Signature, error) {
-	signature, err := c.rpc.SendTransaction(ctx, tx)
+	sig, err := c.rpc.SendTransaction(ctx, tx)
 	if err != nil {
-		c.metrics.FailedRequests++
+		c.logger.Error("SendTransaction error", zap.Error(err))
 		return solana.Signature{}, err
 	}
-	c.metrics.TransactionRequests++
-	return signature, nil
+	return sig, nil
 }
 
-func (c *Client) SendTransactionWithOpts(
-	ctx context.Context,
-	tx *solana.Transaction,
-	opts blockchain.TransactionOptions,
-) (solana.Signature, error) {
-	rpcOpts := rpc.SendTransactionOpts{
-		SkipPreflight:       opts.SkipPreflight,
-		PreflightCommitment: opts.PreflightCommitment,
-	}
-	return c.rpc.SendTransactionWithOpts(ctx, tx, rpcOpts)
-}
-
-func (c *Client) Close() error {
-	c.rpc.Close()
-	return nil
-}
-func (c *Client) GetSignatureStatuses(ctx context.Context, signatures ...solana.Signature) (*solanarpc.GetSignatureStatusesResult, error) {
-	return c.rpc.GetSignatureStatuses(ctx, signatures...)
-}
-
-// GetProgramAccounts получает аккаунты программы по заданным фильтрам
-func (c *Client) GetProgramAccounts(
-	ctx context.Context,
-	program solana.PublicKey,
-	opts solanarpc.GetProgramAccountsOpts,
-) ([]solanarpc.KeyedAccount, error) {
-	c.logger.Debug("getting program accounts",
-		zap.String("program", program.String()),
-	)
-
-	accounts, err := c.rpc.GetProgramAccounts(ctx, program, opts)
+// GetAccountInfo получает информацию об аккаунте.
+func (c *Client) GetAccountInfo(ctx context.Context, pubkey solana.PublicKey) (*rpc.GetAccountInfoResult, error) {
+	result, err := c.rpc.GetAccountInfo(ctx, pubkey)
 	if err != nil {
-		c.metrics.IncrementFailedRequests()
-		c.metrics.LastError = err
-		c.metrics.LastErrorTime = time.Now()
-		return nil, fmt.Errorf("failed to get program accounts: %w", err)
+		c.logger.Error("GetAccountInfo error", zap.Error(err))
+		return nil, err
 	}
-
-	c.metrics.IncrementProgramAccountRequests()
-	return accounts, nil
-}
-
-// GetTokenAccountBalance получает баланс токен-аккаунта
-func (c *Client) GetTokenAccountBalance(
-	ctx context.Context,
-	account solana.PublicKey,
-	commitment solanarpc.CommitmentType,
-) (*solanarpc.GetTokenAccountBalanceResult, error) {
-	c.logger.Debug("getting token account balance",
-		zap.String("account", account.String()),
-		zap.String("commitment", string(commitment)),
-	)
-
-	result, err := c.rpc.GetTokenAccountBalance(ctx, account, commitment)
-	if err != nil {
-		c.metrics.FailedRequests++
-		c.metrics.LastError = err
-		c.metrics.LastErrorTime = time.Now()
-		return nil, fmt.Errorf("failed to get token account balance: %w", err)
-	}
-
 	return result, nil
 }
 
-// SimulateTransaction симулирует выполнение транзакции
-func (c *Client) SimulateTransaction(
-	ctx context.Context,
-	tx *solana.Transaction,
-) (*blockchain.SimulationResult, error) {
-	c.logger.Debug("simulating transaction")
-
-	result, err := c.rpc.SimulateTransaction(ctx, tx)
+// GetSignatureStatuses получает статусы транзакций.
+func (c *Client) GetSignatureStatuses(ctx context.Context, signatures ...solana.Signature) (*rpc.GetSignatureStatusesResult, error) {
+	result, err := c.rpc.GetSignatureStatuses(ctx, false, signatures...)
 	if err != nil {
-		c.metrics.FailedRequests++
-		c.metrics.LastError = err
-		c.metrics.LastErrorTime = time.Now()
-		return nil, fmt.Errorf("failed to simulate transaction: %w", err)
+		c.logger.Error("GetSignatureStatuses error", zap.Error(err))
+		return nil, err
 	}
-
-	// Обработаем возможный nil в UnitsConsumed
-	var unitsConsumed uint64
-	if result.Value.UnitsConsumed != nil {
-		unitsConsumed = *result.Value.UnitsConsumed
-	}
-
-	// Преобразуем результат в нужный формат
-	simulationResult := &blockchain.SimulationResult{
-		Err:           result.Value.Err,
-		Logs:          result.Value.Logs,
-		UnitsConsumed: unitsConsumed,
-	}
-
-	return simulationResult, nil
+	return result, nil
 }
 
-// TODO: Этот метод реализован в sdk solana-go, надо переписать
-// GetBalance реализует интерфейс blockchain.Client
-func (c *Client) GetBalance(
-	ctx context.Context,
-	pubkey solana.PublicKey,
-	commitment solanarpc.CommitmentType,
-) (uint64, error) {
-	c.logger.Debug("getting balance",
-		zap.String("pubkey", pubkey.String()),
-		zap.String("commitment", string(commitment)),
-	)
+// SendTransactionWithOpts отправляет транзакцию с заданными опциями.
+func (c *Client) SendTransactionWithOpts(ctx context.Context, tx *solana.Transaction, opts blockchain.TransactionOptions) (solana.Signature, error) {
+	sig, err := c.rpc.SendTransactionWithOpts(ctx, tx, rpc.TransactionOpts{
+		SkipPreflight:       opts.SkipPreflight,
+		PreflightCommitment: opts.PreflightCommitment,
+	})
+	if err != nil {
+		c.logger.Error("SendTransactionWithOpts error", zap.Error(err))
+		return solana.Signature{}, err
+	}
+	return sig, nil
+}
 
+// SimulateTransaction симулирует транзакцию и возвращает результат симуляции.
+func (c *Client) SimulateTransaction(ctx context.Context, tx *solana.Transaction) (*blockchain.SimulationResult, error) {
+	result, err := c.rpc.SimulateTransaction(ctx, tx)
+	if err != nil {
+		c.logger.Error("SimulateTransaction error", zap.Error(err))
+		return nil, err
+	}
+	units := uint64(0)
+	if result.Value.UnitsConsumed != nil {
+		units = *result.Value.UnitsConsumed
+	}
+	return &blockchain.SimulationResult{
+		Err:           result.Value.Err,
+		Logs:          result.Value.Logs,
+		UnitsConsumed: units,
+	}, nil
+}
+
+// GetBalance получает баланс аккаунта.
+func (c *Client) GetBalance(ctx context.Context, pubkey solana.PublicKey, commitment rpc.CommitmentType) (uint64, error) {
 	result, err := c.rpc.GetBalance(ctx, pubkey, commitment)
 	if err != nil {
-		c.metrics.FailedRequests++
-		c.metrics.LastError = err
-		c.metrics.LastErrorTime = time.Now()
-		return 0, fmt.Errorf("failed to get balance: %w", err)
+		c.logger.Error("GetBalance error", zap.Error(err))
+		return 0, err
 	}
-
-	c.metrics.BalanceRequests++
 	return result.Value, nil
 }
 
-// GetRPCEndpoint возвращает текущий активный RPC endpoint
-func (c *Client) GetRPCEndpoint() string {
-	if c.rpc == nil {
-		return ""
-	}
-
-	// Получаем текущий индекс и URLs из RPC клиента
-	// Добавляем метод для получения текущего URL в RPCClient
-	return c.rpc.GetCurrentURL()
-}
-
-// GetWalletKey возвращает приватный ключ кошелька
-func (c *Client) GetWalletKey() (solana.PrivateKey, error) {
-	if c.privateKey == nil {
-		return nil, fmt.Errorf("private key not set")
-	}
-	return c.privateKey, nil
-}
-func (c *Client) WaitForTransactionConfirmation(ctx context.Context, signature solana.Signature, commitment solanarpc.CommitmentType) error {
-	c.logger.Debug("waiting for transaction confirmation",
-		zap.String("signature", signature.String()),
-		zap.String("commitment", string(commitment)))
-
-	for i := 0; i < 30; i++ {
+// WaitForTransactionConfirmation ожидает подтверждения транзакции (с простым polling‑механизмом).
+func (c *Client) WaitForTransactionConfirmation(ctx context.Context, signature solana.Signature, commitment rpc.CommitmentType) error {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.After(30 * time.Second)
+	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("context cancelled while waiting for confirmation: %w", ctx.Err())
-		default:
-			status, err := c.GetSignatureStatuses(ctx, signature)
+			return ctx.Err()
+		case <-timeout:
+			return fmt.Errorf("confirmation timeout")
+		case <-ticker.C:
+			statuses, err := c.GetSignatureStatuses(ctx, signature)
 			if err != nil {
-				c.metrics.FailedRequests++
-				return fmt.Errorf("failed to get signature status: %w", err)
+				c.logger.Warn("Error getting signature statuses", zap.Error(err))
+				continue
 			}
-
-			if status != nil && len(status.Value) > 0 && status.Value[0] != nil {
-				if status.Value[0].Err != nil {
-					c.metrics.FailedRequests++
-					return fmt.Errorf("transaction failed: %v", status.Value[0].Err)
-				}
-
-				confirmStatus := string(status.Value[0].ConfirmationStatus)
-				switch {
-				case commitment == solanarpc.CommitmentConfirmed &&
-					(confirmStatus == string(solanarpc.CommitmentConfirmed) || confirmStatus == string(solanarpc.CommitmentFinalized)):
-					c.metrics.SuccessfulConfirmations++
-					return nil
-				case commitment == solanarpc.CommitmentFinalized &&
-					confirmStatus == string(solanarpc.CommitmentFinalized):
-					c.metrics.SuccessfulConfirmations++
+			if statuses != nil && len(statuses.Value) > 0 && statuses.Value[0] != nil {
+				status := statuses.Value[0]
+				// Сравниваем с rpc.ConfirmationStatusFinalized и rpc.ConfirmationStatusConfirmed,
+				// которые имеют тип rpc.ConfirmationStatusType.
+				if status.ConfirmationStatus == rpc.ConfirmationStatusFinalized ||
+					status.ConfirmationStatus == rpc.ConfirmationStatusConfirmed {
 					return nil
 				}
 			}
-
-			time.Sleep(500 * time.Millisecond)
 		}
 	}
-
-	c.metrics.FailedRequests++
-	return fmt.Errorf("confirmation timeout after 30 attempts")
 }
 
-// GetTransaction получает информацию о транзакции с метриками и логированием
-func (c *Client) GetTransaction(
-	ctx context.Context,
-	signature solana.Signature,
-) (*solanarpc.GetTransactionResult, error) {
-	c.logger.Debug("getting transaction info",
-		zap.String("signature", signature.String()))
-
-	result, err := c.rpc.GetTransaction(ctx, signature)
-	if err != nil {
-		c.metrics.FailedRequests++
-		c.metrics.LastError = err
-		c.metrics.LastErrorTime = time.Now()
-		return nil, fmt.Errorf("failed to get transaction: %w", err)
-	}
-
-	return result, nil
-}
+// Гарантируем, что Client реализует интерфейс blockchain.Client.
+var _ blockchain.Client = (*Client)(nil)

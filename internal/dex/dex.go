@@ -1,6 +1,7 @@
 // =============================
 // File: internal/dex/dex.go
 // =============================
+// internal/dex/dex.go
 package dex
 
 import (
@@ -14,6 +15,7 @@ import (
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/dex/pumpfun"
 	"github.com/rovshanmuradov/solana-bot/internal/dex/raydium"
+	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 )
 
 // DEX is a unified interface for working with various DEXes.
@@ -83,12 +85,16 @@ func (d *raydiumDEXAdapter) Execute(ctx context.Context, task *Task) error {
 }
 
 // GetDEXByName creates a DEX adapter by exchange name.
-func GetDEXByName(name string, client interface{}, logger *zap.Logger) (DEX, error) {
+// Обратите внимание: теперь функция принимает дополнительный параметр wallet.
+func GetDEXByName(name string, client interface{}, w *wallet.Wallet, logger *zap.Logger) (DEX, error) {
 	if client == nil {
 		return nil, fmt.Errorf("client cannot be nil")
 	}
 	if logger == nil {
 		return nil, fmt.Errorf("logger cannot be nil")
+	}
+	if w == nil {
+		return nil, fmt.Errorf("wallet cannot be nil")
 	}
 
 	name = strings.ToLower(strings.TrimSpace(name))
@@ -98,9 +104,10 @@ func GetDEXByName(name string, client interface{}, logger *zap.Logger) (DEX, err
 		if !ok {
 			return nil, fmt.Errorf("invalid client type for Pump.fun; *solbc.Client required")
 		}
-		// default Pumpfun config
+		// Получаем дефолтную конфигурацию для Pump.fun
 		config := pumpfun.GetDefaultConfig(logger)
-		pfDex, err := pumpfun.NewDEX(solClient, logger, config, config.MonitorInterval)
+		// Передаём также экземпляр кошелька в конструктор NewDEX
+		pfDex, err := pumpfun.NewDEX(solClient, w, logger, config, config.MonitorInterval)
 		if err != nil {
 			return nil, fmt.Errorf("could not create DEX for Pump.fun: %w", err)
 		}

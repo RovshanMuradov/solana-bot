@@ -1,6 +1,7 @@
 // ==============================================
 // File: internal/dex/pumpfun/graduate.go
 // ==============================================
+
 package pumpfun
 
 import (
@@ -10,6 +11,7 @@ import (
 	"github.com/gagliardetto/solana-go"
 	solanarpc "github.com/gagliardetto/solana-go/rpc"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
+	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
 )
 
@@ -21,7 +23,8 @@ type GraduateParams struct {
 }
 
 // GraduateToken sends a transaction to move from Pump.fun to Raydium.
-func GraduateToken(ctx context.Context, client *solbc.Client, logger *zap.Logger, params *GraduateParams, programID solana.PublicKey) (solana.Signature, error) {
+// Теперь дополнительно передаём кошелёк w, который используется для подписи.
+func GraduateToken(ctx context.Context, client *solbc.Client, w *wallet.Wallet, logger *zap.Logger, params *GraduateParams, programID solana.PublicKey) (solana.Signature, error) {
 	logger.Info("Initiating graduate process", zap.String("token_mint", params.TokenMint.String()))
 	graduateIx, err := BuildGraduateInstruction(params, programID)
 	if err != nil {
@@ -33,16 +36,18 @@ func GraduateToken(ctx context.Context, client *solbc.Client, logger *zap.Logger
 		return solana.Signature{}, fmt.Errorf("failed to get recent blockhash: %w", err)
 	}
 
+	// Используем публичный ключ из кошелька в качестве плательщика
 	tx, err := solana.NewTransaction(
 		[]solana.Instruction{graduateIx},
 		recentBlockhash,
-		solana.TransactionPayer(client.GetWalletPublicKey()),
+		solana.TransactionPayer(w.PublicKey),
 	)
 	if err != nil {
 		return solana.Signature{}, fmt.Errorf("failed to create graduate transaction: %w", err)
 	}
 
-	if err := client.SignTransaction(tx); err != nil {
+	// Подписываем транзакцию с помощью кошелька
+	if err := w.SignTransaction(tx); err != nil {
 		return solana.Signature{}, fmt.Errorf("failed to sign graduate transaction: %w", err)
 	}
 
