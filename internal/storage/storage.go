@@ -23,6 +23,6 @@ type Storage interface {
 	SavePoolInfo(ctx context.Context, info *models.PoolInfo) error
 	GetPoolInfo(ctx context.Context, poolID string) (*models.PoolInfo, error)
 
-	// Миграции
-	RunMigrations(migrationsPath string) error
+	// Миграции (без параметра migrationsPath)
+	RunMigrations() error
 }

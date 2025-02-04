@@ -1,4 +1,3 @@
-// cmd/bot/main.go
 package main
 
 import (
@@ -11,160 +10,153 @@ import (
 
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/config"
-	"github.com/rovshanmuradov/solana-bot/internal/sniping"
+	"github.com/rovshanmuradov/solana-bot/internal/dex"
+	"github.com/rovshanmuradov/solana-bot/internal/eventlistener"
 	"github.com/rovshanmuradov/solana-bot/internal/storage/postgres"
-	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
 )
 
 func main() {
-	fmt.Println("\n=== Starting Solana Bot ===")
+	// Создаём корневой контекст для управления временем жизни приложения
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	// Создаем корневой контекст с отменой
-	rootCtx, rootCancel := context.WithCancel(context.Background())
-	defer rootCancel()
-
-	// Создаем канал для ошибок снайпера
-	sniperErrCh := make(chan error, 1)
-
-	// Инициализация логгера
-	logConfig := zap.NewDevelopmentConfig()
-	logConfig.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
-	logConfig.Development = true
-	logConfig.DisableCaller = false
-	logConfig.DisableStacktrace = false
-	logger, err := logConfig.Build()
+	// Инициализация логгера (для разработки можно использовать NewDevelopment)
+	logger, err := zap.NewDevelopment()
 	if err != nil {
-		fmt.Printf("Failed to initialize logger: %v\n", err)
-		panic(err)
+		fmt.Printf("Ошибка инициализации логгера: %v\n", err)
+		os.Exit(1)
 	}
-	defer func() {
-		if err := logger.Sync(); err != nil {
-			fmt.Printf("Failed to sync logger: %v\n", err)
-		}
-	}()
+	defer logger.Sync()
+	logger.Info("Запуск бота")
 
-	fmt.Println("=== Loading configuration ===")
-	// Загрузка конфигурации
+	// Загрузка конфигурации из файла
 	cfg, err := config.LoadConfig("configs/config.json")
 	if err != nil {
-		fmt.Printf("Failed to load configuration: %v\n", err)
-		logger.Fatal("Failed to load configuration", zap.Error(err))
+		logger.Fatal("Не удалось загрузить конфигурацию", zap.Error(err))
 	}
-	fmt.Printf("Config loaded: %+v\n", cfg)
+	logger.Info("Конфигурация загружена", zap.Any("config", cfg))
 
-	// Загрузка кошельков
-	fmt.Println("=== Loading wallets ===")
-	wallets, err := wallet.LoadWallets("configs/wallets.csv")
+	// Загрузка кошельков из CSV-файла
+	walletsMap, err := wallet.LoadWallets("configs/wallets.csv")
 	if err != nil {
-		logger.Fatal("Failed to load wallets", zap.Error(err))
+		logger.Fatal("Не удалось загрузить кошельки", zap.Error(err))
 	}
-	fmt.Printf("Loaded %d wallets\n", len(wallets))
+	logger.Info("Кошельки загружены", zap.Int("количество", len(walletsMap)))
 
-	// Получаем первый кошелек для инициализации клиента
+	// Выбираем первый доступный кошелек (можно расширить логику выбора)
 	var primaryWallet *wallet.Wallet
-	for _, w := range wallets {
+	for _, w := range walletsMap {
 		primaryWallet = w
 		break
 	}
 	if primaryWallet == nil {
-		logger.Fatal("No wallets available")
+		logger.Fatal("Нет доступных кошельков")
 	}
-	// Инициализация Solana клиента с приватным ключом
-	fmt.Println("=== Initializing Solana client ===")
-	client, err := solbc.NewClient(cfg.RPCList, primaryWallet.PrivateKey, logger)
+	logger.Info("Используется кошелек", zap.String("publicKey", primaryWallet.PublicKey.String()))
+
+	// Инициализация клиента Solana с использованием первого RPC из списка
+	if len(cfg.RPCList) == 0 {
+		logger.Fatal("Список RPC пуст")
+	}
+	solClient := solbc.NewClient(cfg.RPCList[0], logger)
+	// Если клиент имеет метод Close, не забудьте его вызывать при завершении работы:
+	// defer solClient.Close()
+
+	// Инициализация Postgres-хранилища
+	store, err := postgres.NewStorage(cfg.PostgresURL, logger)
 	if err != nil {
-		logger.Fatal("Failed to initialize Solana client", zap.Error(err))
+		logger.Fatal("Не удалось инициализировать Postgres-хранилище", zap.Error(err))
 	}
-	defer client.Close()
+	logger.Info("Postgres-хранилище инициализировано")
 
-	// Инициализация блокчейнов
-	fmt.Println("=== Initializing blockchains ===")
-	blockchains := make(map[string]types.Blockchain)
-	solanaBC, err := solbc.NewBlockchain(client, logger)
+	// Выполнение миграций базы данных
+	if err := store.RunMigrations(); err != nil {
+		logger.Fatal("Ошибка при выполнении миграций", zap.Error(err))
+	}
+	logger.Info("Миграции базы данных выполнены успешно")
+
+	// Инициализация DEX‑адаптера
+	// Выберите нужный DEX, например "pump.fun" или "raydium"
+	dexName := "pump.fun"
+	dexAdapter, err := dex.GetDEXByName(dexName, solClient, primaryWallet, logger)
 	if err != nil {
-		fmt.Printf("Failed to initialize Solana blockchain: %v\n", err)
-		logger.Fatal("Failed to initialize Solana blockchain", zap.Error(err))
+		logger.Fatal("Ошибка инициализации DEX адаптера", zap.Error(err))
 	}
-	blockchains["Solana"] = solanaBC
+	logger.Info("DEX адаптер инициализирован", zap.String("DEX", dexAdapter.GetName()))
 
-	// Загрузка задач
-	fmt.Println("=== Loading tasks ===")
-	tasks, err := sniping.LoadTasks("configs/tasks.csv")
+	// Инициализация слушателя событий по WebSocket
+	if cfg.WebSocketURL == "" {
+		logger.Fatal("WebSocketURL не задан в конфигурации")
+	}
+	eventListener, err := eventlistener.NewEventListener(ctx, cfg.WebSocketURL, logger)
 	if err != nil {
-		fmt.Printf("Failed to load tasks: %v\n", err)
-		logger.Fatal("Failed to load tasks", zap.Error(err))
+		logger.Fatal("Ошибка инициализации слушателя событий", zap.Error(err))
 	}
-	for i, task := range tasks {
-		fmt.Printf("Task %d: %+v\n", i+1, task)
+	logger.Info("Слушатель событий инициализирован", zap.String("WebSocketURL", cfg.WebSocketURL))
+
+	// Определяем обработчик событий
+	eventHandler := func(ev eventlistener.Event) {
+		logger.Info("Получено событие", zap.String("type", ev.Type), zap.String("pool_id", ev.PoolID))
+		switch ev.Type {
+		case "NewPool":
+			// При появлении нового пула выполняется операция snipe
+			task := &dex.Task{
+				Operation:    dex.OperationSnipe,
+				Amount:       1_000_000_000, // Пример: 1 SOL (в лампортах)
+				MinSolOutput: 900_000_000,   // Минимальный ожидаемый вывод
+			}
+			logger.Info("Выполняется операция snipe")
+			if err := dexAdapter.Execute(ctx, task); err != nil {
+				logger.Error("Ошибка выполнения snipe", zap.Error(err))
+			} else {
+				logger.Info("Операция snipe выполнена успешно")
+			}
+		case "PriceChange":
+			// При изменении цены выполняется операция sell
+			task := &dex.Task{
+				Operation:    dex.OperationSell,
+				Amount:       1_000_000_000,
+				MinSolOutput: 1_100_000_000,
+			}
+			logger.Info("Выполняется операция sell")
+			if err := dexAdapter.Execute(ctx, task); err != nil {
+				logger.Error("Ошибка выполнения sell", zap.Error(err))
+			} else {
+				logger.Info("Операция sell выполнена успешно")
+			}
+		default:
+			logger.Warn("Неподдерживаемый тип события", zap.String("type", ev.Type))
+		}
+
+		// Пример интеграции: можно сохранить информацию о задаче в БД через store
+		// taskHistory := &models.TaskHistory{
+		//     TaskName: "Название задачи",
+		//     Status:   "completed",
+		//     // Заполните остальные поля при необходимости...
+		// }
+		// if err := store.SaveTaskHistory(ctx, taskHistory); err != nil {
+		//     logger.Error("Ошибка сохранения истории задачи", zap.Error(err))
+		// }
 	}
 
-	// Инициализация хранилища
-	fmt.Println("=== Initializing storage ===")
-	storage, err := postgres.NewStorage(cfg.PostgresURL, logger)
-	if err != nil {
-		fmt.Printf("Failed to initialize storage: %v\n", err)
-		logger.Fatal("Failed to initialize storage", zap.Error(err))
-	}
-
-	// Создание снайпера
-	fmt.Println("=== Creating sniper ===")
-	sniper := sniping.NewSniper(blockchains, wallets, cfg, logger, client, storage)
-	if sniper == nil {
-		fmt.Println("Failed to create sniper: sniper is nil")
-		logger.Fatal("Failed to create sniper: sniper is nil")
-	}
-
-	// Создаем отдельный контекст для снайпера с таймаутом
-	sniperCtx, sniperCancel := context.WithTimeout(rootCtx, 24*time.Hour) // или другой подходящий таймаут
-	defer sniperCancel()
-
-	// Запуск снайпера с обработкой ошибок
-	fmt.Println("=== Running sniper ===")
+	// Запускаем подписку на события в отдельной горутине
 	go func() {
-		if err := sniper.Run(sniperCtx, tasks); err != nil {
-			logger.Error("Sniper encountered an error", zap.Error(err))
-			sniperErrCh <- err
-			rootCancel() // Отменяем корневой контекст при ошибке
+		if err := eventListener.Subscribe(ctx, eventHandler); err != nil {
+			logger.Fatal("Ошибка подписки на события", zap.Error(err))
 		}
 	}()
 
-	// Обработка сигналов завершения
+	// Ожидание системного сигнала для корректного завершения работы
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	logger.Info("Бот запущен. Ожидание сигнала завершения...")
+	sig := <-sigCh
+	logger.Info("Получен сигнал", zap.String("signal", sig.String()))
 
-	// Ожидаем любое из событий
-	select {
-	case <-sigCh:
-		logger.Info("Received termination signal")
-	case <-rootCtx.Done():
-		logger.Info("Context canceled")
-	case err := <-sniperErrCh:
-		logger.Error("Sniper failed", zap.Error(err))
-	case <-sniperCtx.Done():
-		if err := sniperCtx.Err(); err == context.DeadlineExceeded {
-			logger.Error("Sniper timeout exceeded")
-		}
-	}
-
-	// Начинаем корректное завершение работы
-	logger.Info("Starting graceful shutdown")
-
-	// Отменяем все контексты
-	sniperCancel()
-	rootCancel()
-
-	// Даем время на завершение всех операций
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer shutdownCancel()
-
-	// Ждем завершения всех операций или таймаута
-	select {
-	case <-shutdownCtx.Done():
-		logger.Warn("Shutdown timeout exceeded, forcing exit")
-	case <-time.After(100 * time.Millisecond): // Минимальная пауза для корректного завершения
-	}
-
-	logger.Info("Bot successfully shut down")
+	// Завершаем работу: отменяем контекст и даём время на завершение всех операций
+	cancel()
+	time.Sleep(2 * time.Second)
+	logger.Info("Бот успешно завершил работу")
 }

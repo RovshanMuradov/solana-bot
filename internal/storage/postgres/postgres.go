@@ -11,87 +11,75 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
+	gormlogger "gorm.io/gorm/logger"
 )
 
-// gormLogger реализует интерфейс logger.Interface для GORM
+// gormLogger реализует интерфейс logger.Interface для GORM с интеграцией zap.
 type gormLogger struct {
 	zapLogger *zap.Logger
-	logLevel  logger.LogLevel
+	logLevel  gormlogger.LogLevel
 }
 
-// newGormLogger создает новый логгер для GORM
-func newGormLogger(zapLogger *zap.Logger) logger.Interface {
+func newGormLogger(zapLogger *zap.Logger) gormlogger.Interface {
 	return &gormLogger{
 		zapLogger: zapLogger,
-		logLevel:  logger.Info,
+		logLevel:  gormlogger.Info,
 	}
 }
 
-// LogMode реализация интерфейса logger.Interface
-func (l *gormLogger) LogMode(level logger.LogLevel) logger.Interface {
+func (l *gormLogger) LogMode(level gormlogger.LogLevel) gormlogger.Interface {
 	newLogger := *l
 	newLogger.logLevel = level
 	return &newLogger
 }
 
-// Info реализация интерфейса logger.Interface
-func (l *gormLogger) Info(_ context.Context, msg string, data ...interface{}) {
-	if l.logLevel >= logger.Info {
+func (l *gormLogger) Info(ctx context.Context, msg string, data ...interface{}) {
+	if l.logLevel >= gormlogger.Info {
 		l.zapLogger.Sugar().Infof(msg, data...)
 	}
 }
 
-// Warn реализация интерфейса logger.Interface
-func (l *gormLogger) Warn(_ context.Context, msg string, data ...interface{}) {
-	if l.logLevel >= logger.Warn {
+func (l *gormLogger) Warn(ctx context.Context, msg string, data ...interface{}) {
+	if l.logLevel >= gormlogger.Warn {
 		l.zapLogger.Sugar().Warnf(msg, data...)
 	}
 }
 
-// Error реализация интерфейса logger.Interface
-func (l *gormLogger) Error(_ context.Context, msg string, data ...interface{}) {
-	if l.logLevel >= logger.Error {
+func (l *gormLogger) Error(ctx context.Context, msg string, data ...interface{}) {
+	if l.logLevel >= gormlogger.Error {
 		l.zapLogger.Sugar().Errorf(msg, data...)
 	}
 }
 
-// Trace реализация интерфейса logger.Interface
-func (l *gormLogger) Trace(_ context.Context, begin time.Time, fc func() (string, int64), err error) {
-	if l.logLevel <= logger.Silent {
+func (l *gormLogger) Trace(ctx context.Context, begin time.Time, fc func() (string, int64), err error) {
+	if l.logLevel <= gormlogger.Silent {
 		return
 	}
-
 	elapsed := time.Since(begin)
 	sql, rows := fc()
-
 	fields := []zap.Field{
 		zap.Duration("elapsed", elapsed),
 		zap.String("sql", sql),
 		zap.Int64("rows", rows),
 	}
-
 	if err != nil {
 		l.zapLogger.Error("trace", append(fields, zap.Error(err))...)
 		return
 	}
-
-	if l.logLevel >= logger.Info {
+	if l.logLevel >= gormlogger.Info {
 		l.zapLogger.Info("trace", fields...)
 	}
 }
 
-// postgresStorage реализует интерфейс Storage
 type postgresStorage struct {
 	db     *gorm.DB
 	logger *zap.Logger
 }
 
 func NewStorage(dsn string, zapLogger *zap.Logger) (storage.Storage, error) {
-	gormLogger := newGormLogger(zapLogger.Named("gorm"))
-
+	gl := newGormLogger(zapLogger.Named("gorm"))
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: gormLogger,
+		Logger: gl,
 		NowFunc: func() time.Time {
 			return time.Now().UTC()
 		},
@@ -101,26 +89,23 @@ func NewStorage(dsn string, zapLogger *zap.Logger) (storage.Storage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
-
 	sqlDB, err := db.DB()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get database instance: %w", err)
 	}
-
 	// Настройка пула соединений
 	sqlDB.SetMaxIdleConns(10)
 	sqlDB.SetMaxOpenConns(100)
 	sqlDB.SetConnMaxLifetime(time.Hour)
-
 	return &postgresStorage{
 		db:     db,
 		logger: zapLogger,
 	}, nil
 }
 
-// RunMigrations теперь использует GORM AutoMigrate
-func (p *postgresStorage) RunMigrations(_ string) error {
-	// Сначала попробуем получить блокировку
+// RunMigrations использует GORM AutoMigrate без параметра migrationsPath.
+func (p *postgresStorage) RunMigrations() error {
+	// Получаем advisory lock
 	var lockObtained bool
 	err := p.db.Raw("SELECT pg_try_advisory_lock(101)").Scan(&lockObtained).Error
 	if err != nil {
@@ -130,8 +115,6 @@ func (p *postgresStorage) RunMigrations(_ string) error {
 		return fmt.Errorf("another migration is in progress")
 	}
 	defer p.db.Exec("SELECT pg_advisory_unlock(101)")
-
-	// Используем GORM AutoMigrate
 	err = p.db.AutoMigrate(
 		&models.Transaction{},
 		&models.TaskHistory{},
@@ -140,11 +123,9 @@ func (p *postgresStorage) RunMigrations(_ string) error {
 	if err != nil {
 		return fmt.Errorf("failed to run migrations: %w", err)
 	}
-
 	return nil
 }
 
-// Реализация методов интерфейса Storage
 func (p *postgresStorage) SaveTransaction(ctx context.Context, tx *models.Transaction) error {
 	return p.db.WithContext(ctx).Create(tx).Error
 }

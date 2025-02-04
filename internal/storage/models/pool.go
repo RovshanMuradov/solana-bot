@@ -1,9 +1,7 @@
 // internal/storage/models/pool.go
 package models
 
-import (
-	"time"
-)
+import "time"
 
 type PoolInfo struct {
 	BaseModel

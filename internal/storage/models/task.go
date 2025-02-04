@@ -1,9 +1,7 @@
 // internal/storage/models/task.go
 package models
 
-import (
-	"time"
-)
+import "time"
 
 type TaskHistory struct {
 	BaseModel
