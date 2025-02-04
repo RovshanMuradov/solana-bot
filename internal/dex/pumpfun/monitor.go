@@ -1,4 +1,6 @@
-// internal/dex/pumpfun/monitor.go
+// =======================================
+// File: internal/dex/pumpfun/monitor.go
+// =======================================
 package pumpfun
 
 import (
@@ -9,21 +11,20 @@ import (
 	"go.uber.org/zap"
 )
 
-// Event используется для уведомлений (например, о достижении graduation или обновлении bonding curve).
+// Event holds Pump.fun notifications (like graduation or bonding updates).
 type Event struct {
-	Type      string                 // "snipe", "sell", "graduate", "bonding_update"
-	TokenMint solana.PublicKey       // Mint токена
-	Data      map[string]interface{} // Дополнительные данные (например, progress, totalSOL, marketCap)
+	Type      string
+	TokenMint solana.PublicKey
+	Data      map[string]interface{}
 }
 
-// PumpfunMonitor осуществляет асинхронный мониторинг событий на Pump.fun.
+// Monitor struct for Pump.fun events (simplified).
 type Monitor struct {
 	logger    *zap.Logger
 	interval  time.Duration
 	eventChan chan Event
 }
 
-// NewPumpfunMonitor создаёт новый экземпляр мониторинга событий.
 func NewPumpfunMonitor(logger *zap.Logger, interval time.Duration) *Monitor {
 	return &Monitor{
 		logger:    logger.Named("pumpfun-monitor"),
@@ -32,7 +33,6 @@ func NewPumpfunMonitor(logger *zap.Logger, interval time.Duration) *Monitor {
 	}
 }
 
-// Start запускает мониторинг в отдельной горутине.
 func (m *Monitor) Start(ctx context.Context) {
 	ticker := time.NewTicker(m.interval)
 	defer ticker.Stop()
@@ -44,13 +44,12 @@ func (m *Monitor) Start(ctx context.Context) {
 			m.logger.Info("Pumpfun event monitor stopped")
 			return
 		case <-ticker.C:
-			// Здесь можно реализовать логику получения событий (например, через подписку или опрос контракта).
-			// В этом примере генерируется тестовое событие обновления bonding curve.
+			// Example event for demonstration
 			event := Event{
 				Type:      "bonding_update",
-				TokenMint: solana.PublicKey{}, // placeholder – установить, если необходимо
+				TokenMint: solana.PublicKey{},
 				Data: map[string]interface{}{
-					"progress": 100.0, // пример: токен достиг 100%
+					"progress": 100.0,
 				},
 			}
 			m.eventChan <- event
@@ -58,7 +57,6 @@ func (m *Monitor) Start(ctx context.Context) {
 	}
 }
 
-// GetEvents возвращает канал для получения событий.
 func (m *Monitor) GetEvents() <-chan Event {
 	return m.eventChan
 }

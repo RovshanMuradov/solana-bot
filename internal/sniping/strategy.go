@@ -2,15 +2,13 @@
 package sniping
 
 import (
-	"encoding/csv"
 	"fmt"
-	"os"
 	"strconv"
 
 	"github.com/rovshanmuradov/solana-bot/internal/types"
 )
 
-func LoadTasks(path string) ([]*types.Task, error) {
+/*func LoadTasks(path string) ([]*types.Task, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -33,7 +31,7 @@ func LoadTasks(path string) ([]*types.Task, error) {
 	}
 
 	return tasks, nil
-}
+}*/
 
 func parseTask(record []string) (*types.Task, error) {
 	// Было 16 полей (включая AMMID), стало 15

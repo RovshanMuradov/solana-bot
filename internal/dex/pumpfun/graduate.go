@@ -1,4 +1,6 @@
-// internal/dex/pumpfun/graduate.go
+// ==============================================
+// File: internal/dex/pumpfun/graduate.go
+// ==============================================
 package pumpfun
 
 import (
@@ -11,22 +13,16 @@ import (
 	"go.uber.org/zap"
 )
 
-// GraduateParams содержит параметры для транзакции graduate.
+// GraduateParams holds transaction params for "graduate".
 type GraduateParams struct {
-	// TokenMint — адрес mint-а токена, созданного через Pump.fun.
-	TokenMint solana.PublicKey
-	// BondingCurveAccount — адрес аккаунта bonding curve.
+	TokenMint           solana.PublicKey
 	BondingCurveAccount solana.PublicKey
-	// ExtraData — дополнительные данные (например, ликвидность, fee и т.д.).
-	ExtraData []byte
+	ExtraData           []byte
 }
 
-// GraduateToken выполняет транзакцию graduate, переводя токен на Raydium.
-// Обратите внимание: второй параметр (programID) — это адрес смарт-контракта Pump.fun,
-// а не адрес mint-а токена.
+// GraduateToken sends a transaction to move from Pump.fun to Raydium.
 func GraduateToken(ctx context.Context, client *solbc.Client, logger *zap.Logger, params *GraduateParams, programID solana.PublicKey) (solana.Signature, error) {
 	logger.Info("Initiating graduate process", zap.String("token_mint", params.TokenMint.String()))
-
 	graduateIx, err := BuildGraduateInstruction(params, programID)
 	if err != nil {
 		return solana.Signature{}, fmt.Errorf("failed to build graduate instruction: %w", err)
@@ -64,8 +60,7 @@ func GraduateToken(ctx context.Context, client *solbc.Client, logger *zap.Logger
 	return sig, nil
 }
 
-// BuildGraduateInstruction собирает инструкцию для graduate.
-// Принимает два параметра: параметры транзакции и programID (адрес смарт-контракта).
+// BuildGraduateInstruction creates the instruction for graduate.
 func BuildGraduateInstruction(params *GraduateParams, programID solana.PublicKey) (solana.Instruction, error) {
 	discriminator := byte(0x22)
 	name := "PumpToken"
@@ -74,21 +69,19 @@ func BuildGraduateInstruction(params *GraduateParams, programID solana.PublicKey
 
 	data := BuildGraduateInstructionData(discriminator, name, symbol, uri, params.ExtraData)
 
-	// Формируем список аккаунтов в виде среза указателей.
 	accounts := []*solana.AccountMeta{
 		solana.Meta(params.TokenMint).WRITE(),
 		solana.Meta(params.BondingCurveAccount).WRITE(),
-		// Добавьте здесь остальные необходимые аккаунты согласно спецификации.
 	}
 
 	return solana.NewInstruction(programID, accounts, data), nil
 }
 
-// BuildGraduateInstructionData сериализует данные для graduate-инструкции.
+// BuildGraduateInstructionData serializes graduate instruction data.
 func BuildGraduateInstructionData(discriminator byte, name, symbol, uri string, extra []byte) []byte {
 	data := []byte{discriminator}
 	data = append(data, []byte(name)...)
-	data = append(data, 0) // разделитель
+	data = append(data, 0)
 	data = append(data, []byte(symbol)...)
 	data = append(data, 0)
 	data = append(data, []byte(uri)...)

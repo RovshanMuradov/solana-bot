@@ -1,24 +1,20 @@
-// internal/dex/types.go
+// ==========================================
+// File: internal/dex/types.go
+// ==========================================
 package dex
 
-// OperationType определяет тип операции DEX.
+// OperationType defines a DEX operation type.
 type OperationType string
 
 const (
-	// OperationSnipe – операция покупки (snipe).
 	OperationSnipe OperationType = "snipe"
-	// OperationSell – операция продажи.
-	OperationSell OperationType = "sell"
-	// OperationSwap – операция свопа (на Raydium).
-	OperationSwap OperationType = "swap"
+	OperationSell  OperationType = "sell"
+	OperationSwap  OperationType = "swap"
 )
 
-// Task представляет задачу (операцию) для DEX.
+// Task represents an operation request for DEX.
 type Task struct {
-	// Operation – тип операции (snipe, sell, swap).
-	Operation OperationType
-	// Amount – сумма операции (например, количество токенов в лампортах).
-	Amount uint64
-	// MinSolOutput – для snipe: максимальная цена (в лампортах SOL), для sell: минимальный ожидаемый вывод SOL.
+	Operation    OperationType
+	Amount       uint64
 	MinSolOutput uint64
 }

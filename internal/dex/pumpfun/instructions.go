@@ -1,4 +1,6 @@
-// internal/dex/pumpfun/instructions.go
+// ================================================
+// File: internal/dex/pumpfun/instructions.go
+// ================================================
 package pumpfun
 
 import (
@@ -9,39 +11,37 @@ import (
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 )
 
-// Определяем SysvarRentPubkey и AssociatedTokenProgramID.
+// SysvarRentPubkey and AssociatedTokenProgramID used in instructions.
 var SysvarRentPubkey = solana.MustPublicKeyFromBase58("SysvarRent111111111111111111111111111111111")
 var AssociatedTokenProgramID = solana.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
 
-// Структуры для передачи аккаунтов.
 type BuyInstructionAccounts struct {
-	Global                 solana.PublicKey // Глобальный аккаунт программы.
-	FeeRecipient           solana.PublicKey // Аккаунт для комиссий.
-	Mint                   solana.PublicKey // Аккаунт mint токена.
-	BondingCurve           solana.PublicKey // Bonding curve аккаунт.
-	AssociatedBondingCurve solana.PublicKey // Ассоциированный bonding curve аккаунт.
-	EventAuthority         solana.PublicKey // Аккаунт событий.
-	Program                solana.PublicKey // Адрес программы Pump.fun.
+	Global                 solana.PublicKey
+	FeeRecipient           solana.PublicKey
+	Mint                   solana.PublicKey
+	BondingCurve           solana.PublicKey
+	AssociatedBondingCurve solana.PublicKey
+	EventAuthority         solana.PublicKey
+	Program                solana.PublicKey
 }
 
 type SellInstructionAccounts struct {
-	Global                 solana.PublicKey // Глобальный аккаунт.
-	FeeRecipient           solana.PublicKey // Аккаунт комиссий.
-	Mint                   solana.PublicKey // Mint токена.
-	BondingCurve           solana.PublicKey // Bonding curve аккаунт.
-	AssociatedBondingCurve solana.PublicKey // Ассоциированный bonding curve.
-	EventAuthority         solana.PublicKey // Аккаунт событий.
-	Program                solana.PublicKey // Адрес программы Pump.fun.
+	Global                 solana.PublicKey
+	FeeRecipient           solana.PublicKey
+	Mint                   solana.PublicKey
+	BondingCurve           solana.PublicKey
+	AssociatedBondingCurve solana.PublicKey
+	EventAuthority         solana.PublicKey
+	Program                solana.PublicKey
 }
 
-// BuildBuyTokenInstruction формирует инструкцию покупки токена.
+// BuildBuyTokenInstruction builds an instruction for buying a token on Pump.fun.
 func BuildBuyTokenInstruction(
 	accounts BuyInstructionAccounts,
 	userWallet *wallet.Wallet,
 	amount, maxSolCost uint64,
 ) (solana.Instruction, error) {
-	// Сериализация данных инструкции.
-	data := []byte{0x66, 0x06, 0x3d, 0x12} // код инструкции Pump.fun для buy
+	data := []byte{0x66, 0x06, 0x3d, 0x12}
 	amountBytes := make([]byte, 8)
 	binary.LittleEndian.PutUint64(amountBytes, amount)
 	data = append(data, amountBytes...)
@@ -50,13 +50,11 @@ func BuildBuyTokenInstruction(
 	data = append(data, maxSolBytes...)
 	data = append(data, make([]byte, 4)...) // padding
 
-	// Получаем associated token account пользователя через ATA.
 	associatedUser, err := userWallet.GetATA(accounts.Mint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get associated token account: %w", err)
 	}
 
-	// Формируем список аккаунтов согласно спецификации.
 	insAccounts := []*solana.AccountMeta{
 		{PublicKey: accounts.Global, IsSigner: false, IsWritable: false},
 		{PublicKey: accounts.FeeRecipient, IsSigner: false, IsWritable: true},
@@ -75,7 +73,7 @@ func BuildBuyTokenInstruction(
 	return solana.NewInstruction(accounts.Program, insAccounts, data), nil
 }
 
-// BuildSellTokenInstruction формирует инструкцию продажи токена.
+// BuildSellTokenInstruction builds an instruction for selling a token on Pump.fun.
 func BuildSellTokenInstruction(
 	accounts SellInstructionAccounts,
 	userWallet *wallet.Wallet,

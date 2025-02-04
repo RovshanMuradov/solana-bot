@@ -1,14 +1,16 @@
-// internal/dex/pumpfun/types.go
+// ===================================
+// File: internal/dex/pumpfun/types.go
+// ===================================
 package pumpfun
 
 import "github.com/gagliardetto/solana-go"
 
-// PumpfunToken содержит базовую информацию о токене, созданном через Pump.fun.
+// Token is a basic Pump.fun token info.
 type Token struct {
-	Mint         solana.PublicKey // Mint токена
-	BondingCurve solana.PublicKey // Аккаунт bonding curve
+	Mint         solana.PublicKey
+	BondingCurve solana.PublicKey
 	Name         string
 	Symbol       string
 	MetadataURI  string
-	CreatedAt    int64 // Unix timestamp
+	CreatedAt    int64
 }

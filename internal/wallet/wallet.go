@@ -1,4 +1,6 @@
-// inernal/wallet/wallet.go
+// ==================================
+// File: internal/wallet/wallet.go
+// ==================================
 package wallet
 
 import (
@@ -10,33 +12,30 @@ import (
 	"github.com/mr-tron/base58"
 )
 
-// Wallet представляет кошелек Solana
+// Wallet represents a Solana wallet.
 type Wallet struct {
 	PrivateKey solana.PrivateKey
 	PublicKey  solana.PublicKey
 }
 
-// NewWallet создает новый кошелек из Base58-строки приватного ключа
+// NewWallet creates a new wallet from a base58-encoded private key.
 func NewWallet(privateKeyBase58 string) (*Wallet, error) {
 	privateKeyBytes, err := base58.Decode(privateKeyBase58)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode private key: %w", err)
 	}
-
 	if len(privateKeyBytes) != 64 {
 		return nil, fmt.Errorf("invalid private key length: expected 64 bytes, got %d", len(privateKeyBytes))
 	}
-
 	privateKey := solana.PrivateKey(privateKeyBytes)
 	publicKey := privateKey.PublicKey()
-
 	return &Wallet{
 		PrivateKey: privateKey,
 		PublicKey:  publicKey,
 	}, nil
 }
 
-// LoadWallets загружает кошельки из CSV файла
+// LoadWallets loads wallets from a CSV file with columns: [Name, PrivateKeyBase58].
 func LoadWallets(path string) (map[string]*Wallet, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -49,9 +48,8 @@ func LoadWallets(path string) (map[string]*Wallet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read CSV: %w", err)
 	}
-
 	if len(records) < 2 {
-		return nil, fmt.Errorf("CSV file is empty or contains only header")
+		return nil, fmt.Errorf("CSV file is empty or missing data")
 	}
 
 	wallets := make(map[string]*Wallet)
@@ -59,20 +57,17 @@ func LoadWallets(path string) (map[string]*Wallet, error) {
 		if len(record) != 2 {
 			continue
 		}
-
 		name := record[0]
-		wallet, err := NewWallet(record[1])
+		w, err := NewWallet(record[1])
 		if err != nil {
 			continue
 		}
-
-		wallets[name] = wallet
+		wallets[name] = w
 	}
-
 	return wallets, nil
 }
 
-// SignTransaction подписывает транзакцию
+// SignTransaction signs a transaction with the wallet's private key.
 func (w *Wallet) SignTransaction(tx *solana.Transaction) error {
 	_, err := tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
 		if key.Equals(w.PublicKey) {
@@ -83,13 +78,13 @@ func (w *Wallet) SignTransaction(tx *solana.Transaction) error {
 	return err
 }
 
-// GetATA возвращает адрес ассоциированного токен аккаунта
+// GetATA returns the associated token account address for a given mint.
 func (w *Wallet) GetATA(mint solana.PublicKey) (solana.PublicKey, error) {
 	ata, _, err := solana.FindAssociatedTokenAddress(w.PublicKey, mint)
 	return ata, err
 }
 
-// String возвращает строковое представление адреса кошелька
+// String returns a string representation of the wallet (public key).
 func (w *Wallet) String() string {
 	return w.PublicKey.String()
 }
