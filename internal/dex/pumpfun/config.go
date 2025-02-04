@@ -26,8 +26,8 @@ type Config struct {
 }
 
 // GetDefaultConfig returns default Pump.fun configuration.
-// CSV reading was removed; fill addresses as needed.
 func GetDefaultConfig(logger *zap.Logger) *Config {
+	_ = logger // Искусственно «используем» logger, чтобы избежать ошибки unused-parameter.
 	return &Config{
 		ContractAddress:        solana.MustPublicKeyFromBase58("11111111111111111111111111111111"),
 		GraduationThreshold:    100.0,
