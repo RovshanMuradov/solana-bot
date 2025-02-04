@@ -1,4 +1,6 @@
-// internal/dex/raydium/client.go
+// ======================================
+// File: internal/dex/raydium/client.go
+// ======================================
 package raydium
 
 import (
@@ -12,7 +14,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// Client provides methods to interact with Raydium for buy/sell swaps.
+// Client provides methods to interact with Raydium for swaps.
 type Client struct {
 	baseClient     blockchain.Client
 	logger         *zap.Logger
@@ -21,6 +23,7 @@ type Client struct {
 }
 
 // NewClient creates a new Raydium client.
+// (Currently may not be used in sample code, but can be used in actual project setup.)
 func NewClient(baseClient blockchain.Client, logger *zap.Logger) *Client {
 	return &Client{
 		baseClient:     baseClient,
@@ -30,36 +33,30 @@ func NewClient(baseClient blockchain.Client, logger *zap.Logger) *Client {
 	}
 }
 
-// Swap executes a swap on Raydium with given parameters (amountIn, slippage, etc.).
 func (c *Client) Swap(ctx context.Context, params *SwapParams) (*SwapResult, error) {
 	if params == nil {
 		return nil, fmt.Errorf("swap params cannot be nil")
 	}
-
 	c.logger.Debug("Preparing swap on Raydium",
 		zap.String("source_mint", params.SourceMint.String()),
 		zap.String("target_mint", params.TargetMint.String()),
-		zap.Uint64("amount_in", params.AmountInLamports),
-	)
+		zap.Uint64("amount_in", params.AmountInLamports))
 
-	// 1. Build instructions (including SetComputeUnit instructions if needed).
 	instructions, err := BuildSwapInstructions(params, c.logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build swap instructions: %w", err)
 	}
 
-	// 2. Get blockhash.
 	blockhash, err := c.baseClient.GetRecentBlockhash(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get blockhash: %w", err)
 	}
 
-	// 3. Create and sign transaction.
 	tx, err := solana.NewTransaction(instructions, blockhash, solana.TransactionPayer(params.UserPublicKey))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transaction: %w", err)
 	}
-	// Signing (if user has a local key):
+
 	if params.PrivateKey != nil {
 		_, err = tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
 			if key.Equals(params.UserPublicKey) {
@@ -72,13 +69,11 @@ func (c *Client) Swap(ctx context.Context, params *SwapParams) (*SwapResult, err
 		}
 	}
 
-	// 4. Send transaction.
 	sig, err := c.baseClient.SendTransaction(ctx, tx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send transaction: %w", err)
 	}
 
-	// 5. Optional wait for confirmation.
 	if params.WaitForConfirmation {
 		if err := c.waitForConfirmation(ctx, sig); err != nil {
 			return nil, fmt.Errorf("swap transaction not confirmed: %w", err)
@@ -87,9 +82,7 @@ func (c *Client) Swap(ctx context.Context, params *SwapParams) (*SwapResult, err
 
 	c.logger.Info("Swap transaction sent",
 		zap.String("signature", sig.String()),
-		zap.Bool("confirmed", params.WaitForConfirmation),
-	)
-
+		zap.Bool("confirmed", params.WaitForConfirmation))
 	return &SwapResult{Signature: sig, AmountIn: params.AmountInLamports}, nil
 }
 

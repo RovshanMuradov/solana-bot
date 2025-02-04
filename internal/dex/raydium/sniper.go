@@ -1,22 +1,22 @@
-// internal/dex/raydium/sniper.go
+// ===================================
+// File: internal/dex/raydium/sniper.go
+// ===================================
 package raydium
 
 import (
 	"context"
 	"fmt"
+
 	"github.com/gagliardetto/solana-go"
 	"go.uber.org/zap"
 )
 
-// Snipe executes a fast buy of a new token on Raydium if a pool is found.
+// Snipe executes a quick buy of a new token on Raydium if a pool is found.
 func (c *Client) Snipe(ctx context.Context, snipeParams *SnipeParams) (*SwapResult, error) {
-	// 1. Find or confirm the pool
 	poolAddr, err := FindRaydiumPoolForNewToken(ctx, snipeParams.TokenMint.String(), c.logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find pool for token: %w", err)
 	}
-
-	// 2. Set up basic SwapParams
 	swapParams := &SwapParams{
 		PoolAddress:                 solana.MustPublicKeyFromBase58(poolAddr),
 		AmmAuthority:                snipeParams.AmmAuthority,
@@ -30,13 +30,11 @@ func (c *Client) Snipe(ctx context.Context, snipeParams *SnipeParams) (*SwapResu
 		UserDestinationTokenAccount: snipeParams.UserDestATA,
 		AmountInLamports:            snipeParams.AmountInLamports,
 		MinAmountOut:                snipeParams.MinOutLamports,
-		Direction:                   0, // e.g. 0: base->quote or 1: quote->base
+		Direction:                   0,
 		ComputeUnits:                800000,
 		PriorityFeeLamports:         snipeParams.PriorityFeeLamports,
 		WaitForConfirmation:         true,
 	}
-
-	// 3. Execute swap
 	result, err := c.Swap(ctx, swapParams)
 	if err != nil {
 		return nil, fmt.Errorf("snipe swap failed: %w", err)
