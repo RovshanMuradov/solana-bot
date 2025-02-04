@@ -3,16 +3,19 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/config"
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
 	"github.com/rovshanmuradov/solana-bot/internal/eventlistener"
 	"github.com/rovshanmuradov/solana-bot/internal/storage/postgres"
+	"github.com/rovshanmuradov/solana-bot/internal/utils/metrics"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
 )
@@ -30,6 +33,18 @@ func main() {
 	}
 	defer logger.Sync()
 	logger.Info("Запуск бота")
+
+	// Инициализация сборщика метрик
+	metricsCollector := metrics.NewCollector()
+
+	// Запуск HTTP-сервера для экспорта метрик (например, для Prometheus)
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		logger.Info("Метрики доступны на :2112/metrics")
+		if err := http.ListenAndServe(":2112", nil); err != nil {
+			logger.Error("Ошибка HTTP-сервера метрик", zap.Error(err))
+		}
+	}()
 
 	// Загрузка конфигурации из файла
 	cfg, err := config.LoadConfig("configs/config.json")
@@ -80,7 +95,7 @@ func main() {
 	// Инициализация DEX‑адаптера
 	// Выберите нужный DEX, например "pump.fun" или "raydium"
 	dexName := "pump.fun"
-	dexAdapter, err := dex.GetDEXByName(dexName, solClient, primaryWallet, logger)
+	dexAdapter, err := dex.GetDEXByName(dexName, solClient, primaryWallet, logger, metricsCollector)
 	if err != nil {
 		logger.Fatal("Ошибка инициализации DEX адаптера", zap.Error(err))
 	}
