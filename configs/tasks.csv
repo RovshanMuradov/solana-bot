@@ -1,2 +1,4 @@
-TaskName,Module,Workers,WalletName,Delta,PriorityFee,SourceToken,TargetToken,AmountIn,SlippageConfig,AutosellPercent,AutosellDelay,AutosellAmount,TransactionDelay,AutosellPriorityFee
-buyTokens,Raydium,1,wallet1,100,0.001,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263,0.02,0.5,0,0,0,100,0.0003
+task_name,module,wallet,operation,amount_sol,min_sol_output_sol,priority_fee_lamports,token_mint,source_mint,amm_authority,base_vault,quote_vault,contract_address,global,fee_recipient,bonding_curve,associated_bonding_curve,event_authority
+pump_snipe_task1,pump.fun,wallet1,snipe,0.02,0.01,0,TokenMintAddress,,,,,,11111111111111111111111111111111,GlobalAccount,FeeRecipientAddress,BondingCurveAddress,AssociatedBondingCurveAddress,EventAuthorityAddress
+raydium_snipe_task1,raydium,wallet1,snipe,0.02,0.01,0,TokenMintAddress,SourceMintAddress,AMMAuthorityAddress,BaseVaultAddress,QuoteVaultAddress,,,,,,
+

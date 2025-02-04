@@ -108,7 +108,7 @@ func (c *Client) GetBalance(ctx context.Context, pubkey solana.PublicKey, commit
 }
 
 // WaitForTransactionConfirmation ожидает подтверждения транзакции (с простым polling‑механизмом).
-func (c *Client) WaitForTransactionConfirmation(ctx context.Context, signature solana.Signature, commitment rpc.CommitmentType) error {
+func (c *Client) WaitForTransactionConfirmation(ctx context.Context, signature solana.Signature, _ rpc.CommitmentType) error {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	timeout := time.After(30 * time.Second)

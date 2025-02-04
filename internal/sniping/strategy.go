@@ -1,13 +1,6 @@
 // internal/sniping/strategy.go
 package sniping
 
-import (
-	"fmt"
-	"strconv"
-
-	"github.com/rovshanmuradov/solana-bot/internal/types"
-)
-
 /*func LoadTasks(path string) ([]*types.Task, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -32,7 +25,7 @@ import (
 
 	return tasks, nil
 }*/
-
+/*
 func parseTask(record []string) (*types.Task, error) {
 	// Было 16 полей (включая AMMID), стало 15
 	if len(record) != 15 {
@@ -116,4 +109,4 @@ func parseTask(record []string) (*types.Task, error) {
 		DEXName:             dexName,
 		SlippageConfig:      slippageConfig,
 	}, nil
-}
+}*/
