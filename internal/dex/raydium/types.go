@@ -8,7 +8,7 @@ import (
 )
 
 var (
-	RaydiumProgramID = solana.MustPublicKeyFromBase58("RAYDIUM_V4_PROGRAM_ID_REPLACE")
+	RaydiumProgramID = solana.MustPublicKeyFromBase58("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")
 	TokenProgramID   = solana.MustPublicKeyFromBase58("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
 )
 

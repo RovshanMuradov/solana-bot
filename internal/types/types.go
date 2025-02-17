@@ -28,7 +28,7 @@ type Task struct {
 	UserDestinationTokenAccount solana.PublicKey
 	SourceTokenDecimals         int
 	TargetTokenDecimals         int
-	DEXName                     string `default:"Raydium"` // Добавляем значение по умолчанию
+	DEXName                     string
 	SlippageConfig              SlippageConfig
 }
 

@@ -1,4 +1,3 @@
-task_name,module,wallet,operation,amount_sol,min_sol_output_sol,priority_fee_lamports,token_mint,source_mint,amm_authority,base_vault,quote_vault,contract_address,global,fee_recipient,bonding_curve,associated_bonding_curve,event_authority
-pump_snipe_task1,pump.fun,wallet1,snipe,0.02,0.01,0,TokenMintAddress,,,,,,11111111111111111111111111111111,GlobalAccount,FeeRecipientAddress,BondingCurveAddress,AssociatedBondingCurveAddress,EventAuthorityAddress
-raydium_snipe_task1,raydium,wallet1,snipe,0.02,0.01,0,TokenMintAddress,SourceMintAddress,AMMAuthorityAddress,BaseVaultAddress,QuoteVaultAddress,,,,,,
-
+task_name,module,wallet,operation,amount_sol,min_sol_output_sol,priority_fee_lamports,contract_address
+pump_snipe_task1,pump.fun,wallet1,snipe,0.01,0.001,0,3JspsTosMbfjWuA3SJRDkB9Z2sDg3exmtcZLSoAbpump
+raydium_snipe_task1,raydium,wallet1,snipe,0.01,0.001,100,9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E

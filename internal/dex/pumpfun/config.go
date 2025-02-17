@@ -27,18 +27,19 @@ type Config struct {
 
 // GetDefaultConfig returns default Pump.fun configuration.
 func GetDefaultConfig(logger *zap.Logger) *Config {
-	_ = logger // Искусственно «используем» logger, чтобы избежать ошибки unused-parameter.
+	_ = logger                                       // используем, чтобы избежать ошибки unused-parameter
+	validDummy := "11111111111111111111111111111111" // корректное Base58 значение
 	return &Config{
-		ContractAddress:        solana.MustPublicKeyFromBase58("11111111111111111111111111111111"),
+		ContractAddress:        solana.MustPublicKeyFromBase58(validDummy),
 		GraduationThreshold:    100.0,
 		AllowSellBeforeFull:    true,
 		MonitorInterval:        "5s",
 		MonitorDuration:        func() time.Duration { return 5 * time.Second },
-		Global:                 solana.MustPublicKeyFromBase58("GLOBAL_ACCOUNT"),
-		FeeRecipient:           solana.MustPublicKeyFromBase58("FEE_RECIPIENT"),
-		Mint:                   solana.MustPublicKeyFromBase58("MINT_ACCOUNT"),
-		BondingCurve:           solana.MustPublicKeyFromBase58("BONDING_CURVE_ACCOUNT"),
-		AssociatedBondingCurve: solana.MustPublicKeyFromBase58("ASSOCIATED_BONDING_CURVE"),
-		EventAuthority:         solana.MustPublicKeyFromBase58("EVENT_AUTHORITY"),
+		Global:                 solana.MustPublicKeyFromBase58(validDummy),
+		FeeRecipient:           solana.MustPublicKeyFromBase58(validDummy),
+		Mint:                   solana.MustPublicKeyFromBase58(validDummy),
+		BondingCurve:           solana.MustPublicKeyFromBase58(validDummy),
+		AssociatedBondingCurve: solana.MustPublicKeyFromBase58(validDummy),
+		EventAuthority:         solana.MustPublicKeyFromBase58(validDummy),
 	}
 }
