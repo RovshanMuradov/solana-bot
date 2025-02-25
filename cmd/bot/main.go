@@ -1,190 +1,188 @@
+// ====================================
+// File: cmd/bot/main.go (simplified)
+// ====================================
 package main
 
 import (
 	"context"
+	"encoding/csv"
 	"fmt"
-	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
-	"time"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.uber.org/zap"
+
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/config"
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
-	"github.com/rovshanmuradov/solana-bot/internal/eventlistener"
 	"github.com/rovshanmuradov/solana-bot/internal/storage/postgres"
 	"github.com/rovshanmuradov/solana-bot/internal/utils/metrics"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
-	"go.uber.org/zap"
 )
 
-// Функция run содержит основную логику приложения и возвращает ошибку в случае неудачи.
-func run() error {
-	// Создаём корневой контекст для управления временем жизни приложения
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Инициализация логгера
-	logger, err := zap.NewDevelopment()
-	if err != nil {
-		return fmt.Errorf("ошибка инициализации логгера: %w", err)
-	}
-	// Проверяем ошибку при закрытии логгера
-	defer func() {
-		if err := logger.Sync(); err != nil {
-			fmt.Printf("Ошибка при закрытии логгера: %v\n", err)
-		}
-	}()
-	logger.Info("Запуск бота")
-
-	// Инициализация сборщика метрик
-	metricsCollector := metrics.NewCollector()
-
-	// Запуск HTTP-сервера для экспорта метрик (например, для Prometheus)
-	go func() {
-		mux := http.NewServeMux()
-		mux.Handle("/metrics", promhttp.Handler())
-		srv := &http.Server{
-			Addr:         ":2112",
-			Handler:      mux,
-			ReadTimeout:  5 * time.Second,
-			WriteTimeout: 10 * time.Second,
-			IdleTimeout:  15 * time.Second,
-		}
-		logger.Info("Метрики доступны на :2112/metrics")
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("Ошибка HTTP-сервера метрик", zap.Error(err))
-		}
-	}()
-
-	// Загрузка конфигурации из файла
-	cfg, err := config.LoadConfig("configs/config.json")
-	if err != nil {
-		return fmt.Errorf("не удалось загрузить конфигурацию: %w", err)
-	}
-	logger.Info("Конфигурация загружена", zap.Any("config", cfg))
-
-	// Загрузка кошельков из CSV-файла
-	walletsMap, err := wallet.LoadWallets("configs/wallets.csv")
-	if err != nil {
-		return fmt.Errorf("не удалось загрузить кошельки: %w", err)
-	}
-	logger.Info("Кошельки загружены", zap.Int("количество", len(walletsMap)))
-
-	// Выбираем первый доступный кошелек (при необходимости можно расширить логику выбора)
-	var primaryWallet *wallet.Wallet
-	for _, w := range walletsMap {
-		primaryWallet = w
-		break
-	}
-	if primaryWallet == nil {
-		return fmt.Errorf("нет доступных кошельков")
-	}
-	logger.Info("Используется кошелек", zap.String("publicKey", primaryWallet.PublicKey.String()))
-
-	// Инициализация клиента Solana с использованием первого RPC из списка
-	if len(cfg.RPCList) == 0 {
-		return fmt.Errorf("список RPC пуст")
-	}
-	solClient := solbc.NewClient(cfg.RPCList[0], logger)
-	// Если клиент имеет метод Close, его можно вызвать при завершении работы, например:
-	// defer solClient.Close()
-
-	// Инициализация Postgres-хранилища
-	store, err := postgres.NewStorage(cfg.PostgresURL, logger)
-	if err != nil {
-		return fmt.Errorf("не удалось инициализировать Postgres-хранилище: %w", err)
-	}
-	logger.Info("Postgres-хранилище инициализировано")
-
-	// Выполнение миграций базы данных
-	if err := store.RunMigrations(); err != nil {
-		return fmt.Errorf("ошибка при выполнении миграций: %w", err)
-	}
-	logger.Info("Миграции базы данных выполнены успешно")
-
-	// Инициализация DEX‑адаптера (выбираем, например, "pump.fun")
-	dexName := "pump.fun"
-	dexAdapter, err := dex.GetDEXByName(dexName, solClient, primaryWallet, logger, metricsCollector)
-	if err != nil {
-		return fmt.Errorf("ошибка инициализации DEX адаптера: %w", err)
-	}
-	logger.Info("DEX адаптер инициализирован", zap.String("DEX", dexAdapter.GetName()))
-
-	// Инициализация слушателя событий по WebSocket
-	if cfg.WebSocketURL == "" {
-		return fmt.Errorf("WebSocketURL не задан в конфигурации")
-	}
-	eventListener, err := eventlistener.NewEventListener(ctx, cfg.WebSocketURL, logger)
-	if err != nil {
-		return fmt.Errorf("ошибка инициализации слушателя событий: %w", err)
-	}
-	logger.Info("Слушатель событий инициализирован", zap.String("WebSocketURL", cfg.WebSocketURL))
-
-	// Определяем обработчик событий
-	eventHandler := func(ev eventlistener.Event) {
-		logger.Info("Получено событие", zap.String("type", ev.Type), zap.String("pool_id", ev.PoolID))
-		switch ev.Type {
-		case "NewPool":
-			// При появлении нового пула выполняется операция snipe
-			task := &dex.Task{
-				Operation:    dex.OperationSnipe,
-				Amount:       1_000_000_000, // Пример: 1 SOL (в лампортах)
-				MinSolOutput: 900_000_000,   // Минимальный ожидаемый вывод
-			}
-			logger.Info("Выполняется операция snipe")
-			if err := dexAdapter.Execute(ctx, task); err != nil {
-				logger.Error("Ошибка выполнения snipe", zap.Error(err))
-			} else {
-				logger.Info("Операция snipe выполнена успешно")
-			}
-		case "PriceChange":
-			// При изменении цены выполняется операция sell
-			task := &dex.Task{
-				Operation:    dex.OperationSell,
-				Amount:       1_000_000_000,
-				MinSolOutput: 1_100_000_000,
-			}
-			logger.Info("Выполняется операция sell")
-			if err := dexAdapter.Execute(ctx, task); err != nil {
-				logger.Error("Ошибка выполнения sell", zap.Error(err))
-			} else {
-				logger.Info("Операция sell выполнена успешно")
-			}
-		default:
-			logger.Warn("Неподдерживаемый тип события", zap.String("type", ev.Type))
-		}
-
-		// Дополнительно можно сохранить информацию о задаче в БД через store
-	}
-
-	// Запускаем подписку на события в отдельной горутине
-	go func() {
-		if err := eventListener.Subscribe(ctx, eventHandler); err != nil {
-			// Если произошла фатальная ошибка при подписке, завершаем приложение
-			logger.Fatal("Ошибка подписки на события", zap.Error(err))
-		}
-	}()
-
-	// Ожидание системного сигнала для корректного завершения работы
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	logger.Info("Бот запущен. Ожидание сигнала завершения...")
-	sig := <-sigCh
-	logger.Info("Получен сигнал", zap.String("signal", sig.String()))
-
-	// Завершаем работу: отменяем контекст и даём время на завершение всех операций
-	cancel()
-	time.Sleep(2 * time.Second)
-	logger.Info("Бот успешно завершил работу")
-	return nil
+// Task represents the simplified CSV columns we care about.
+type Task struct {
+	TaskName            string
+	Module              string
+	WalletName          string
+	Operation           string
+	AmountSol           float64
+	MinSolOutputSol     float64
+	PriorityFeeLamports uint64
+	ContractOrTokenMint string
 }
 
 func main() {
-	if err := run(); err != nil {
-		fmt.Printf("Ошибка: %v\n", err)
-		os.Exit(1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Initialize logger
+	logger, _ := zap.NewDevelopment()
+	defer logger.Sync()
+	logger.Info("Starting simplified sniper bot")
+
+	// Load config
+	cfg, err := config.LoadConfig("configs/config.json")
+	if err != nil {
+		logger.Fatal("Failed to load config", zap.Error(err))
 	}
+	logger.Sugar().Infof("Config loaded: %+v", cfg)
+
+	// Load wallets
+	walletsMap, err := wallet.LoadWallets("configs/wallets.csv")
+	if err != nil {
+		logger.Fatal("Failed to load wallets", zap.Error(err))
+	}
+	logger.Info("Wallets loaded", zap.Int("count", len(walletsMap)))
+
+	// Pick first wallet if not found in tasks
+	var defaultWallet *wallet.Wallet
+	for _, w := range walletsMap {
+		defaultWallet = w
+		break
+	}
+
+	// Init Solana client from first RPC
+	solClient := solbc.NewClient(cfg.RPCList[0], logger)
+
+	// Init metrics (Prometheus)
+	metricsCollector := metrics.NewCollector()
+
+	// Init Postgres
+	store, err := postgres.NewStorage(cfg.PostgresURL, logger)
+	if err != nil {
+		logger.Fatal("Failed to init postgres", zap.Error(err))
+	}
+	if err := store.RunMigrations(); err != nil {
+		logger.Fatal("Failed to run DB migrations", zap.Error(err))
+	}
+	logger.Info("Postgres ready")
+
+	// Parse tasks.csv
+	tasks, err := loadTasks("configs/tasks.csv")
+	if err != nil {
+		logger.Fatal("Failed to load tasks", zap.Error(err))
+	}
+	logger.Info("Tasks loaded", zap.Int("count", len(tasks)))
+
+	// Execute tasks
+	for _, t := range tasks {
+		w := defaultWallet
+		if walletsMap[t.WalletName] != nil {
+			w = walletsMap[t.WalletName]
+		}
+		if w == nil {
+			logger.Warn("Skipping task - no wallet found", zap.String("task", t.TaskName))
+			continue
+		}
+
+		dexAdapter, err := dex.GetDEXByName(t.Module, solClient, w, logger, metricsCollector)
+		if err != nil {
+			logger.Error("DEX adapter init error", zap.String("task", t.TaskName), zap.Error(err))
+			continue
+		}
+
+		logger.Info("Executing task",
+			zap.String("task", t.TaskName),
+			zap.String("operation", t.Operation),
+			zap.String("DEX", dexAdapter.GetName()),
+		)
+
+		// Convert SOL amounts to lamports
+		amountLamports := uint64(t.AmountSol * 1e9)
+		minLamports := uint64(t.MinSolOutputSol * 1e9)
+
+		taskData := &dex.Task{
+			Operation:    dex.OperationType(t.Operation),
+			Amount:       amountLamports,
+			MinSolOutput: minLamports,
+		}
+
+		// Simple usage for pumpfun or raydium: we might set the "Mint" inside.
+		// But in official code, you'd pass a separate param, or set it in the constructor.
+		// For demonstration, we'll pretend the DEX logic picks up t.ContractOrTokenMint as needed.
+
+		err = dexAdapter.Execute(ctx, taskData)
+		if err != nil {
+			logger.Error("Error executing snipe operation",
+				zap.String("task", t.TaskName),
+				zap.Error(err),
+			)
+		} else {
+			logger.Info("Snipe operation completed",
+				zap.String("task", t.TaskName))
+		}
+	}
+
+	// Wait for signal
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	logger.Info("Bot started. Waiting for exit signal...")
+	sig := <-sigCh
+	logger.Info("Signal received", zap.String("signal", sig.String()))
+	logger.Info("Bot shutting down gracefully")
+}
+
+// loadTasks reads a simple CSV with columns:
+// task_name,module,wallet,operation,amount_sol,min_sol_output_sol,priority_fee_lamports,contract_address
+func loadTasks(path string) ([]Task, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	records, err := r.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	if len(records) < 2 {
+		return nil, fmt.Errorf("no tasks found in CSV")
+	}
+
+	var tasks []Task
+	// Skip header
+	for _, row := range records[1:] {
+		if len(row) < 8 {
+			continue
+		}
+		amountSol, _ := strconv.ParseFloat(row[4], 64)
+		minSolOut, _ := strconv.ParseFloat(row[5], 64)
+		priority, _ := strconv.ParseUint(row[6], 10, 64)
+
+		tasks = append(tasks, Task{
+			TaskName:            row[0],
+			Module:              row[1],
+			WalletName:          row[2],
+			Operation:           row[3],
+			AmountSol:           amountSol,
+			MinSolOutputSol:     minSolOut,
+			PriorityFeeLamports: priority,
+			ContractOrTokenMint: row[7],
+		})
+	}
+	return tasks, nil
 }
