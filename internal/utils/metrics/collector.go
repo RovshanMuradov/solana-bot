@@ -2,9 +2,14 @@
 package metrics
 
 import (
+	"context"
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
+	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 )
 
 // MetricType представляет тип метрики
@@ -18,9 +23,13 @@ const (
 	PoolLiquidityType       MetricType = "pool_liquidity"
 )
 
-// Collector управляет набором метрик
+// Collector управляет набором метрик и содержит ссылки на необходимые объекты
 type Collector struct {
-	metrics sync.Map
+	metrics    sync.Map
+	clientLock sync.RWMutex   // Mutex for thread-safe access to the Solana client
+	walletLock sync.RWMutex   // Mutex for thread-safe access to the wallet
+	solClient  *solbc.Client  // Reference to Solana client
+	userWallet *wallet.Wallet // Reference to user wallet
 }
 
 // NewCollector создает новый экземпляр коллектора метрик
@@ -58,6 +67,68 @@ func (c *Collector) Reset() {
 		}
 		return true
 	})
+}
+
+// SetSolanaClient stores a reference to the Solana client
+func (c *Collector) SetSolanaClient(client *solbc.Client) {
+	c.clientLock.Lock()
+	defer c.clientLock.Unlock()
+	c.solClient = client
+}
+
+// GetSolanaClient returns the stored Solana client reference
+func (c *Collector) GetSolanaClient() (*solbc.Client, bool) {
+	c.clientLock.RLock()
+	defer c.clientLock.RUnlock()
+
+	if c.solClient == nil {
+		return nil, false
+	}
+	return c.solClient, true
+}
+
+// SetDefaultWallet stores a reference to the user wallet
+func (c *Collector) SetDefaultWallet(w *wallet.Wallet) {
+	c.walletLock.Lock()
+	defer c.walletLock.Unlock()
+	c.userWallet = w
+}
+
+// GetUserWallet returns the stored user wallet reference
+func (c *Collector) GetUserWallet() (*wallet.Wallet, error) {
+	c.walletLock.RLock()
+	defer c.walletLock.RUnlock()
+
+	if c.userWallet == nil {
+		return nil, fmt.Errorf("user wallet not set")
+	}
+	return c.userWallet, nil
+}
+
+// RecordTransaction records transaction metrics
+func (c *Collector) RecordTransaction(ctx context.Context, txType, dexName string, duration time.Duration, success bool) {
+	// Get counter from metrics map
+	counter, ok := c.metrics.Load(TransactionCounterType)
+	if !ok {
+		return
+	}
+
+	// Record transaction count
+	status := "success"
+	if !success {
+		status = "failure"
+	}
+
+	if counterVec, ok := counter.(*prometheus.CounterVec); ok {
+		counterVec.WithLabelValues(status, txType, dexName).Inc()
+	}
+
+	// Record duration
+	if durationMetric, ok := c.metrics.Load(TransactionDurationType); ok {
+		if histVec, ok := durationMetric.(*prometheus.HistogramVec); ok {
+			histVec.WithLabelValues(txType, dexName).Observe(duration.Seconds())
+		}
+	}
 }
 
 // Определение метрик с улучшенными лейблами

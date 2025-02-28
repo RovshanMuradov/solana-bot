@@ -1,6 +1,3 @@
-// ================================================
-// File: internal/dex/pumpfun/instructions.go
-// ================================================
 package pumpfun
 
 import (
@@ -35,26 +32,34 @@ type SellInstructionAccounts struct {
 	Program                solana.PublicKey
 }
 
+// Updated buy instruction discriminator and data layout
 // BuildBuyTokenInstruction builds an instruction for buying a token on Pump.fun.
 func BuildBuyTokenInstruction(
 	accounts BuyInstructionAccounts,
 	userWallet *wallet.Wallet,
 	amount, maxSolCost uint64,
 ) (solana.Instruction, error) {
-	data := []byte{0x66, 0x06, 0x3d, 0x12}
+	// Updated discriminator - using Anchor's method discriminator format
+	// This is derived from sha256("global:buy") and taking first 8 bytes
+	data := []byte{0xd4, 0x52, 0x39, 0xd5, 0xf6, 0x27, 0x64, 0x9b}
+
+	// Amount in little-endian bytes
 	amountBytes := make([]byte, 8)
 	binary.LittleEndian.PutUint64(amountBytes, amount)
 	data = append(data, amountBytes...)
+
+	// Max SOL cost in little-endian bytes
 	maxSolBytes := make([]byte, 8)
 	binary.LittleEndian.PutUint64(maxSolBytes, maxSolCost)
 	data = append(data, maxSolBytes...)
-	data = append(data, make([]byte, 4)...) // padding
 
+	// Get user's associated token account (ATA) for this token
 	associatedUser, err := userWallet.GetATA(accounts.Mint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get associated token account: %w", err)
 	}
 
+	// Ordered list of accounts according to Pump.fun program's expectations
 	insAccounts := []*solana.AccountMeta{
 		{PublicKey: accounts.Global, IsSigner: false, IsWritable: false},
 		{PublicKey: accounts.FeeRecipient, IsSigner: false, IsWritable: true},
@@ -73,26 +78,34 @@ func BuildBuyTokenInstruction(
 	return solana.NewInstruction(accounts.Program, insAccounts, data), nil
 }
 
+// Updated sell instruction discriminator and data layout
 // BuildSellTokenInstruction builds an instruction for selling a token on Pump.fun.
 func BuildSellTokenInstruction(
 	accounts SellInstructionAccounts,
 	userWallet *wallet.Wallet,
 	amount, minSolOutput uint64,
 ) (solana.Instruction, error) {
-	data := []byte{0x33, 0xe6, 0x85, 0xa4}
+	// Updated discriminator - using Anchor's method discriminator format
+	// This is derived from sha256("global:sell") and taking first 8 bytes
+	data := []byte{0x28, 0x17, 0x38, 0x89, 0x55, 0x34, 0xde, 0xd5}
+
+	// Amount in little-endian bytes
 	amountBytes := make([]byte, 8)
 	binary.LittleEndian.PutUint64(amountBytes, amount)
 	data = append(data, amountBytes...)
+
+	// Min SOL output in little-endian bytes
 	minSolBytes := make([]byte, 8)
 	binary.LittleEndian.PutUint64(minSolBytes, minSolOutput)
 	data = append(data, minSolBytes...)
-	data = append(data, make([]byte, 4)...) // padding
 
+	// Get user's associated token account for this token
 	associatedUser, err := userWallet.GetATA(accounts.Mint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get associated token account: %w", err)
 	}
 
+	// Ordered list of accounts according to Pump.fun program's expectations
 	insAccounts := []*solana.AccountMeta{
 		{PublicKey: accounts.Global, IsSigner: false, IsWritable: false},
 		{PublicKey: accounts.FeeRecipient, IsSigner: false, IsWritable: true},
@@ -102,8 +115,8 @@ func BuildSellTokenInstruction(
 		{PublicKey: associatedUser, IsSigner: false, IsWritable: true},
 		{PublicKey: userWallet.PublicKey, IsSigner: true, IsWritable: true},
 		{PublicKey: solana.SystemProgramID, IsSigner: false, IsWritable: false},
-		{PublicKey: AssociatedTokenProgramID, IsSigner: false, IsWritable: false},
 		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
+		{PublicKey: AssociatedTokenProgramID, IsSigner: false, IsWritable: false},
 		{PublicKey: accounts.EventAuthority, IsSigner: false, IsWritable: false},
 		{PublicKey: accounts.Program, IsSigner: false, IsWritable: false},
 	}

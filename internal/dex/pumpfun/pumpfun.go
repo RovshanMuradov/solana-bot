@@ -33,12 +33,32 @@ func NewDEX(client *solbc.Client, w *wallet.Wallet, logger *zap.Logger, config *
 	if err != nil {
 		return nil, err
 	}
+
+	// Validate required configuration
+	if config.ContractAddress.IsZero() {
+		return nil, fmt.Errorf("pump.fun contract address is required")
+	}
+	if config.Mint.IsZero() {
+		return nil, fmt.Errorf("token mint address is required")
+	}
+	if config.BondingCurve.IsZero() {
+		return nil, fmt.Errorf("bonding curve address is required")
+	}
+
+	logger.Info("Creating PumpFun DEX",
+		zap.String("contract", config.ContractAddress.String()),
+		zap.String("token_mint", config.Mint.String()),
+		zap.String("bonding_curve", config.BondingCurve.String()))
+
+	// Create monitor with the bonding curve address from config
+	monitor := NewBondingCurveMonitor(client, logger, interval, config.BondingCurve)
+
 	return &DEX{
 		client:        client,
 		wallet:        w,
 		logger:        logger.Named("pumpfun"),
 		config:        config,
-		monitor:       NewBondingCurveMonitor(client, logger, interval),
+		monitor:       monitor,
 		events:        NewPumpfunMonitor(logger, interval),
 		raydiumClient: nil, // Устанавливайте отдельно, если требуется
 	}, nil

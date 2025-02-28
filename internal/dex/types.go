@@ -1,5 +1,5 @@
 // ==========================================
-// File: internal/dex/types.go
+// File: internal/dex/types.go (modified)
 // ==========================================
 package dex
 
@@ -17,4 +17,5 @@ type Task struct {
 	Operation    OperationType
 	Amount       uint64
 	MinSolOutput uint64
+	TokenMint    string // Added TokenMint to identify token
 }
