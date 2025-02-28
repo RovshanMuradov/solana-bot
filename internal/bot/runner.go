@@ -1,4 +1,6 @@
-// Package bot provides implementation of the main bot functionality
+// =============================================
+// File: internal/bot/runner.go
+// =============================================
 package bot
 
 import (

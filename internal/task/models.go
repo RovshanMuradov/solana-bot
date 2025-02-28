@@ -1,4 +1,6 @@
-// Package task provides utilities for working with bot tasks
+// =============================================
+// File: internal/task/models.go
+// =============================================
 package task
 
 import (
