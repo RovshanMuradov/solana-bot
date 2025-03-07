@@ -6,7 +6,6 @@ package pumpfun
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"strings"
 	"time"
@@ -77,6 +76,19 @@ func NewDEX(client *solbc.Client, w *wallet.Wallet, logger *zap.Logger, config *
 		stateChecker:  stateChecker,
 	}
 
+	// NEW CODE BLOCK: Fetch global account data to get fee recipient
+	fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	globalAccount, err := FetchGlobalAccount(fetchCtx, client, config.Global, logger.Named("global-account"))
+	if err != nil {
+		logger.Warn("Failed to fetch global account data, fee recipient will not be available",
+			zap.Error(err))
+	} else {
+		// Update fee recipient from global account data
+		config.UpdateFeeRecipient(globalAccount.FeeRecipient, logger)
+	}
+
 	// Verify critical accounts before returning
 	if err := dex.VerifyAccounts(context.Background()); err != nil {
 		logger.Warn("Account verification failed during initialization",
@@ -88,6 +100,7 @@ func NewDEX(client *solbc.Client, w *wallet.Wallet, logger *zap.Logger, config *
 	return dex, nil
 }
 
+// VerifyAccounts checks if all necessary accounts are properly initialized
 // VerifyAccounts checks if all necessary accounts are properly initialized
 func (d *DEX) VerifyAccounts(ctx context.Context) error {
 	d.logger.Debug("Verifying critical accounts")
@@ -123,6 +136,27 @@ func (d *DEX) VerifyAccounts(ctx context.Context) error {
 		}
 
 		return fmt.Errorf("program state not ready: %s", state.Error)
+	}
+
+	// NEW: Verify associated bonding curve - check if it's valid
+	if d.config.AssociatedBondingCurve.IsZero() {
+		d.logger.Warn("Associated bonding curve is not set, will attempt to derive it")
+		d.config.AssociatedBondingCurve = deriveAssociatedCurveAddress(d.config.BondingCurve, d.config.ContractAddress)
+		d.logger.Info("Derived associated bonding curve",
+			zap.String("address", d.config.AssociatedBondingCurve.String()))
+	}
+
+	// NEW: Try to get info about associated bonding curve
+	assocInfo, err := d.client.GetAccountInfo(ctx, d.config.AssociatedBondingCurve)
+	if err != nil {
+		d.logger.Warn("Could not fetch associated bonding curve info, may need to be created",
+			zap.String("address", d.config.AssociatedBondingCurve.String()),
+			zap.Error(err))
+	} else {
+		d.logger.Info("Associated bonding curve info",
+			zap.String("address", d.config.AssociatedBondingCurve.String()),
+			zap.String("owner", assocInfo.Value.Owner.String()),
+			zap.Int("data_len", len(assocInfo.Value.Data.GetBinary())))
 	}
 
 	d.logger.Debug("All critical accounts verified successfully")
@@ -211,6 +245,27 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error
 		return fmt.Errorf("account verification failed before execution: %w", err)
 	}
 
+	// Check if fee recipient is set, if not, try to fetch it from global account
+	if d.config.FeeRecipient.IsZero() {
+		d.logger.Warn("Fee recipient not set, attempting to fetch from global account")
+		fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+
+		globalAccount, err := FetchGlobalAccount(fetchCtx, d.client, d.config.Global, d.logger)
+		if err != nil {
+			d.logger.Error("Failed to fetch fee recipient from global account", zap.Error(err))
+			return fmt.Errorf("fee recipient not set and failed to fetch global account: %w", err)
+		}
+
+		// Update fee recipient from global account data
+		d.config.UpdateFeeRecipient(globalAccount.FeeRecipient, d.logger)
+
+		// Check if we now have a valid fee recipient
+		if d.config.FeeRecipient.IsZero() {
+			return fmt.Errorf("fee recipient is not available, cannot execute snipe")
+		}
+	}
+
 	if d.graduated {
 		d.logger.Info("Token has graduated. Redirecting snipe to Raydium.")
 		if d.raydiumClient == nil {
@@ -237,7 +292,9 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error
 	d.logger.Info("Executing Pump.fun snipe",
 		zap.Uint64("amount", amount),
 		zap.Uint64("max_sol_cost", maxSolCost),
-		zap.String("discriminator_version", DiscriminatorVersion))
+		zap.String("discriminator_version", DiscriminatorVersion),
+		zap.String("fee_recipient", d.config.FeeRecipient.String()),
+		zap.String("event_authority", d.config.EventAuthority.String()))
 
 	// Setup accounts for buy instruction
 	buyAccounts := BuyInstructionAccounts{
@@ -251,25 +308,61 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error
 		Logger:                 d.logger,
 	}
 
-	// Try to build buy instruction with current discriminator version
+	// Validate key accounts before proceeding
+	if buyAccounts.Global.IsZero() {
+		return fmt.Errorf("global account address is zero")
+	}
+	if buyAccounts.FeeRecipient.IsZero() {
+		return fmt.Errorf("fee recipient address is zero")
+	}
+	if buyAccounts.EventAuthority.IsZero() {
+		return fmt.Errorf("event authority address is zero")
+	}
+
+	// После проверки аккаунтов и перед созданием ATA добавить:
+	if err := d.ensureAssociatedBondingCurve(ctx); err != nil {
+		d.logger.Error("Failed to ensure associated bonding curve initialization",
+			zap.Error(err))
+		return fmt.Errorf("failed to initialize required accounts: %w", err)
+	}
+
+	// Ensure both ATAs exist first
+	if err := ensureUserATA(ctx, d.client, d.wallet, d.config.Mint, d.logger); err != nil {
+		return fmt.Errorf("failed to ensure user token account: %w", err)
+	}
+
+	if err := ensureBondingCurveATA(ctx, d.client, d.wallet, d.config.Mint, d.config.BondingCurve, d.logger); err != nil {
+		return fmt.Errorf("failed to ensure bonding curve token account: %w", err)
+	}
+
+	// Prepare instructions for transaction - only after ATAs are confirmed
+	prepInstructions := []solana.Instruction{}
+
+	// Build buy instruction only once
 	buyIx, err := BuildBuyTokenInstruction(buyAccounts, d.wallet, amount, maxSolCost)
 	if err != nil {
 		return fmt.Errorf("failed to build buy instruction: %w", err)
 	}
 
-	// Send transaction with the instruction
-	txSig, err := CreateAndSendTransaction(ctx, d.client, d.wallet, []solana.Instruction{buyIx}, d.logger)
+	// Add buy instruction to the prepared instructions (only once)
+	prepInstructions = append(prepInstructions, buyIx)
 
-	// Если мы получаем ошибку, проверяем ее тип
+	// Send transaction with all instructions
+	d.logger.Debug("Sending buy transaction",
+		zap.Uint64("amount", amount),
+		zap.Uint64("max_sol_cost", maxSolCost))
+
+	txSig, err := CreateAndSendTransaction(ctx, d.client, d.wallet, prepInstructions, d.logger)
 	if err != nil {
-		// Анализируем ошибку
+		// Analyze the error
 		analysis := d.errorAnalyzer.AnalyzeRPCError(err)
+		d.logger.Debug("Transaction error analysis", zap.Any("analysis", analysis))
 
-		// Если это ошибка неинициализированного аккаунта
+		// If it's an uninitialized account error
 		if isAccountNotInitializedError(err, analysis) {
 			d.logger.Warn("Account initialization error detected. Trying to verify and update accounts...")
 
-			// Проверяем аккаунты снова
+			// Verify accounts again
 			verifyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
 
@@ -279,16 +372,24 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error
 				return fmt.Errorf("account verification failed after error: %w", verifyErr)
 			}
 
-			// Пробуем снова с обновленной конфигурацией
+			// Try again with updated configuration
 			d.logger.Info("Retrying snipe with updated account configuration")
 			return d.ExecuteSnipe(ctx, amount, maxSolCost)
 		}
 
-		// Для других типов ошибок просто возвращаем ошибку
+		// Log specific error details to help with debugging
+		d.logger.Error("Buy transaction failed",
+			zap.Error(err),
+			zap.Any("error_analysis", analysis),
+			zap.String("discriminator_version", DiscriminatorVersion))
+
+		// For other types of errors just return the error
 		return fmt.Errorf("failed to send Pump.fun snipe transaction: %w", err)
 	}
 
-	d.logger.Info("Pump.fun snipe transaction sent", zap.String("tx", txSig.String()))
+	d.logger.Info("Pump.fun snipe transaction sent successfully",
+		zap.String("tx", txSig.String()),
+		zap.Uint64("amount", amount))
 
 	go d.monitor.Start(ctx)
 	go d.events.Start(ctx)
@@ -303,6 +404,27 @@ func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64) erro
 		return fmt.Errorf("account verification failed before execution: %w", err)
 	}
 
+	// Check if fee recipient is set, if not, try to fetch it from global account
+	if d.config.FeeRecipient.IsZero() {
+		d.logger.Warn("Fee recipient not set, attempting to fetch from global account")
+		fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+
+		globalAccount, err := FetchGlobalAccount(fetchCtx, d.client, d.config.Global, d.logger)
+		if err != nil {
+			d.logger.Error("Failed to fetch fee recipient from global account", zap.Error(err))
+			return fmt.Errorf("fee recipient not set and failed to fetch global account: %w", err)
+		}
+
+		// Update fee recipient from global account data
+		d.config.UpdateFeeRecipient(globalAccount.FeeRecipient, d.logger)
+
+		// Check if we now have a valid fee recipient
+		if d.config.FeeRecipient.IsZero() {
+			return fmt.Errorf("fee recipient is not available, cannot execute sell")
+		}
+	}
+
 	if !d.config.AllowSellBeforeFull {
 		return fmt.Errorf("selling not allowed before 100%% bonding curve")
 	}
@@ -310,7 +432,9 @@ func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64) erro
 	d.logger.Info("Executing Pump.fun sell",
 		zap.Uint64("amount", amount),
 		zap.Uint64("min_sol_output", minSolOutput),
-		zap.String("discriminator_version", DiscriminatorVersion))
+		zap.String("discriminator_version", DiscriminatorVersion),
+		zap.String("fee_recipient", d.config.FeeRecipient.String()),
+		zap.String("event_authority", d.config.EventAuthority.String()))
 
 	// Setup accounts for sell instruction
 	sellAccounts := SellInstructionAccounts{
@@ -324,6 +448,17 @@ func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64) erro
 		Logger:                 d.logger,
 	}
 
+	// Validate key accounts before proceeding
+	if sellAccounts.Global.IsZero() {
+		return fmt.Errorf("global account address is zero")
+	}
+	if sellAccounts.FeeRecipient.IsZero() {
+		return fmt.Errorf("fee recipient address is zero")
+	}
+	if sellAccounts.EventAuthority.IsZero() {
+		return fmt.Errorf("event authority address is zero")
+	}
+
 	// Try to build sell instruction with current discriminator version
 	sellIx, err := BuildSellTokenInstruction(sellAccounts, d.wallet, amount, minSolOutput)
 	if err != nil {
@@ -331,18 +466,23 @@ func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64) erro
 	}
 
 	// Send transaction with the instruction
+	d.logger.Debug("Sending sell transaction",
+		zap.Uint64("amount", amount),
+		zap.Uint64("min_sol_output", minSolOutput))
+
 	txSig, err := CreateAndSendTransaction(ctx, d.client, d.wallet, []solana.Instruction{sellIx}, d.logger)
 
-	// Если мы получаем ошибку, проверяем ее тип
+	// If we get an error, check its type
 	if err != nil {
-		// Анализируем ошибку
+		// Analyze the error
 		analysis := d.errorAnalyzer.AnalyzeRPCError(err)
+		d.logger.Debug("Transaction error analysis", zap.Any("analysis", analysis))
 
-		// Если это ошибка неинициализированного аккаунта
+		// If it's an uninitialized account error
 		if isAccountNotInitializedError(err, analysis) {
 			d.logger.Warn("Account initialization error detected. Trying to verify and update accounts...")
 
-			// Проверяем аккаунты снова
+			// Verify accounts again
 			verifyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
 
@@ -352,16 +492,26 @@ func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64) erro
 				return fmt.Errorf("account verification failed after error: %w", verifyErr)
 			}
 
-			// Пробуем снова с обновленной конфигурацией
+			// Try again with updated configuration
 			d.logger.Info("Retrying sell with updated account configuration")
 			return d.ExecuteSell(ctx, amount, minSolOutput)
 		}
 
-		// Для других типов ошибок просто возвращаем ошибку
+		// Log specific error details to help with debugging
+		d.logger.Error("Sell transaction failed",
+			zap.Error(err),
+			zap.Any("error_analysis", analysis),
+			zap.String("discriminator_version", DiscriminatorVersion))
+
+		// For other types of errors just return the error
 		return fmt.Errorf("failed to send Pump.fun sell transaction: %w", err)
 	}
 
-	d.logger.Info("Pump.fun sell transaction sent", zap.String("tx", txSig.String()))
+	d.logger.Info("Pump.fun sell transaction sent successfully",
+		zap.String("tx", txSig.String()),
+		zap.Uint64("amount", amount),
+		zap.Uint64("min_sol_output", minSolOutput))
+
 	return nil
 }
 
@@ -393,111 +543,206 @@ func (d *DEX) CheckForGraduation(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
-// isFallbackNotFoundError checks if the error is a fallback not found error
-func isFallbackNotFoundError(errorAnalyzer *solbc.ErrorAnalyzer, err error) bool {
-	if err == nil {
-		return false
+// ensureBondingCurveATA ensures the bonding curve has an associated token account for the specified mint
+func ensureBondingCurveATA(
+	ctx context.Context,
+	client *solbc.Client,
+	wallet *wallet.Wallet,
+	mint solana.PublicKey,
+	bondingCurve solana.PublicKey,
+	logger *zap.Logger,
+) error {
+	// Get bonding curve ATA address
+	// NOTE: Using the signature that matches your codebase
+	bondingCurveATA, err := getAssociatedTokenAddress(mint, bondingCurve)
+	if err != nil {
+		return fmt.Errorf("failed to get bonding curve ATA address: %w", err)
 	}
 
-	// Analyze the error
-	analysis := errorAnalyzer.AnalyzeRPCError(err)
-
-	// Check for Anchor error of type InstructionFallbackNotFound
-	if anchorErr, ok := analysis["anchor_error"].(solbc.AnchorError); ok {
-		return anchorErr.Code == 101 && anchorErr.Name == "InstructionFallbackNotFound"
+	// Check if account exists
+	exists, err := accountExists(ctx, client, bondingCurveATA)
+	if err != nil {
+		return fmt.Errorf("failed to check bonding curve ATA existence: %w", err)
 	}
 
-	// For backward compatibility, check error message
-	return strings.Contains(fmt.Sprint(err), "InstructionFallbackNotFound")
+	// If account already exists, nothing to do
+	if exists {
+		logger.Debug("Bonding curve ATA already exists",
+			zap.String("address", bondingCurveATA.String()),
+			zap.String("mint", mint.String()),
+			zap.String("owner", bondingCurve.String()))
+		return nil
+	}
+
+	// Create bonding curve ATA
+	logger.Info("Creating bonding curve ATA",
+		zap.String("address", bondingCurveATA.String()),
+		zap.String("mint", mint.String()),
+		zap.String("owner", bondingCurve.String()))
+
+	createTx, err := createAssociatedTokenAccount(
+		ctx,
+		client,
+		wallet,
+		mint,
+		bondingCurve,
+		logger,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to prepare bonding curve ATA creation: %w", err)
+	}
+
+	if createTx != nil {
+		// Send transaction
+		sig, err := client.SendTransaction(ctx, createTx)
+		if err != nil {
+			return fmt.Errorf("failed to create bonding curve ATA: %w", err)
+		}
+
+		logger.Info("Bonding curve ATA created successfully",
+			zap.String("signature", sig.String()))
+
+		// Wait briefly for confirmation
+		time.Sleep(2 * time.Second)
+	}
+
+	return nil
 }
 
-// tryDiscriminatorDiscovery tries various discriminator formats to find the right one
-func tryDiscriminatorDiscovery(ctx context.Context, client *solbc.Client, w *wallet.Wallet, logger *zap.Logger, config *Config, amount, maxSolCost uint64) error {
-	logger.Info("Starting discriminator discovery")
-
-	// Add well-known method name candidates to try
-	methodNamesToTry := []string{
-		"buy", "buy_tokens", "buyTokens", "purchase", "swap", "snipe",
-		"global:buy", "global:buy_tokens", "global:purchase", "global:swap",
+// ensureUserATA ensures the user has an associated token account for the specified mint
+func ensureUserATA(
+	ctx context.Context,
+	client *solbc.Client,
+	wallet *wallet.Wallet,
+	mint solana.PublicKey,
+	logger *zap.Logger,
+) error {
+	// Get user ATA address
+	userATA, err := wallet.GetATA(mint)
+	if err != nil {
+		return fmt.Errorf("failed to get user ATA address: %w", err)
 	}
 
-	for _, methodName := range methodNamesToTry {
-		// Calculate discriminator for this method name
-		discriminator := calculateMethodDiscriminator(methodName)
+	// Check if account exists
+	exists, err := accountExists(ctx, client, userATA)
+	if err != nil {
+		return fmt.Errorf("failed to check user ATA existence: %w", err)
+	}
 
-		logger.Debug("Trying method discriminator",
-			zap.String("method", methodName),
-			zap.String("discriminator", fmt.Sprintf("%x", discriminator)))
+	// If account already exists, nothing to do
+	if exists {
+		logger.Debug("User ATA already exists", zap.String("address", userATA.String()))
+		return nil
+	}
 
-		// Get user's associated token account
-		associatedUser, err := w.GetATA(config.Mint)
+	// Create user ATA
+	logger.Info("Creating user ATA", zap.String("address", userATA.String()))
+	createTx, err := createAssociatedTokenAccount(
+		ctx,
+		client,
+		wallet,
+		mint,
+		wallet.PublicKey,
+		logger,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to prepare user ATA creation: %w", err)
+	}
+
+	if createTx != nil {
+		// Send transaction
+		sig, err := client.SendTransaction(ctx, createTx)
 		if err != nil {
-			logger.Error("Failed to get ATA during discovery", zap.Error(err))
-			continue
+			return fmt.Errorf("failed to create user ATA: %w", err)
 		}
 
-		// Create custom data for this method
-		data := make([]byte, len(discriminator))
-		copy(data, discriminator)
-
-		// Add amount
-		amountBytes := make([]byte, 8)
-		binary.LittleEndian.PutUint64(amountBytes, amount)
-		data = append(data, amountBytes...)
-
-		// Add max SOL cost
-		maxSolBytes := make([]byte, 8)
-		binary.LittleEndian.PutUint64(maxSolBytes, maxSolCost)
-		data = append(data, maxSolBytes...)
-
-		// Create account meta list (same as in BuildBuyTokenInstruction)
-		insAccounts := []*solana.AccountMeta{
-			{PublicKey: config.Global, IsSigner: false, IsWritable: false},
-			{PublicKey: config.FeeRecipient, IsSigner: false, IsWritable: true},
-			{PublicKey: config.Mint, IsSigner: false, IsWritable: false},
-			{PublicKey: config.BondingCurve, IsSigner: false, IsWritable: true},
-			{PublicKey: config.AssociatedBondingCurve, IsSigner: false, IsWritable: true},
-			{PublicKey: associatedUser, IsSigner: false, IsWritable: true},
-			{PublicKey: w.PublicKey, IsSigner: true, IsWritable: true},
-			{PublicKey: solana.SystemProgramID, IsSigner: false, IsWritable: false},
-			{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
-			{PublicKey: SysvarRentPubkey, IsSigner: false, IsWritable: false},
-			{PublicKey: config.EventAuthority, IsSigner: false, IsWritable: false},
-			{PublicKey: config.ContractAddress, IsSigner: false, IsWritable: false},
-		}
-
-		// Create instruction
-		customIx := solana.NewInstruction(config.ContractAddress, insAccounts, data)
-
-		// Try to send transaction
-		txSig, err := CreateAndSendTransaction(ctx, client, w, []solana.Instruction{customIx}, logger)
-		if err == nil {
-			// Success! Update the known discriminator for future use
-			logger.Info("Discriminator discovery successful!",
-				zap.String("method", methodName),
-				zap.String("tx", txSig.String()))
-
-			// Update the discriminator map
-			BuyDiscriminators["discovered"] = discriminator
-			DiscriminatorVersion = "discovered"
-
-			// Log the result for future reference
-			logger.Info("✅ SUCCESS: Add this discriminator to your code",
-				zap.String("method", methodName),
-				zap.String("hex", fmt.Sprintf("%x", discriminator)))
-
-			return nil
-		}
-
-		// If not a fallback error, this might be a different error (e.g. account error)
-		errorAnalyzer := solbc.NewErrorAnalyzer(logger)
-		if !isFallbackNotFoundError(errorAnalyzer, err) {
-			logger.Warn("Discovery attempt failed with non-fallback error",
-				zap.String("method", methodName),
-				zap.Error(err))
-		}
+		logger.Info("User ATA created successfully", zap.String("signature", sig.String()))
+		// Wait briefly for confirmation
+		time.Sleep(2 * time.Second)
 	}
 
-	logger.Error("All discriminator discovery attempts failed")
-	return fmt.Errorf("discriminator discovery failed - no matching method found")
+	return nil
+}
+
+// ensureAssociatedBondingCurve ensures that the associated bonding curve account
+// exists and is properly initialized before executing operations
+func (d *DEX) ensureAssociatedBondingCurve(ctx context.Context) error {
+	d.logger.Info("Ensuring associated bonding curve is initialized",
+		zap.String("address", d.config.AssociatedBondingCurve.String()))
+
+	// Step 1: Check if account exists
+	accInfo, err := d.client.GetAccountInfo(ctx, d.config.AssociatedBondingCurve)
+	if err == nil && accInfo.Value != nil && !accInfo.Value.Owner.IsZero() {
+		d.logger.Info("Associated bonding curve already exists and is initialized",
+			zap.String("owner", accInfo.Value.Owner.String()))
+		return nil
+	}
+
+	// Step 2: Create initialization instruction with correct discriminator
+	d.logger.Info("Creating initialization instruction for associated bonding curve")
+
+	// The discriminator for "create" instruction from PumpFun SDK
+	// Using values from the SDK (./src/IDL/pump-fun.json)
+	discriminator := []byte{24, 30, 200, 40, 5, 28, 7, 119}
+
+	// Create an empty data buffer with the discriminator
+	instructionData := discriminator
+
+	// Get needed accounts from config with correct writable/signer flags
+	// These must match the accounts expected by the create instruction
+	initializeAccounts := []*solana.AccountMeta{
+		// This is a simplified list - adjust based on your contract's requirements
+		{PublicKey: d.config.Global, IsSigner: false, IsWritable: false},
+		{PublicKey: d.config.FeeRecipient, IsSigner: false, IsWritable: false},
+		{PublicKey: d.config.Mint, IsSigner: false, IsWritable: false},
+		{PublicKey: d.config.BondingCurve, IsSigner: false, IsWritable: true},
+		{PublicKey: d.config.AssociatedBondingCurve, IsSigner: false, IsWritable: true},
+		{PublicKey: d.wallet.PublicKey, IsSigner: true, IsWritable: true},
+		{PublicKey: d.config.EventAuthority, IsSigner: false, IsWritable: false},
+		{PublicKey: solana.SystemProgramID, IsSigner: false, IsWritable: false},
+		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
+		{PublicKey: AssociatedTokenProgramID, IsSigner: false, IsWritable: false},
+		{PublicKey: solana.SysVarRentPubkey, IsSigner: false, IsWritable: false},
+		{PublicKey: d.config.ContractAddress, IsSigner: false, IsWritable: false},
+	}
+
+	// Create instruction with proper discriminator
+	initIx := solana.NewInstruction(
+		d.config.ContractAddress,
+		initializeAccounts,
+		instructionData,
+	)
+
+	// Add debug logging for the instruction
+	d.logger.Debug("Sending instruction to initialize associated bonding curve",
+		zap.Binary("instruction_data", instructionData),
+		zap.Int("num_accounts", len(initializeAccounts)))
+
+	// Create and send transaction
+	sig, err := CreateAndSendTransaction(ctx, d.client, d.wallet, []solana.Instruction{initIx}, d.logger)
+	if err != nil {
+		d.logger.Error("Failed to send transaction",
+			zap.Error(err),
+			zap.Binary("instruction_data", instructionData))
+		return fmt.Errorf("failed to initialize associated bonding curve: %w", err)
+	}
+
+	d.logger.Info("Associated bonding curve initialization transaction sent",
+		zap.String("signature", sig.String()))
+
+	// Wait briefly for confirmation
+	time.Sleep(3 * time.Second)
+
+	// Verify the account was created successfully
+	accInfo, err = d.client.GetAccountInfo(ctx, d.config.AssociatedBondingCurve)
+	if err != nil || accInfo.Value == nil {
+		return fmt.Errorf("failed to verify associated bonding curve initialization: %w", err)
+	}
+
+	d.logger.Info("Associated bonding curve initialized successfully",
+		zap.String("owner", accInfo.Value.Owner.String()))
+
+	return nil
 }

@@ -4,10 +4,12 @@
 package pumpfun
 
 import (
-	"crypto/sha256"
+	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
+	"strings"
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
@@ -18,7 +20,8 @@ import (
 var (
 	SysvarRentPubkey         = solana.MustPublicKeyFromBase58("SysvarRent111111111111111111111111111111111")
 	AssociatedTokenProgramID = solana.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
-	EventAuthorityAddress    = solana.MustPublicKeyFromBase58("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")
+	// Update to correct value from SDK
+	EventAuthorityAddress = solana.MustPublicKeyFromBase58("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")
 
 	// Version control for instruction discriminators
 	DiscriminatorVersion = "v3" // Control which version to use
@@ -40,14 +43,6 @@ var (
 		"v3": {0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad}, // Correct full discriminator from SDK
 	}
 )
-
-// calculateMethodDiscriminator generates Anchor-compatible method discriminator
-// This follows Anchor's convention: first 8 bytes of sha256("method_name")
-// Note: Kept for debugging purposes, but we're using hardcoded values from SDK
-func calculateMethodDiscriminator(methodName string) []byte {
-	hash := sha256.Sum256([]byte(methodName))
-	return hash[:8]
-}
 
 // BuyInstructionAccounts holds account references for buy operation
 type BuyInstructionAccounts struct {
@@ -237,58 +232,112 @@ func BuildSellTokenInstruction(
 	return solana.NewInstruction(accounts.Program, insAccounts, data), nil
 }
 
-// TryBuildBuyTokenInstructions builds buy instructions with all available discriminator versions
-// This helps to debug which discriminator version works with the program
-func TryBuildBuyTokenInstructions(
-	accounts BuyInstructionAccounts,
-	userWallet *wallet.Wallet,
-	amount, maxSolCost uint64,
-) ([]solana.Instruction, error) {
-	var instructions []solana.Instruction
-
-	// Try all available discriminator versions
-	for version := range BuyDiscriminators {
-		originalVersion := DiscriminatorVersion
-		DiscriminatorVersion = version
-
-		instruction, err := BuildBuyTokenInstruction(accounts, userWallet, amount, maxSolCost)
-		if err != nil {
-			// Restore original version and return error
-			DiscriminatorVersion = originalVersion
-			return nil, fmt.Errorf("failed to build buy instruction with version %s: %w", version, err)
-		}
-
-		instructions = append(instructions, instruction)
+// createAssociatedTokenAccount creates the associated token account if it doesn't exist
+func createAssociatedTokenAccount(
+	ctx context.Context,
+	client *solbc.Client,
+	payer *wallet.Wallet,
+	mint solana.PublicKey,
+	owner solana.PublicKey,
+	logger *zap.Logger,
+) (*solana.Transaction, error) {
+	// Get the associated token address
+	associatedAddress, err := getAssociatedTokenAddress(mint, owner)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get associated token address: %w", err)
 	}
 
-	// Restore original version
-	DiscriminatorVersion = "v3"
+	// Check if the account already exists
+	exists, err := accountExists(ctx, client, associatedAddress)
+	if err != nil {
+		return nil, err
+	}
 
-	return instructions, nil
+	// If account already exists, return nil (no need to create)
+	if exists {
+		logger.Debug("Associated token account already exists",
+			zap.String("address", associatedAddress.String()),
+			zap.String("mint", mint.String()),
+			zap.String("owner", owner.String()))
+		return nil, nil
+	}
+
+	// If we get here, we need to create the account
+	logger.Info("Creating associated token account",
+		zap.String("address", associatedAddress.String()),
+		zap.String("mint", mint.String()),
+		zap.String("owner", owner.String()))
+
+	// Get recent blockhash
+	blockhash, err := client.GetRecentBlockhash(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get recent blockhash: %w", err)
+	}
+
+	// Create instruction to create associated token account
+	createIx := createAssociatedTokenAccountInstruction(payer.PublicKey, associatedAddress, owner, mint)
+
+	// Create transaction
+	tx, err := solana.NewTransaction(
+		[]solana.Instruction{createIx},
+		blockhash,
+		solana.TransactionPayer(payer.PublicKey),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transaction: %w", err)
+	}
+
+	return tx, nil
 }
 
-// ValidateDiscriminators verifies if the hardcoded discriminators match expected Anchor calculations
-// This is useful for debugging only
-func ValidateDiscriminators() bool {
-	// Calculate expected discriminators
-	expectedBuy := calculateMethodDiscriminator("buy")
-	expectedSell := calculateMethodDiscriminator("sell")
+// Helper functions
 
-	// Compare with hardcoded values
-	buyMatches := hex.EncodeToString(BuyDiscriminators["v3"]) == hex.EncodeToString(expectedBuy)
-	sellMatches := hex.EncodeToString(SellDiscriminators["v3"]) == hex.EncodeToString(expectedSell)
+func getAssociatedTokenAddress(mint, owner solana.PublicKey) (solana.PublicKey, error) {
+	// Find address using PDA derivation
+	address, _, err := solana.FindProgramAddress(
+		[][]byte{
+			owner.Bytes(),
+			solana.TokenProgramID.Bytes(),
+			mint.Bytes(),
+		},
+		AssociatedTokenProgramID,
+	)
+	if err != nil {
+		return solana.PublicKey{}, err
+	}
+	return address, nil
+}
 
-	if !buyMatches {
-		fmt.Printf("Buy discriminator mismatch: hardcoded=%s, calculated=%s\n",
-			hex.EncodeToString(BuyDiscriminators["v3"]),
-			hex.EncodeToString(expectedBuy))
+func accountExists(ctx context.Context, client *solbc.Client, address solana.PublicKey) (bool, error) {
+	// Try to get account info
+	accountInfo, err := client.GetAccountInfo(ctx, address)
+	if err != nil {
+		// Check if error is "not found" - account doesn't exist yet
+		if strings.Contains(err.Error(), "not found") {
+			return false, nil
+		}
+		// It's another error
+		return false, fmt.Errorf("failed to check account existence: %w", err)
 	}
 
-	if !sellMatches {
-		fmt.Printf("Sell discriminator mismatch: hardcoded=%s, calculated=%s\n",
-			hex.EncodeToString(SellDiscriminators["v3"]),
-			hex.EncodeToString(expectedSell))
+	// Check if account exists and has value
+	return accountInfo != nil && accountInfo.Value != nil, nil
+}
+
+func createAssociatedTokenAccountInstruction(payer, associatedAddress, owner, mint solana.PublicKey) solana.Instruction {
+	keys := []*solana.AccountMeta{
+		{PublicKey: payer, IsSigner: true, IsWritable: true},
+		{PublicKey: associatedAddress, IsSigner: false, IsWritable: true},
+		{PublicKey: owner, IsSigner: false, IsWritable: false},
+		{PublicKey: mint, IsSigner: false, IsWritable: false},
+		{PublicKey: solana.SystemProgramID, IsSigner: false, IsWritable: false},
+		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
+		{PublicKey: SysvarRentPubkey, IsSigner: false, IsWritable: false},
 	}
 
-	return buyMatches && sellMatches
+	return solana.NewInstruction(
+		AssociatedTokenProgramID,
+		keys,
+		[]byte{}, // No data for create instruction
+	)
 }

@@ -13,10 +13,11 @@ import (
 
 // Known PumpFun protocol addresses (constants)
 const (
-	PumpFunProgramID  = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
-	PumpFunGlobalAcc  = "GLoB9vUEV7KgM8K9GH2HPDdUVW7Z5KjdwV9qeJuP5vMK"
-	PumpFunFeeAccount = "GpuQAWofnm26GqJYJ5oMxt1G9nGP3wbpC7pJx8Ep9nYQ"
-	PumpFunEventAuth  = "EventjEUSUW94QwJdGs7pPmxQEWzVHqRwjGZB5h9XxH3"
+	// Program ID - correct from SDK validation
+	PumpFunProgramID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+
+	// Event authority from SDK - CORRECTED
+	PumpFunEventAuth = "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1"
 )
 
 // safePublicKeyFromBase58 validates and converts a base58 address string to a solana.PublicKey
@@ -31,8 +32,9 @@ func safePublicKeyFromBase58(address string) (solana.PublicKey, error) {
 
 // PDA seeds used for account derivation
 var (
-	bondingCurveSeed    = []byte("bonding-curve")
-	associatedCurveSeed = []byte("associated-curve")
+	globalSeed        = []byte("global")
+	bondingCurveSeed  = []byte("bonding-curve")
+	mintAuthoritySeed = []byte("mint-authority")
 )
 
 // Config holds all necessary PumpFun protocol parameters and addresses
@@ -76,32 +78,28 @@ func (cfg *Config) SetupForToken(tokenMint string, logger *zap.Logger) error {
 	logger.Debug("Debugging addresses before processing",
 		zap.String("PumpFunProgramID", PumpFunProgramID),
 		zap.Int("PumpFunProgramID_length", len(PumpFunProgramID)),
-		zap.String("PumpFunGlobalAcc", PumpFunGlobalAcc),
-		zap.String("PumpFunFeeAccount", PumpFunFeeAccount),
 		zap.String("PumpFunEventAuth", PumpFunEventAuth),
 		zap.String("tokenMint", tokenMint))
 
 	// Set program ID
-	programID := PumpFunProgramID
-	cfg.ContractAddress, err = safePublicKeyFromBase58(programID)
+	cfg.ContractAddress, err = safePublicKeyFromBase58(PumpFunProgramID)
 	if err != nil {
-		logger.Error("Invalid program ID", zap.String("address", programID), zap.Error(err))
+		logger.Error("Invalid program ID", zap.String("address", PumpFunProgramID), zap.Error(err))
 		return fmt.Errorf("invalid program ID: %w", err)
 	}
 
-	// Set global account address
-	cfg.Global, err = safePublicKeyFromBase58(PumpFunGlobalAcc)
+	// Derive Global Account PDA programmatically
+	cfg.Global, _, err = solana.FindProgramAddress(
+		[][]byte{globalSeed},
+		cfg.ContractAddress,
+	)
 	if err != nil {
-		logger.Error("Invalid global account", zap.String("address", PumpFunGlobalAcc), zap.Error(err))
-		return fmt.Errorf("invalid global account: %w", err)
+		logger.Error("Failed to derive global account PDA", zap.Error(err))
+		return fmt.Errorf("failed to derive global account: %w", err)
 	}
 
-	// Set fee recipient address
-	cfg.FeeRecipient, err = safePublicKeyFromBase58(PumpFunFeeAccount)
-	if err != nil {
-		logger.Error("Invalid fee account", zap.String("address", PumpFunFeeAccount), zap.Error(err))
-		return fmt.Errorf("invalid fee account: %w", err)
-	}
+	logger.Info("Derived global account address",
+		zap.String("global_account", cfg.Global.String()))
 
 	// Set event authority address
 	cfg.EventAuthority, err = safePublicKeyFromBase58(PumpFunEventAuth)
@@ -122,16 +120,35 @@ func (cfg *Config) SetupForToken(tokenMint string, logger *zap.Logger) error {
 		return fmt.Errorf("invalid token mint address: %w", err)
 	}
 
-	// Calculate bonding curve addresses
+	// Calculate bonding curve addresses using helper functions
 	cfg.BondingCurve = deriveBondingCurveAddress(cfg.Mint, cfg.ContractAddress)
+
+	// FIXED: Calculate associated bonding curve
 	cfg.AssociatedBondingCurve = deriveAssociatedCurveAddress(cfg.BondingCurve, cfg.ContractAddress)
 
+	// We will set FeeRecipient later after fetching global account data
+	// It should be obtained from global account data
+
 	logger.Info("PumpFun configuration prepared",
+		zap.String("program_id", cfg.ContractAddress.String()),
+		zap.String("global_account", cfg.Global.String()),
+		zap.String("event_authority", cfg.EventAuthority.String()),
 		zap.String("token_mint", cfg.Mint.String()),
 		zap.String("bonding_curve", cfg.BondingCurve.String()),
-		zap.String("associated_curve", cfg.AssociatedBondingCurve.String()))
+		zap.String("associated_bonding_curve", cfg.AssociatedBondingCurve.String()))
 
 	return nil
+}
+
+// UpdateFeeRecipient sets the fee recipient address after fetching it from global account data
+func (cfg *Config) UpdateFeeRecipient(feeRecipient solana.PublicKey, logger *zap.Logger) {
+	if feeRecipient.IsZero() {
+		logger.Warn("Attempted to set zero fee recipient address")
+		return
+	}
+
+	cfg.FeeRecipient = feeRecipient
+	logger.Info("Updated fee recipient address", zap.String("fee_recipient", cfg.FeeRecipient.String()))
 }
 
 // deriveBondingCurveAddress calculates the PDA for a token's bonding curve
@@ -144,7 +161,12 @@ func deriveBondingCurveAddress(tokenMint, programID solana.PublicKey) solana.Pub
 }
 
 // deriveAssociatedCurveAddress calculates the PDA for the associated bonding curve
+// Fixed to properly derive the PDA instead of returning empty key
 func deriveAssociatedCurveAddress(bondingCurve, programID solana.PublicKey) solana.PublicKey {
+	// In Pump.fun, the associated bonding curve is derived using the
+	// bonding curve address as seed with a specific prefix
+	associatedCurveSeed := []byte("associated-curve")
+
 	address, _, _ := solana.FindProgramAddress(
 		[][]byte{associatedCurveSeed, bondingCurve.Bytes()},
 		programID,
