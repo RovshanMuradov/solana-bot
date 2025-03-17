@@ -97,7 +97,7 @@ func (m *BondingCurveMonitor) queryBondingCurve(ctx context.Context) (*BondingCu
 		return nil, fmt.Errorf("bonding curve account not found at %s", bondingCurveAddr.String())
 	}
 	data := accountInfo.Value.Data.GetBinary()
-	m.logger.Debug("Raw bonding curve data", zap.ByteString("data", data))
+	m.logger.Debug("Bonding curve data received", zap.Int("data_length", len(data)))
 
 	if len(data) < 24 {
 		return nil, fmt.Errorf("insufficient bonding curve data length: %d", len(data))

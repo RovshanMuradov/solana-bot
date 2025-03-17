@@ -139,11 +139,10 @@ func BuildBuyTokenInstruction(
 
 	// Log full instruction data
 	if accounts.Logger != nil {
-		accounts.Logger.Debug("Buy instruction data",
-			zap.String("hex", hex.EncodeToString(data)),
-			zap.Int("dataLength", len(data)),
+		accounts.Logger.Debug("Buy instruction prepared",
 			zap.Uint64("amount", amount),
 			zap.Uint64("maxSolCost", maxSolCost))
+
 	}
 
 	// Create and return the instruction

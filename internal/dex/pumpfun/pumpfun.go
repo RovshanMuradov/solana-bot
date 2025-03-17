@@ -7,6 +7,7 @@ package pumpfun
 import (
 	"context"
 	"fmt"
+	"github.com/gagliardetto/solana-go/rpc"
 	"strings"
 	"time"
 
@@ -89,18 +90,9 @@ func NewDEX(client *solbc.Client, w *wallet.Wallet, logger *zap.Logger, config *
 		config.UpdateFeeRecipient(globalAccount.FeeRecipient, logger)
 	}
 
-	// Verify critical accounts before returning
-	if err := dex.VerifyAccounts(context.Background()); err != nil {
-		logger.Warn("Account verification failed during initialization",
-			zap.Error(err),
-			zap.String("global_account", config.Global.String()))
-		// We'll continue anyway but with a warning
-	}
-
 	return dex, nil
 }
 
-// VerifyAccounts checks if all necessary accounts are properly initialized
 // VerifyAccounts checks if all necessary accounts are properly initialized
 func (d *DEX) VerifyAccounts(ctx context.Context) error {
 	d.logger.Debug("Verifying critical accounts")
@@ -116,24 +108,24 @@ func (d *DEX) VerifyAccounts(ctx context.Context) error {
 			zap.String("error", state.Error),
 			zap.Bool("global_initialized", state.GlobalInitialized))
 
-		// Try to find an alternative global account if current one is not initialized
-		if !state.GlobalInitialized {
-			d.logger.Info("Attempting to find alternative global account")
-			alternativeAccount, err := d.stateChecker.FindAlternativeGlobalAccount(ctx)
-			if err == nil && alternativeAccount != "" {
-				d.logger.Info("Found alternative global account",
-					zap.String("current", d.config.Global.String()),
-					zap.String("alternative", alternativeAccount))
-
-				// Update the configuration with the new global account
-				alternativeGlobal, err := solana.PublicKeyFromBase58(alternativeAccount)
-				if err == nil {
-					d.config.Global = alternativeGlobal
-					d.logger.Info("Updated global account in configuration")
-					return nil
-				}
-			}
-		}
+		//// Try to find an alternative global account if current one is not initialized
+		//if !state.GlobalInitialized {
+		//	d.logger.Info("Attempting to find alternative global account")
+		//	alternativeAccount, err := d.stateChecker.FindAlternativeGlobalAccount(ctx)
+		//	if err == nil && alternativeAccount != "" {
+		//		d.logger.Info("Found alternative global account",
+		//			zap.String("current", d.config.Global.String()),
+		//			zap.String("alternative", alternativeAccount))
+		//
+		//		// Update the configuration with the new global account
+		//		alternativeGlobal, err := solana.PublicKeyFromBase58(alternativeAccount)
+		//		if err == nil {
+		//			d.config.Global = alternativeGlobal
+		//			d.logger.Info("Updated global account in configuration")
+		//			return nil
+		//		}
+		//	}
+		//}
 
 		return fmt.Errorf("program state not ready: %s", state.Error)
 	}
@@ -655,90 +647,149 @@ func ensureUserATA(
 		// Send transaction
 		sig, err := client.SendTransaction(ctx, createTx)
 		if err != nil {
-			return fmt.Errorf("failed to create user ATA: %w", err)
+			return fmt.Errorf("failed to create ATA: %w", err)
+		}
+		err = client.WaitForTransactionConfirmation(ctx, sig, rpc.CommitmentConfirmed)
+		if err != nil {
+			return fmt.Errorf("ATA confirmation failed: %w", err)
 		}
 
 		logger.Info("User ATA created successfully", zap.String("signature", sig.String()))
-		// Wait briefly for confirmation
-		time.Sleep(2 * time.Second)
 	}
 
 	return nil
 }
 
-// ensureAssociatedBondingCurve ensures that the associated bonding curve account
-// exists and is properly initialized before executing operations
+// ensureAssociatedBondingCurve ensures that the associated bonding curve account exists
 func (d *DEX) ensureAssociatedBondingCurve(ctx context.Context) error {
 	d.logger.Info("Ensuring associated bonding curve is initialized",
 		zap.String("address", d.config.AssociatedBondingCurve.String()))
 
-	// Step 1: Check if account exists
-	accInfo, err := d.client.GetAccountInfo(ctx, d.config.AssociatedBondingCurve)
+	// Define retry configuration
+	const maxRetries = 3
+	retryBackoff := []time.Duration{500 * time.Millisecond, 1 * time.Second, 2 * time.Second}
+
+	// Helper function to handle retryable operations
+	retryOp := func(operation string, fn func() error) error {
+		var err error
+		for i := 0; i < maxRetries; i++ {
+			if err = fn(); err == nil {
+				return nil
+			}
+
+			// Check if error is related to RPC limits
+			if strings.Contains(err.Error(), "exceeded limit") ||
+				strings.Contains(err.Error(), "rate limit") ||
+				strings.Contains(err.Error(), "timeout") {
+
+				d.logger.Warn("Retrying operation due to RPC limits",
+					zap.String("operation", operation),
+					zap.Error(err),
+					zap.Int("attempt", i+1),
+					zap.Duration("backoff", retryBackoff[i]))
+
+				select {
+				case <-time.After(retryBackoff[i]):
+					continue
+				case <-ctx.Done():
+					return fmt.Errorf("context canceled during %s: %w", operation, ctx.Err())
+				}
+			}
+
+			// Non-retryable error
+			return fmt.Errorf("%s failed: %w", operation, err)
+		}
+
+		// If we get here, we've exhausted all retries
+		return fmt.Errorf("%s failed after %d retries: %w", operation, maxRetries, err)
+	}
+
+	// Step 1: Check if account exists with retry mechanism
+	var accInfo *rpc.GetAccountInfoResult
+	err := retryOp("account check", func() error {
+		var opErr error
+		accInfo, opErr = d.client.GetAccountInfo(ctx, d.config.AssociatedBondingCurve)
+		return opErr
+	})
+
+	// If account exists and is initialized, we're done
 	if err == nil && accInfo.Value != nil && !accInfo.Value.Owner.IsZero() {
-		d.logger.Info("Associated bonding curve already exists and is initialized",
+		d.logger.Info("Associated bonding curve already exists",
 			zap.String("owner", accInfo.Value.Owner.String()))
 		return nil
 	}
 
-	// Step 2: Create initialization instruction with correct discriminator
-	d.logger.Info("Creating initialization instruction for associated bonding curve")
+	// Step 2: Create the associated token account
+	var createTx *solana.Transaction
+	err = retryOp("prepare transaction", func() error {
+		var opErr error
+		createTx, opErr = createAssociatedTokenAccount(
+			ctx,
+			d.client,
+			d.wallet,
+			d.config.Mint,
+			d.config.BondingCurve,
+			d.logger,
+		)
+		return opErr
+	})
 
-	// The discriminator for "create" instruction from PumpFun SDK
-	// Using values from the SDK (./src/IDL/pump-fun.json)
-	discriminator := []byte{24, 30, 200, 40, 5, 28, 7, 119}
-
-	// Create an empty data buffer with the discriminator
-	instructionData := discriminator
-
-	// Get needed accounts from config with correct writable/signer flags
-	// These must match the accounts expected by the create instruction
-	initializeAccounts := []*solana.AccountMeta{
-		// This is a simplified list - adjust based on your contract's requirements
-		{PublicKey: d.config.Global, IsSigner: false, IsWritable: false},
-		{PublicKey: d.config.FeeRecipient, IsSigner: false, IsWritable: false},
-		{PublicKey: d.config.Mint, IsSigner: false, IsWritable: false},
-		{PublicKey: d.config.BondingCurve, IsSigner: false, IsWritable: true},
-		{PublicKey: d.config.AssociatedBondingCurve, IsSigner: false, IsWritable: true},
-		{PublicKey: d.wallet.PublicKey, IsSigner: true, IsWritable: true},
-		{PublicKey: d.config.EventAuthority, IsSigner: false, IsWritable: false},
-		{PublicKey: solana.SystemProgramID, IsSigner: false, IsWritable: false},
-		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
-		{PublicKey: AssociatedTokenProgramID, IsSigner: false, IsWritable: false},
-		{PublicKey: solana.SysVarRentPubkey, IsSigner: false, IsWritable: false},
-		{PublicKey: d.config.ContractAddress, IsSigner: false, IsWritable: false},
-	}
-
-	// Create instruction with proper discriminator
-	initIx := solana.NewInstruction(
-		d.config.ContractAddress,
-		initializeAccounts,
-		instructionData,
-	)
-
-	// Add debug logging for the instruction
-	d.logger.Debug("Sending instruction to initialize associated bonding curve",
-		zap.Binary("instruction_data", instructionData),
-		zap.Int("num_accounts", len(initializeAccounts)))
-
-	// Create and send transaction
-	sig, err := CreateAndSendTransaction(ctx, d.client, d.wallet, []solana.Instruction{initIx}, d.logger)
 	if err != nil {
-		d.logger.Error("Failed to send transaction",
-			zap.Error(err),
-			zap.Binary("instruction_data", instructionData))
-		return fmt.Errorf("failed to initialize associated bonding curve: %w", err)
+		return fmt.Errorf("failed to prepare bonding curve creation: %w", err)
 	}
 
-	d.logger.Info("Associated bonding curve initialization transaction sent",
+	// If no transaction needed (already exists), we're done
+	if createTx == nil {
+		d.logger.Info("No transaction needed for associated bonding curve")
+		return nil
+	}
+
+	// Step 3: Send transaction with retry mechanism
+	var sig solana.Signature
+	err = retryOp("send transaction", func() error {
+		var opErr error
+		sig, opErr = d.client.SendTransaction(ctx, createTx)
+		return opErr
+	})
+
+	if err != nil {
+		return err
+	}
+
+	d.logger.Info("Associated bonding curve creation transaction sent",
 		zap.String("signature", sig.String()))
 
-	// Wait briefly for confirmation
-	time.Sleep(3 * time.Second)
+	// Step 4: Wait for confirmation using existing method with retry
+	err = retryOp("confirm transaction", func() error {
+		// Create a sub-context with timeout for the confirmation
+		confirmCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
 
-	// Verify the account was created successfully
-	accInfo, err = d.client.GetAccountInfo(ctx, d.config.AssociatedBondingCurve)
-	if err != nil || accInfo.Value == nil {
-		return fmt.Errorf("failed to verify associated bonding curve initialization: %w", err)
+		// Use the existing WaitForTransactionConfirmation method
+		return d.client.WaitForTransactionConfirmation(confirmCtx, sig, rpc.CommitmentFinalized)
+	})
+
+	if err != nil {
+		return err
+	}
+
+	// Step 5: Verify the account was created successfully with retry
+	err = retryOp("verify account", func() error {
+		result, opErr := d.client.GetAccountInfo(ctx, d.config.AssociatedBondingCurve)
+		if opErr != nil {
+			return opErr
+		}
+
+		if result.Value == nil || result.Value.Owner.IsZero() {
+			return fmt.Errorf("account verification failed: account not properly initialized")
+		}
+
+		accInfo = result // Update the outer accInfo for logging
+		return nil
+	})
+
+	if err != nil {
+		return err
 	}
 
 	d.logger.Info("Associated bonding curve initialized successfully",
