@@ -17,7 +17,7 @@ import (
 
 // BuildBuyTokenInstruction builds a buy instruction for Pump.fun protocol
 func BuildBuyTokenInstruction(
-	accounts BuyInstructionAccounts,
+	accounts InstructionAccounts,
 	userWallet *wallet.Wallet,
 	amount, maxSolCost uint64,
 ) (solana.Instruction, error) {
@@ -69,7 +69,7 @@ func BuildBuyTokenInstruction(
 
 // BuildSellTokenInstruction builds a sell instruction for Pump.fun protocol
 func BuildSellTokenInstruction(
-	accounts SellInstructionAccounts,
+	accounts InstructionAccounts,
 	userWallet *wallet.Wallet,
 	amount, minSolOutput uint64,
 ) (solana.Instruction, error) {

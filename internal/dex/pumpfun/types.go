@@ -19,12 +19,14 @@ type Token struct {
 	CreatedAt    int64
 }
 
-// BondingCurveInfo holds bonding curve state data.
+// BondingCurveInfo хранит расширенную информацию о состоянии bonding curve.
 type BondingCurveInfo struct {
-	Progress    float64
-	TotalSOL    float64
-	MarketCap   float64
-	LastUpdated time.Time
+	Address                solana.PublicKey // Адрес аккаунта bonding curve
+	AssociatedTokenAccount solana.PublicKey // Адрес ассоциированного токен-аккаунта
+	Progress               float64          // Процент заполнения кривой (0-100)
+	TotalSOL               float64          // Общее количество SOL в bonding curve
+	MarketCap              float64          // Рыночная капитализация в SOL
+	LastUpdated            time.Time        // Время последнего обновления
 }
 
 // GlobalAccount represents the structure of the PumpFun global account data
@@ -40,19 +42,8 @@ type GlobalAccount struct {
 	FeeBasisPoints              uint64
 }
 
-// BuyInstructionAccounts holds account references for buy operation
-type BuyInstructionAccounts struct {
-	Global                 solana.PublicKey
-	FeeRecipient           solana.PublicKey
-	Mint                   solana.PublicKey
-	BondingCurve           solana.PublicKey
-	AssociatedBondingCurve solana.PublicKey
-	EventAuthority         solana.PublicKey
-	Program                solana.PublicKey
-}
-
-// SellInstructionAccounts holds account references for sell operation
-type SellInstructionAccounts struct {
+// InstructionAccounts holds account references for all operations
+type InstructionAccounts struct {
 	Global                 solana.PublicKey
 	FeeRecipient           solana.PublicKey
 	Mint                   solana.PublicKey
@@ -78,5 +69,3 @@ type ProgramState struct {
 	TokenMint                  string `json:"token_mint"`
 	Error                      string `json:"error,omitempty"`
 }
-
-// Note: IsReady is implemented in checker.go

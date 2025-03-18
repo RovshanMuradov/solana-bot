@@ -200,7 +200,7 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error
 		zap.Uint64("max_sol_cost", maxSolCost))
 
 	// Setup accounts for buy instruction
-	buyAccounts := BuyInstructionAccounts{
+	buyAccounts := InstructionAccounts{
 		Global:                 d.config.Global,
 		FeeRecipient:           d.config.FeeRecipient,
 		Mint:                   d.config.Mint,
@@ -306,7 +306,7 @@ func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64) erro
 		zap.Uint64("min_sol_output", minSolOutput))
 
 	// Setup accounts for sell instruction
-	sellAccounts := SellInstructionAccounts{
+	sellAccounts := InstructionAccounts{
 		Global:                 d.config.Global,
 		FeeRecipient:           d.config.FeeRecipient,
 		Mint:                   d.config.Mint,

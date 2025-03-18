@@ -25,7 +25,6 @@ var (
 	bondingCurveSeed         = []byte("bonding-curve")
 	SysvarRentPubkey         = solana.MustPublicKeyFromBase58("SysvarRent111111111111111111111111111111111")
 	AssociatedTokenProgramID = solana.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
-	EventAuthorityAddress    = solana.MustPublicKeyFromBase58("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")
 
 	// Version control for instruction discriminators
 	DiscriminatorVersion = "v3" // Control which version to use
