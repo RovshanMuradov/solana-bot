@@ -63,7 +63,7 @@ func (d *pumpfunDEXAdapter) Execute(ctx context.Context, task *Task) error {
 		}
 
 		// Получаем конфигурацию и настраиваем для указанного токена
-		config := pumpfun.GetDefaultConfig(d.logger)
+		config := pumpfun.GetDefaultConfig()
 		if err := config.SetupForToken(tokenMint, d.logger); err != nil {
 			d.metrics.RecordTransaction(ctx, "error", d.GetName(), time.Since(start), false)
 			return fmt.Errorf("failed to setup token config: %w", err)

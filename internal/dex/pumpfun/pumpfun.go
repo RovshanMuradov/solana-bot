@@ -77,7 +77,10 @@ func NewDEX(client *solbc.Client, w *wallet.Wallet, logger *zap.Logger, config *
 	return dex, nil
 }
 
-// VerifyAccounts checks if all necessary accounts are properly initialized
+// VerifyAccounts checks if all necessary accounts are properly initialized and
+// exists on-chain. It validates the program state and ensures that critical accounts
+// like the associated bonding curve are properly set up.
+// Returns an error if any verification step fails.
 func (d *DEX) VerifyAccounts(ctx context.Context) error {
 	d.logger.Debug("Verifying critical accounts")
 
@@ -97,9 +100,35 @@ func (d *DEX) VerifyAccounts(ctx context.Context) error {
 	// Verify associated bonding curve
 	if d.config.AssociatedBondingCurve.IsZero() {
 		d.logger.Warn("Associated bonding curve is not set, will attempt to derive it")
-		d.config.AssociatedBondingCurve = deriveAssociatedCurveAddress(d.config.BondingCurve, d.config.ContractAddress)
+
+		// Make sure bonding curve address is valid
+		if d.config.BondingCurve.IsZero() {
+			return fmt.Errorf("cannot derive associated bonding curve: bonding curve address is zero")
+		}
+
+		// Derive associated bonding curve address
+		derivedAddress, bump, err := deriveAssociatedCurveAddress(d.config.BondingCurve, d.config.ContractAddress)
+		if err != nil {
+			return fmt.Errorf("failed to derive associated bonding curve: %w", err)
+		}
+
+		d.config.AssociatedBondingCurve = derivedAddress
 		d.logger.Info("Derived associated bonding curve",
-			zap.String("address", d.config.AssociatedBondingCurve.String()))
+			zap.String("address", derivedAddress.String()),
+			zap.Uint8("bump", bump))
+
+		// Verify the derived account exists on-chain
+		accountInfo, err := d.client.GetAccountInfo(ctx, derivedAddress)
+		if err != nil {
+			return fmt.Errorf("failed to verify derived associated bonding curve: %w", err)
+		}
+
+		// Правильная проверка существования данных аккаунта
+		if accountInfo == nil || accountInfo.Value == nil || len(accountInfo.Value.Data.GetBinary()) == 0 {
+			d.logger.Warn("Derived associated bonding curve account does not exist or is empty")
+			// Depending on your requirements, you might want to return an error here
+			// or continue with the knowledge that the account needs to be created
+		}
 	}
 
 	d.logger.Debug("All critical accounts verified successfully")
@@ -504,16 +533,17 @@ func (d *DEX) ensureAssociatedBondingCurve(ctx context.Context) error {
 		return nil
 	}
 
-	// Send transaction
-	if _, err := d.client.SendTransaction(ctx, createTx); err != nil {
+	// Send transaction and capture the signature
+	sig, err := d.client.SendTransaction(ctx, createTx)
+	if err != nil {
 		return fmt.Errorf("failed to send transaction: %w", err)
 	}
 
-	// Wait for confirmation
+	// Wait for confirmation using the actual transaction signature
 	confirmCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	if err = d.client.WaitForTransactionConfirmation(confirmCtx, solana.Signature{}, rpc.CommitmentConfirmed); err != nil {
+	if err = d.client.WaitForTransactionConfirmation(confirmCtx, sig, rpc.CommitmentConfirmed); err != nil {
 		return fmt.Errorf("transaction confirmation failed: %w", err)
 	}
 

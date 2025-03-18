@@ -26,10 +26,7 @@ func FetchGlobalAccount(ctx context.Context, client *solbc.Client, globalAddr so
 	}
 
 	// Make sure the account is owned by the PumpFun program
-	programID, err := solana.PublicKeyFromBase58(PumpFunProgramID)
-	if err != nil {
-		return nil, fmt.Errorf("invalid program ID: %w", err)
-	}
+	programID := PumpFunProgramID
 
 	if !accountInfo.Value.Owner.Equals(programID) {
 		return nil, fmt.Errorf("global account has incorrect owner: expected %s, got %s",

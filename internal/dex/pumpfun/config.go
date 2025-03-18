@@ -10,27 +10,30 @@ import (
 	"go.uber.org/zap"
 )
 
-// Known PumpFun protocol addresses (constants)
-const (
-	// Program ID - correct from SDK validation
-	PumpFunProgramID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+// Known PumpFun protocol addresses
+var (
+	// Program ID for Pump.fun protocol
+	PumpFunProgramID = solana.MustPublicKeyFromBase58("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
 
-	// Event authority from SDK - CORRECTED
-	PumpFunEventAuth = "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1"
+	// Event authority for the Pump.fun protocol
+	PumpFunEventAuth = solana.MustPublicKeyFromBase58("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")
+
+	// Solana system accounts
+	SysvarRentPubkey         = solana.MustPublicKeyFromBase58("SysvarRent111111111111111111111111111111111")
+	AssociatedTokenProgramID = solana.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
 )
 
 // PDA seeds used for account derivation
 var (
-	globalSeed               = []byte("global")
-	bondingCurveSeed         = []byte("bonding-curve")
-	SysvarRentPubkey         = solana.MustPublicKeyFromBase58("SysvarRent111111111111111111111111111111111")
-	AssociatedTokenProgramID = solana.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
+	globalSeed          = []byte("global")
+	bondingCurveSeed    = []byte("bonding-curve")
+	associatedCurveSeed = []byte("associated-curve")
 
 	// Version control for instruction discriminators
 	DiscriminatorVersion = "v3" // Control which version to use
 )
 
-// Discriminator versions
+// Discriminator versions for Pump.fun instructions
 var (
 	// Buy discriminators directly from the Pump.fun SDK IDL
 	BuyDiscriminators = map[string][]byte{
@@ -63,26 +66,44 @@ type Config struct {
 }
 
 // GetDefaultConfig creates a new configuration with default values
-func GetDefaultConfig(_ *zap.Logger) *Config {
+func GetDefaultConfig() *Config {
 	return &Config{
 		GraduationThreshold: 100.0,
 		AllowSellBeforeFull: true,
 		MonitorInterval:     "5s",
+		ContractAddress:     PumpFunProgramID, // Инициализируем из констант
+		EventAuthority:      PumpFunEventAuth, // Инициализируем из констант
 	}
 }
 
-// SetupForToken configures the Config instance for a specific token
+// SetupForToken configures the Config instance for a specific token by
+// deriving all necessary Pump.fun account addresses associated with the token.
+//
+// Parameters:
+//   - tokenMint: The base58-encoded public key of the token mint
+//   - logger: Zap logger instance for logging configuration details
+//
+// Returns an error if any address derivation fails or if inputs are invalid.
 func (cfg *Config) SetupForToken(tokenMint string, logger *zap.Logger) error {
-	var err error
+	// Validate and set token mint first
+	if tokenMint == "" {
+		return fmt.Errorf("token mint address is required")
+	}
 
-	// Set program ID
-	cfg.ContractAddress, err = solana.PublicKeyFromBase58(PumpFunProgramID)
+	var err error
+	cfg.Mint, err = solana.PublicKeyFromBase58(tokenMint)
 	if err != nil {
-		return fmt.Errorf("invalid program ID: %w", err)
+		return fmt.Errorf("invalid token mint address: %w", err)
+	}
+
+	// Set program ID if not already set
+	if cfg.ContractAddress.IsZero() {
+		cfg.ContractAddress = PumpFunProgramID
 	}
 
 	// Derive Global Account PDA
-	cfg.Global, _, err = solana.FindProgramAddress(
+	var bump uint8
+	cfg.Global, bump, err = solana.FindProgramAddress(
 		[][]byte{globalSeed},
 		cfg.ContractAddress,
 	)
@@ -90,34 +111,41 @@ func (cfg *Config) SetupForToken(tokenMint string, logger *zap.Logger) error {
 		return fmt.Errorf("failed to derive global account: %w", err)
 	}
 
-	// Set event authority address
-	cfg.EventAuthority, err = solana.PublicKeyFromBase58(PumpFunEventAuth)
-	if err != nil {
-		return fmt.Errorf("invalid event authority: %w", err)
-	}
+	logger.Debug("Derived global account",
+		zap.String("address", cfg.Global.String()),
+		zap.Uint8("bump", bump))
 
-	// Validate and set token mint
-	if tokenMint == "" {
-		return fmt.Errorf("token mint address is required")
-	}
-
-	cfg.Mint, err = solana.PublicKeyFromBase58(tokenMint)
-	if err != nil {
-		return fmt.Errorf("invalid token mint address: %w", err)
+	// Set event authority address if not already set
+	if cfg.EventAuthority.IsZero() {
+		cfg.EventAuthority = PumpFunEventAuth
 	}
 
 	// Calculate bonding curve address
-	cfg.BondingCurve = deriveBondingCurveAddress(cfg.Mint, cfg.ContractAddress)
+	var bondingCurveBump uint8
+	cfg.BondingCurve, bondingCurveBump, err = deriveBondingCurveAddress(cfg.Mint, cfg.ContractAddress)
+	if err != nil {
+		return fmt.Errorf("failed to derive bonding curve: %w", err)
+	}
 
 	// Calculate associated bonding curve
-	cfg.AssociatedBondingCurve = deriveAssociatedCurveAddress(cfg.BondingCurve, cfg.ContractAddress)
+	var associatedBondingCurveBump uint8
+	cfg.AssociatedBondingCurve, associatedBondingCurveBump, err = deriveAssociatedCurveAddress(cfg.BondingCurve, cfg.ContractAddress)
+	if err != nil {
+		return fmt.Errorf("failed to derive associated bonding curve: %w", err)
+	}
+
+	// Set fee recipient to a default address (usually derived from global account data)
+	// This will be updated later with the actual value through UpdateFeeRecipient
+	cfg.FeeRecipient = cfg.Global // Временно установим на Global, чтобы не было нулевого значения
 
 	logger.Info("PumpFun configuration prepared",
 		zap.String("program_id", cfg.ContractAddress.String()),
 		zap.String("global_account", cfg.Global.String()),
 		zap.String("token_mint", cfg.Mint.String()),
 		zap.String("bonding_curve", cfg.BondingCurve.String()),
-		zap.String("associated_bonding_curve", cfg.AssociatedBondingCurve.String()))
+		zap.Uint8("bonding_curve_bump", bondingCurveBump),
+		zap.String("associated_bonding_curve", cfg.AssociatedBondingCurve.String()),
+		zap.Uint8("associated_bonding_curve_bump", associatedBondingCurveBump))
 
 	return nil
 }
@@ -134,22 +162,53 @@ func (cfg *Config) UpdateFeeRecipient(feeRecipient solana.PublicKey, logger *zap
 }
 
 // deriveBondingCurveAddress calculates the PDA for a token's bonding curve
-func deriveBondingCurveAddress(tokenMint, programID solana.PublicKey) solana.PublicKey {
-	address, _, _ := solana.FindProgramAddress(
+// Returns the derived address, bump seed, and any error encountered
+func deriveBondingCurveAddress(tokenMint, programID solana.PublicKey) (solana.PublicKey, uint8, error) {
+	// Validate input parameters
+	if tokenMint.IsZero() {
+		return solana.PublicKey{}, 0, fmt.Errorf("tokenMint cannot be zero")
+	}
+	if programID.IsZero() {
+		return solana.PublicKey{}, 0, fmt.Errorf("programID cannot be zero")
+	}
+
+	// Calculate the program derived address
+	address, bump, err := solana.FindProgramAddress(
 		[][]byte{bondingCurveSeed, tokenMint.Bytes()},
 		programID,
 	)
-	return address
+	if err != nil {
+		return solana.PublicKey{}, 0, fmt.Errorf("failed to derive bonding curve address: %w", err)
+	}
+
+	return address, bump, nil
 }
 
-// deriveAssociatedCurveAddress calculates the PDA for the associated bonding curve
-func deriveAssociatedCurveAddress(bondingCurve, programID solana.PublicKey) solana.PublicKey {
-	// Use local associated curve seed for derivation
-	localAssociatedCurveSeed := []byte("associated-curve")
+// deriveAssociatedCurveAddress calculates the Program Derived Address (PDA) for the associated bonding curve.
+// It takes a bonding curve public key and program ID, then derives the associated curve address
+// using the "associated-curve" seed and the bonding curve bytes.
+//
+// Returns:
+// - The derived associated curve address
+// - The bump seed used in derivation
+// - Any error encountered during the process
+func deriveAssociatedCurveAddress(bondingCurve, programID solana.PublicKey) (solana.PublicKey, uint8, error) {
+	// Validate input parameters
+	if bondingCurve.IsZero() {
+		return solana.PublicKey{}, 0, fmt.Errorf("bondingCurve cannot be zero")
+	}
+	if programID.IsZero() {
+		return solana.PublicKey{}, 0, fmt.Errorf("programID cannot be zero")
+	}
 
-	address, _, _ := solana.FindProgramAddress(
-		[][]byte{localAssociatedCurveSeed, bondingCurve.Bytes()},
+	// Calculate the program derived address
+	address, bump, err := solana.FindProgramAddress(
+		[][]byte{associatedCurveSeed, bondingCurve.Bytes()},
 		programID,
 	)
-	return address
+	if err != nil {
+		return solana.PublicKey{}, 0, fmt.Errorf("failed to derive associated curve address: %w", err)
+	}
+
+	return address, bump, nil
 }
