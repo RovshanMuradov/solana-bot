@@ -439,13 +439,29 @@ func ensureBondingCurveATA(
 	}
 
 	if createTx != nil {
-		// Send transaction
-		if _, err := client.SendTransaction(ctx, createTx); err != nil {
+		// Сначала подписываем транзакцию
+		if err := wallet.SignTransaction(createTx); err != nil {
+			return fmt.Errorf("failed to sign ATA creation transaction: %w", err)
+		}
+
+		// Send transaction и сохраняем подпись
+		sig, err := client.SendTransaction(ctx, createTx)
+		if err != nil {
 			return fmt.Errorf("failed to create bonding curve ATA: %w", err)
 		}
 
-		// Wait briefly for confirmation
-		time.Sleep(2 * time.Second)
+		// Создаем timeout для ожидания подтверждения
+		waitCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+
+		// Активно ждем подтверждения транзакции
+		if err := client.WaitForTransactionConfirmation(waitCtx, sig, rpc.CommitmentConfirmed); err != nil {
+			return fmt.Errorf("bonding curve ATA creation confirmation failed: %w", err)
+		}
+
+		logger.Info("Bonding curve ATA created successfully",
+			zap.String("address", bondingCurveATA.String()),
+			zap.String("signature", sig.String()))
 	}
 
 	return nil
@@ -492,13 +508,29 @@ func ensureUserATA(
 	}
 
 	if createTx != nil {
-		// Send transaction
-		if _, err := client.SendTransaction(ctx, createTx); err != nil {
+		// Сначала подписываем транзакцию
+		if err := wallet.SignTransaction(createTx); err != nil {
+			return fmt.Errorf("failed to sign ATA creation transaction: %w", err)
+		}
+
+		// Отправляем транзакцию и сохраняем подпись
+		sig, err := client.SendTransaction(ctx, createTx)
+		if err != nil {
 			return fmt.Errorf("failed to create ATA: %w", err)
 		}
-		if err := client.WaitForTransactionConfirmation(ctx, solana.Signature{}, rpc.CommitmentConfirmed); err != nil {
-			return fmt.Errorf("ATA confirmation failed: %w", err)
+
+		// Создаем таймаут для ожидания подтверждения
+		waitCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+
+		// Ждем подтверждение с использованием полученной подписи
+		if err := client.WaitForTransactionConfirmation(waitCtx, sig, rpc.CommitmentConfirmed); err != nil {
+			return fmt.Errorf("ATA creation confirmation failed: %w", err)
 		}
+
+		logger.Info("ATA created successfully",
+			zap.String("address", userATA.String()),
+			zap.String("signature", sig.String()))
 	}
 
 	return nil
