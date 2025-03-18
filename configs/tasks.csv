@@ -1,2 +1,2 @@
 task_name,module,wallet,operation,amount_sol,min_sol_output_sol,priority_fee_lamports,token_mint
-pump_snipe_task1,pump.fun,wallet1,snipe,0.01,0.001,0,HSk6LTghrVxV7SD35bxY4t9n2BjVxiFdHxHzsSVYpump
+pump_snipe_task1,pump.fun,wallet1,snipe,0.01,0.001,0,7ZRgHFqwdzvqhfmg19rSQBD6CZe5iEDkuZoaNUhpump

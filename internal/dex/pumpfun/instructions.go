@@ -186,18 +186,13 @@ func getAssociatedTokenAddress(mint, owner solana.PublicKey) (solana.PublicKey, 
 }
 
 func accountExists(ctx context.Context, client *solbc.Client, address solana.PublicKey) (bool, error) {
-	// Try to get account info
 	accountInfo, err := client.GetAccountInfo(ctx, address)
 	if err != nil {
-		// Check if error is "not found" - account doesn't exist yet
 		if strings.Contains(err.Error(), "not found") {
-			return false, nil
+			return false, nil // Аккаунт не существует, это нормально
 		}
-		// It's another error
 		return false, fmt.Errorf("failed to check account existence: %w", err)
 	}
-
-	// Check if account exists and has value
 	return accountInfo != nil && accountInfo.Value != nil, nil
 }
 
@@ -210,6 +205,7 @@ func createAssociatedTokenAccountInstruction(payer, associatedAddress, owner, mi
 		{PublicKey: solana.SystemProgramID, IsSigner: false, IsWritable: false},
 		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
 		{PublicKey: SysvarRentPubkey, IsSigner: false, IsWritable: false},
+		{PublicKey: AssociatedTokenProgramID, IsSigner: false, IsWritable: false}, // Добавляем саму программу в список аккаунтов
 	}
 
 	return solana.NewInstruction(
