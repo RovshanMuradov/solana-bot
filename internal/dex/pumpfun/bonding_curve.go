@@ -7,101 +7,30 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"github.com/gagliardetto/solana-go"
 	"time"
 
+	"github.com/gagliardetto/solana-go"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"go.uber.org/zap"
 )
 
-// BondingCurveInfo holds bonding curve state data.
-type BondingCurveInfo struct {
-	Progress    float64
-	TotalSOL    float64
-	MarketCap   float64
-	LastUpdated time.Time
-}
-
-// BondingCurveMonitor periodically polls the bonding curve state.
-type BondingCurveMonitor struct {
-	client          *solbc.Client
-	logger          *zap.Logger
-	monitorInterval time.Duration
-	currentState    *BondingCurveInfo
-	notify          chan *BondingCurveInfo
-	bondingCurveKey solana.PublicKey // Store the bonding curve address
-}
-
-// NewBondingCurveMonitor creates a new instance of bonding curve monitoring.
-func NewBondingCurveMonitor(client *solbc.Client, logger *zap.Logger, interval time.Duration, bondingCurveKey solana.PublicKey) *BondingCurveMonitor {
-	return &BondingCurveMonitor{
-		client:          client,
-		logger:          logger.Named("bonding-curve-monitor"),
-		monitorInterval: interval,
-		notify:          make(chan *BondingCurveInfo, 1),
-		bondingCurveKey: bondingCurveKey, // Store the bonding curve address
-	}
-}
-
-func (m *BondingCurveMonitor) Start(ctx context.Context) {
-	ticker := time.NewTicker(m.monitorInterval)
-	defer ticker.Stop()
-	m.logger.Info("Bonding curve monitor started", zap.Duration("interval", m.monitorInterval))
-	for {
-		select {
-		case <-ctx.Done():
-			m.logger.Info("Bonding curve monitor stopped")
-			return
-		case <-ticker.C:
-			state, err := m.queryBondingCurve(ctx)
-			if err != nil {
-				m.logger.Error("Failed to query bonding curve state", zap.Error(err))
-				continue
-			}
-			m.currentState = state
-			m.logger.Debug("Bonding curve updated",
-				zap.Float64("progress", state.Progress),
-				zap.Float64("total_sol", state.TotalSOL),
-				zap.Float64("market_cap", state.MarketCap))
-			select {
-			case m.notify <- state:
-			default:
-			}
-		}
-	}
-}
-
-func (m *BondingCurveMonitor) GetCurrentState() (*BondingCurveInfo, error) {
-	if m.currentState == nil {
-		return nil, fmt.Errorf("bonding curve state not available yet")
-	}
-	return m.currentState, nil
-}
-
-func (m *BondingCurveMonitor) Subscribe() <-chan *BondingCurveInfo {
-	return m.notify
-}
-
-func (m *BondingCurveMonitor) queryBondingCurve(ctx context.Context) (*BondingCurveInfo, error) {
-	// Use the stored bonding curve address instead of a hardcoded string
-	bondingCurveAddr := m.bondingCurveKey
-
-	// Log the actual bonding curve address being queried
-	m.logger.Debug("Querying bonding curve", zap.String("address", bondingCurveAddr.String()))
-
-	accountInfo, err := m.client.GetAccountInfo(ctx, bondingCurveAddr)
+// QueryBondingCurveState queries the bonding curve account for its current state
+func QueryBondingCurveState(ctx context.Context, client *solbc.Client, bondingCurveAddr solana.PublicKey, _ *zap.Logger) (*BondingCurveInfo, error) {
+	accountInfo, err := client.GetAccountInfo(ctx, bondingCurveAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get bonding curve account info: %w", err)
 	}
+
 	if accountInfo == nil || accountInfo.Value == nil {
 		return nil, fmt.Errorf("bonding curve account not found at %s", bondingCurveAddr.String())
 	}
+
 	data := accountInfo.Value.Data.GetBinary()
-	m.logger.Debug("Bonding curve data received", zap.Int("data_length", len(data)))
 
 	if len(data) < 24 {
 		return nil, fmt.Errorf("insufficient bonding curve data length: %d", len(data))
 	}
+
 	totalSOLLamports := binary.LittleEndian.Uint64(data[0:8])
 	progressRaw := binary.LittleEndian.Uint64(data[8:16])
 	marketCapLamports := binary.LittleEndian.Uint64(data[16:24])

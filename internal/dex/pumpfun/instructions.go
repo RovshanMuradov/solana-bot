@@ -6,67 +6,14 @@ package pumpfun
 import (
 	"context"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"strings"
 
 	"github.com/gagliardetto/solana-go"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
 )
-
-// Constants
-var (
-	SysvarRentPubkey         = solana.MustPublicKeyFromBase58("SysvarRent111111111111111111111111111111111")
-	AssociatedTokenProgramID = solana.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
-	// Update to correct value from SDK
-	EventAuthorityAddress = solana.MustPublicKeyFromBase58("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")
-
-	// Version control for instruction discriminators
-	DiscriminatorVersion = "v3" // Control which version to use
-)
-
-// Discriminator versions to try - add more as needed
-var (
-	// Buy discriminators directly from the Pump.fun SDK IDL
-	BuyDiscriminators = map[string][]byte{
-		"v1": {0x66, 0x06, 0x3d, 0x12},                         // Partial (deprecated)
-		"v2": {0xd4, 0x52, 0x39, 0xd5, 0xf6, 0x27, 0x64, 0x9b}, // Wrong attempt
-		"v3": {0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea}, // Correct full discriminator from SDK
-	}
-
-	// Sell discriminators directly from the Pump.fun SDK IDL
-	SellDiscriminators = map[string][]byte{
-		"v1": {0x33, 0xe6, 0x85, 0xa4},                         // Partial (deprecated)
-		"v2": {0x28, 0x17, 0x38, 0x89, 0x55, 0x34, 0xde, 0xd5}, // Wrong attempt
-		"v3": {0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad}, // Correct full discriminator from SDK
-	}
-)
-
-// BuyInstructionAccounts holds account references for buy operation
-type BuyInstructionAccounts struct {
-	Global                 solana.PublicKey
-	FeeRecipient           solana.PublicKey
-	Mint                   solana.PublicKey
-	BondingCurve           solana.PublicKey
-	AssociatedBondingCurve solana.PublicKey
-	EventAuthority         solana.PublicKey
-	Program                solana.PublicKey
-	Logger                 *zap.Logger // Add logger for debugging
-}
-
-// SellInstructionAccounts holds account references for sell operation
-type SellInstructionAccounts struct {
-	Global                 solana.PublicKey
-	FeeRecipient           solana.PublicKey
-	Mint                   solana.PublicKey
-	BondingCurve           solana.PublicKey
-	AssociatedBondingCurve solana.PublicKey
-	EventAuthority         solana.PublicKey
-	Program                solana.PublicKey
-	Logger                 *zap.Logger // Add logger for debugging
-}
 
 // BuildBuyTokenInstruction builds a buy instruction for Pump.fun protocol
 func BuildBuyTokenInstruction(
@@ -78,14 +25,6 @@ func BuildBuyTokenInstruction(
 	discriminator, ok := BuyDiscriminators[DiscriminatorVersion]
 	if !ok {
 		return nil, fmt.Errorf("discriminator version %s not found", DiscriminatorVersion)
-	}
-
-	// Log discriminator information
-	if accounts.Logger != nil {
-		accounts.Logger.Debug("Using buy instruction discriminator",
-			zap.String("version", DiscriminatorVersion),
-			zap.String("hex", hex.EncodeToString(discriminator)),
-			zap.Int("length", len(discriminator)))
 	}
 
 	// Create instruction data
@@ -108,20 +47,7 @@ func BuildBuyTokenInstruction(
 		return nil, fmt.Errorf("failed to get associated token account: %w", err)
 	}
 
-	// Log account addresses for debugging
-	if accounts.Logger != nil {
-		accounts.Logger.Debug("Building buy instruction with accounts",
-			zap.String("global", accounts.Global.String()),
-			zap.String("feeRecipient", accounts.FeeRecipient.String()),
-			zap.String("mint", accounts.Mint.String()),
-			zap.String("bondingCurve", accounts.BondingCurve.String()),
-			zap.String("associatedBondingCurve", accounts.AssociatedBondingCurve.String()),
-			zap.String("userATA", associatedUser.String()),
-			zap.String("userWallet", userWallet.PublicKey.String()))
-	}
-
 	// Account list must be in the exact order expected by the program
-	// Matching accounts from SDK: "buy" instruction accounts order
 	insAccounts := []*solana.AccountMeta{
 		{PublicKey: accounts.Global, IsSigner: false, IsWritable: false},
 		{PublicKey: accounts.FeeRecipient, IsSigner: false, IsWritable: true},
@@ -135,14 +61,6 @@ func BuildBuyTokenInstruction(
 		{PublicKey: SysvarRentPubkey, IsSigner: false, IsWritable: false},
 		{PublicKey: accounts.EventAuthority, IsSigner: false, IsWritable: false},
 		{PublicKey: accounts.Program, IsSigner: false, IsWritable: false},
-	}
-
-	// Log full instruction data
-	if accounts.Logger != nil {
-		accounts.Logger.Debug("Buy instruction prepared",
-			zap.Uint64("amount", amount),
-			zap.Uint64("maxSolCost", maxSolCost))
-
 	}
 
 	// Create and return the instruction
@@ -159,14 +77,6 @@ func BuildSellTokenInstruction(
 	discriminator, ok := SellDiscriminators[DiscriminatorVersion]
 	if !ok {
 		return nil, fmt.Errorf("discriminator version %s not found", DiscriminatorVersion)
-	}
-
-	// Log discriminator information
-	if accounts.Logger != nil {
-		accounts.Logger.Debug("Using sell instruction discriminator",
-			zap.String("version", DiscriminatorVersion),
-			zap.String("hex", hex.EncodeToString(discriminator)),
-			zap.Int("length", len(discriminator)))
 	}
 
 	// Create instruction data
@@ -189,20 +99,7 @@ func BuildSellTokenInstruction(
 		return nil, fmt.Errorf("failed to get associated token account: %w", err)
 	}
 
-	// Log account addresses for debugging
-	if accounts.Logger != nil {
-		accounts.Logger.Debug("Building sell instruction with accounts",
-			zap.String("global", accounts.Global.String()),
-			zap.String("feeRecipient", accounts.FeeRecipient.String()),
-			zap.String("mint", accounts.Mint.String()),
-			zap.String("bondingCurve", accounts.BondingCurve.String()),
-			zap.String("associatedBondingCurve", accounts.AssociatedBondingCurve.String()),
-			zap.String("userATA", associatedUser.String()),
-			zap.String("userWallet", userWallet.PublicKey.String()))
-	}
-
 	// Account list must be in the exact order expected by the program
-	// Matching accounts from SDK: "sell" instruction accounts order
 	insAccounts := []*solana.AccountMeta{
 		{PublicKey: accounts.Global, IsSigner: false, IsWritable: false},
 		{PublicKey: accounts.FeeRecipient, IsSigner: false, IsWritable: true},
@@ -218,15 +115,6 @@ func BuildSellTokenInstruction(
 		{PublicKey: accounts.Program, IsSigner: false, IsWritable: false},
 	}
 
-	// Log full instruction data
-	if accounts.Logger != nil {
-		accounts.Logger.Debug("Sell instruction data",
-			zap.String("hex", hex.EncodeToString(data)),
-			zap.Int("dataLength", len(data)),
-			zap.Uint64("amount", amount),
-			zap.Uint64("minSolOutput", minSolOutput))
-	}
-
 	// Create and return the instruction
 	return solana.NewInstruction(accounts.Program, insAccounts, data), nil
 }
@@ -238,7 +126,7 @@ func createAssociatedTokenAccount(
 	payer *wallet.Wallet,
 	mint solana.PublicKey,
 	owner solana.PublicKey,
-	logger *zap.Logger,
+	_ *zap.Logger,
 ) (*solana.Transaction, error) {
 	// Get the associated token address
 	associatedAddress, err := getAssociatedTokenAddress(mint, owner)
@@ -254,18 +142,8 @@ func createAssociatedTokenAccount(
 
 	// If account already exists, return nil (no need to create)
 	if exists {
-		logger.Debug("Associated token account already exists",
-			zap.String("address", associatedAddress.String()),
-			zap.String("mint", mint.String()),
-			zap.String("owner", owner.String()))
 		return nil, nil
 	}
-
-	// If we get here, we need to create the account
-	logger.Info("Creating associated token account",
-		zap.String("address", associatedAddress.String()),
-		zap.String("mint", mint.String()),
-		zap.String("owner", owner.String()))
 
 	// Get recent blockhash
 	blockhash, err := client.GetRecentBlockhash(ctx)

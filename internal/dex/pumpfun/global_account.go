@@ -13,23 +13,8 @@ import (
 	"go.uber.org/zap"
 )
 
-// GlobalAccount represents the structure of the PumpFun global account data
-type GlobalAccount struct {
-	Discriminator               [8]byte
-	Initialized                 bool
-	Authority                   solana.PublicKey
-	FeeRecipient                solana.PublicKey
-	InitialVirtualTokenReserves uint64
-	InitialVirtualSolReserves   uint64
-	InitialRealTokenReserves    uint64
-	TokenTotalSupply            uint64
-	FeeBasisPoints              uint64
-}
-
 // FetchGlobalAccount fetches and deserializes the global account data
 func FetchGlobalAccount(ctx context.Context, client *solbc.Client, globalAddr solana.PublicKey, logger *zap.Logger) (*GlobalAccount, error) {
-	logger.Debug("Fetching global account data", zap.String("address", globalAddr.String()))
-
 	// Get account info from the blockchain
 	accountInfo, err := client.GetAccountInfo(ctx, globalAddr)
 	if err != nil {
@@ -53,7 +38,6 @@ func FetchGlobalAccount(ctx context.Context, client *solbc.Client, globalAddr so
 
 	// Get binary data
 	data := accountInfo.Value.Data.GetBinary()
-	logger.Debug("Global account data length", zap.Int("length", len(data)))
 
 	// Need at least the discriminator + initialized flag + two public keys (32 bytes each)
 	if len(data) < 8+1+64 {
@@ -96,10 +80,7 @@ func FetchGlobalAccount(ctx context.Context, client *solbc.Client, globalAddr so
 	account.FeeBasisPoints = binary.LittleEndian.Uint64(data[offset : offset+8])
 
 	logger.Info("Global account data parsed successfully",
-		zap.Bool("initialized", account.Initialized),
-		zap.String("authority", account.Authority.String()),
-		zap.String("fee_recipient", account.FeeRecipient.String()),
-		zap.Uint64("fee_basis_points", account.FeeBasisPoints))
+		zap.String("fee_recipient", account.FeeRecipient.String()))
 
 	return account, nil
 }
