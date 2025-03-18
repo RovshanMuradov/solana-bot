@@ -403,7 +403,7 @@ func ensureBondingCurveATA(
 	logger *zap.Logger,
 ) error {
 	// Get bonding curve ATA address
-	bondingCurveATA, err := getAssociatedTokenAddress(mint, bondingCurve)
+	bondingCurveATA, _, err := solana.FindAssociatedTokenAddress(bondingCurve, mint)
 	if err != nil {
 		return fmt.Errorf("failed to get bonding curve ATA address: %w", err)
 	}

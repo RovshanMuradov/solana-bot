@@ -129,7 +129,7 @@ func createAssociatedTokenAccount(
 	_ *zap.Logger,
 ) (*solana.Transaction, error) {
 	// Get the associated token address
-	associatedAddress, err := getAssociatedTokenAddress(mint, owner)
+	associatedAddress, _, err := solana.FindAssociatedTokenAddress(owner, mint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get associated token address: %w", err)
 	}
@@ -167,24 +167,6 @@ func createAssociatedTokenAccount(
 	return tx, nil
 }
 
-// Helper functions
-
-func getAssociatedTokenAddress(mint, owner solana.PublicKey) (solana.PublicKey, error) {
-	// Find address using PDA derivation
-	address, _, err := solana.FindProgramAddress(
-		[][]byte{
-			owner.Bytes(),
-			solana.TokenProgramID.Bytes(),
-			mint.Bytes(),
-		},
-		AssociatedTokenProgramID,
-	)
-	if err != nil {
-		return solana.PublicKey{}, err
-	}
-	return address, nil
-}
-
 func accountExists(ctx context.Context, client *solbc.Client, address solana.PublicKey) (bool, error) {
 	accountInfo, err := client.GetAccountInfo(ctx, address)
 	if err != nil {
@@ -204,13 +186,12 @@ func createAssociatedTokenAccountInstruction(payer, associatedAddress, owner, mi
 		{PublicKey: mint, IsSigner: false, IsWritable: false},
 		{PublicKey: solana.SystemProgramID, IsSigner: false, IsWritable: false},
 		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
-		{PublicKey: SysvarRentPubkey, IsSigner: false, IsWritable: false},
-		{PublicKey: AssociatedTokenProgramID, IsSigner: false, IsWritable: false}, // Добавляем саму программу в список аккаунтов
+		{PublicKey: AssociatedTokenProgramID, IsSigner: false, IsWritable: false},
 	}
 
 	return solana.NewInstruction(
 		AssociatedTokenProgramID,
 		keys,
-		[]byte{}, // No data for create instruction
+		[]byte{},
 	)
 }
