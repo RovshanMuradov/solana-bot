@@ -47,96 +47,55 @@ func QueryBondingCurveState(ctx context.Context, client *solbc.Client, bondingCu
 	}, nil
 }
 
-// DiscoverAssociatedBondingCurve implements a dynamic account discovery pattern to find
-// the correct associated bonding curve account for a given bonding curve.
-// This function uses multiple strategies to locate the account:
-// 1. Direct derivation using different seed variants
-// 2. Program account filtering to find accounts that reference the bonding curve
+// DiscoverAssociatedBondingCurve uses the correct FindAssociatedTokenAddress method 
+// to directly find the associated bonding curve account for a given bonding curve.
+// This directly aligns with the Pump.fun protocol requirements for address derivation.
 func DiscoverAssociatedBondingCurve(
 	ctx context.Context,
 	client *solbc.Client,
 	bondingCurve solana.PublicKey,
-	programID solana.PublicKey,
+	mint solana.PublicKey, // Added mint parameter to fix the error - mint is required
 	logger *zap.Logger,
 ) (solana.PublicKey, error) {
-	logger.Debug("Starting discovery of associated bonding curve",
+	logger.Debug("Finding associated bonding curve using token program derivation",
 		zap.String("bonding_curve", bondingCurve.String()),
-		zap.String("program_id", programID.String()))
+		zap.String("mint", mint.String()))
 
-	// Strategy 1: Try different seed derivation patterns
-	seedVariants := [][]byte{
-		[]byte("associated-curve"),   // Current implementation
-		[]byte("associated_curve"),   // Alternate with underscore
-		[]byte("associatedcurve"),    // Alternate without dash
-		[]byte("associated-bonding"), // Other possible variants
-		[]byte("curve-association"),
-		[]byte("bonding-curve-association"),
+	// Use the official solana.FindAssociatedTokenAddress method which correctly derives
+	// the associated token address according to the Solana Associated Token Account Program
+	associatedBondingCurve, _, err := solana.FindAssociatedTokenAddress(bondingCurve, mint)
+	if err != nil {
+		logger.Error("Failed to find associated bonding curve address",
+			zap.String("bonding_curve", bondingCurve.String()),
+			zap.Error(err))
+		return solana.PublicKey{}, fmt.Errorf("failed to find associated bonding curve: %w", err)
 	}
 
-	// Track all candidate addresses we try 
-	candidateAddresses := make(map[string]string)
-
-	// Try all seed variants
-	for _, seed := range seedVariants {
-		candidateAddr, bump, err := solana.FindProgramAddress(
-			[][]byte{seed, bondingCurve.Bytes()},
-			programID,
-		)
-		
-		if err != nil {
-			continue
-		}
-
-		seedStr := string(seed)
-		candidateAddresses[candidateAddr.String()] = fmt.Sprintf("seed: %s, bump: %d", seedStr, bump)
-		
-		logger.Debug("Checking candidate address from seed variant",
-			zap.String("seed", seedStr),
-			zap.String("address", candidateAddr.String()),
-			zap.Uint8("bump", bump))
-
-		// Check if this account exists and is owned by the program
-		accountInfo, err := client.GetAccountInfo(ctx, candidateAddr)
-		if err == nil && accountInfo != nil && accountInfo.Value != nil && 
-		   accountInfo.Value.Owner.Equals(programID) {
-			logger.Info("Found associated bonding curve using seed variant",
-				zap.String("seed", seedStr),
-				zap.String("address", candidateAddr.String()),
-				zap.Uint8("bump", bump))
-			return candidateAddr, nil
-		}
+	// Verify the account exists and is owned by the expected program
+	accountInfo, err := client.GetAccountInfo(ctx, associatedBondingCurve)
+	if err != nil {
+		logger.Warn("Could not verify associated bonding curve account",
+			zap.String("address", associatedBondingCurve.String()),
+			zap.Error(err))
+		// Don't return error here - the account might not exist yet but the address is still valid
+	} else if accountInfo != nil && accountInfo.Value != nil && !accountInfo.Value.Owner.Equals(solana.TokenProgramID) {
+		logger.Warn("Associated bonding curve exists but has unexpected owner",
+			zap.String("address", associatedBondingCurve.String()),
+			zap.String("actual_owner", accountInfo.Value.Owner.String()),
+			zap.String("expected_owner", solana.TokenProgramID.String()))
 	}
 
-	// Strategy 2: Skip program account filtering as it requires additional client capabilities
-	// We'll rely on seed variants and hardcoded reference instead
-	logger.Debug("Skipping program account filtering due to client limitations")
-
-	// Strategy 3: Try the address from an example transaction (hardcoded reference)
-	// This is a fallback for the specific example in the error message
-	if bondingCurve.String() == "7Y5UnkniiBZYmBt2dMtX1b3KLG7TM6V4SeGBgdoxQoG1" {
-		// Use the example address from the error logs
-		referenceAddr := solana.MustPublicKeyFromBase58("Ar9jb5nXLind51VTFzJr4hUoY6d6xNmwmqeuG7XQi9e3")
-		
-		// Verify it exists and is owned by the program
-		accountInfo, err := client.GetAccountInfo(ctx, referenceAddr)
-		if err == nil && accountInfo != nil && accountInfo.Value != nil && 
-		   accountInfo.Value.Owner.Equals(programID) {
-			logger.Info("Found associated bonding curve using reference address",
-				zap.String("address", referenceAddr.String()))
-			return referenceAddr, nil
-		}
-	}
-
-	// Strategy failed - log details and return error
-	logger.Error("Failed to discover associated bonding curve account",
-		zap.String("bonding_curve", bondingCurve.String()),
-		zap.Any("candidate_addresses", candidateAddresses))
-		
-	return solana.PublicKey{}, fmt.Errorf("unable to discover associated bonding curve for %s", bondingCurve.String())
+	logger.Info("Found associated bonding curve address",
+		zap.String("address", associatedBondingCurve.String()))
+	
+	return associatedBondingCurve, nil
 }
 
+// Note: We've removed the getMintFromBondingCurve helper function
+// since we now pass the mint directly to the DiscoverAssociatedBondingCurve function
+
 // IsTokenEligibleForPumpfun verifies if a token is compatible with Pump.fun operations
-// by checking for the existence of properly initialized bonding curve accounts
+// using the correct account derivation method
 func IsTokenEligibleForPumpfun(
 	ctx context.Context,
 	client *solbc.Client,
@@ -163,30 +122,31 @@ func IsTokenEligibleForPumpfun(
 		return false, solana.PublicKey{}, fmt.Errorf("bonding curve has incorrect ownership")
 	}
 
-	// Step 2: Try to discover the associated bonding curve
-	associatedCurve, err := DiscoverAssociatedBondingCurve(ctx, client, bondingCurve, programID, logger)
+	// Step 2: Directly derive the associated token address - this is the key fix
+	associatedBondingCurve, _, err := solana.FindAssociatedTokenAddress(bondingCurve, mint)
 	if err != nil {
-		logger.Error("Failed to discover associated bonding curve",
+		logger.Error("Failed to derive associated bonding curve",
 			zap.String("bonding_curve", bondingCurve.String()),
+			zap.String("mint", mint.String()),
 			zap.Error(err))
-		return false, solana.PublicKey{}, err
+		return false, solana.PublicKey{}, fmt.Errorf("failed to derive associated bonding curve: %w", err)
 	}
 
 	// Step 3: Verify the associated curve exists and is properly owned
-	acInfo, err := client.GetAccountInfo(ctx, associatedCurve)
+	acInfo, err := client.GetAccountInfo(ctx, associatedBondingCurve)
 	if err != nil || acInfo == nil || acInfo.Value == nil {
 		logger.Warn("Associated bonding curve does not exist or cannot be accessed",
-			zap.String("associated_curve", associatedCurve.String()),
+			zap.String("associated_curve", associatedBondingCurve.String()),
 			zap.Error(err))
 		return false, solana.PublicKey{}, fmt.Errorf("associated bonding curve not found")
 	}
 
-	// Check ownership
-	if !acInfo.Value.Owner.Equals(programID) {
+	// Check ownership - associated token accounts are owned by the Token Program
+	if !acInfo.Value.Owner.Equals(solana.TokenProgramID) {
 		logger.Warn("Associated bonding curve has incorrect ownership",
-			zap.String("associated_curve", associatedCurve.String()),
+			zap.String("associated_curve", associatedBondingCurve.String()),
 			zap.String("owner", acInfo.Value.Owner.String()),
-			zap.String("expected", programID.String()))
+			zap.String("expected", solana.TokenProgramID.String()))
 		return false, solana.PublicKey{}, fmt.Errorf("associated bonding curve has incorrect ownership")
 	}
 
@@ -194,7 +154,7 @@ func IsTokenEligibleForPumpfun(
 	logger.Info("Token is eligible for Pump.fun operations",
 		zap.String("mint", mint.String()),
 		zap.String("bonding_curve", bondingCurve.String()),
-		zap.String("associated_bonding_curve", associatedCurve.String()))
+		zap.String("associated_bonding_curve", associatedBondingCurve.String()))
 
-	return true, associatedCurve, nil
+	return true, associatedBondingCurve, nil
 }

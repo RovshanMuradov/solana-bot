@@ -23,8 +23,8 @@ func BuildBuyTokenInstruction(
 	userWallet *wallet.Wallet,
 	amount, maxSolCost uint64,
 ) (solana.Instruction, error) {
-	// Fixed buy instruction discriminator from Pump.fun protocol
-	// This is the exact discriminator observed in successful transactions
+	// Use the exact discriminator from the protocol
+	// This is the critical value "66063d1201daebea" as specified in the technical requirements
 	buyDiscriminator := []byte{0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea}
 
 	// Validate account constraints before building instruction
@@ -50,28 +50,40 @@ func BuildBuyTokenInstruction(
 		return nil, fmt.Errorf("program address is required")
 	}
 
-	// Create instruction data starting with discriminator
-	data := make([]byte, len(buyDiscriminator))
-	copy(data, buyDiscriminator)
+	// Create instruction data with precise byte layout:
+	// 1. 8-byte discriminator prefix
+	// 2. 8-byte little-endian encoded amount
+	// 3. 8-byte little-endian encoded maxSolCost
+	data := make([]byte, 24) // Pre-allocate for all data (8+8+8 bytes)
+	
+	// Copy discriminator (8 bytes)
+	copy(data[0:8], buyDiscriminator)
+	
+	// Add amount in little-endian bytes (8 bytes)
+	binary.LittleEndian.PutUint64(data[8:16], amount)
+	
+	// Add max SOL cost in little-endian bytes (8 bytes)
+	binary.LittleEndian.PutUint64(data[16:24], maxSolCost)
 
-	// Add amount in little-endian bytes
-	amountBytes := make([]byte, 8)
-	binary.LittleEndian.PutUint64(amountBytes, amount)
-	data = append(data, amountBytes...)
-
-	// Add max SOL cost in little-endian bytes
-	maxSolBytes := make([]byte, 8)
-	binary.LittleEndian.PutUint64(maxSolBytes, maxSolCost)
-	data = append(data, maxSolBytes...)
-
-	// Get user's associated token account
-	associatedUser, err := userWallet.GetATA(accounts.Mint)
+	// Get user's associated token account using direct derivation
+	associatedUser, _, err := solana.FindAssociatedTokenAddress(userWallet.PublicKey, accounts.Mint)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get associated token account: %w", err)
+		return nil, fmt.Errorf("failed to derive associated token account: %w", err)
 	}
 
-	// Account list must be in the exact order expected by the program
-	// This order is critical for the instruction to be accepted
+	// Account list MUST follow exact protocol-mandated order as specified in tech requirements:
+	// 1. global (non-writable, non-signer)
+	// 2. feeRecipient (writable, non-signer)
+	// 3. mint (non-writable, non-signer)
+	// 4. bondingCurve (writable, non-signer)
+	// 5. associatedBondingCurve (writable, non-signer)
+	// 6. associatedUser (writable, non-signer)
+	// 7. userPublicKey (writable, signer)
+	// 8. systemProgram (non-writable, non-signer)
+	// 9. tokenProgram (non-writable, non-signer)
+	// 10. rent (non-writable, non-signer)
+	// 11. eventAuthority (non-writable, non-signer)
+	// 12. programID (non-writable, non-signer)
 	insAccounts := []*solana.AccountMeta{
 		{PublicKey: accounts.Global, IsSigner: false, IsWritable: false},
 		{PublicKey: accounts.FeeRecipient, IsSigner: false, IsWritable: true},
@@ -98,8 +110,8 @@ func BuildSellTokenInstruction(
 	userWallet *wallet.Wallet,
 	amount, minSolOutput uint64,
 ) (solana.Instruction, error) {
-	// Fixed sell instruction discriminator from Pump.fun protocol
-	// This is the exact discriminator observed in successful transactions
+	// Use the exact discriminator from the protocol
+	// This is the critical value "33e685a4017f83ad" as specified in the technical requirements
 	sellDiscriminator := []byte{0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad}
 
 	// Validate account constraints before building instruction
@@ -125,28 +137,29 @@ func BuildSellTokenInstruction(
 		return nil, fmt.Errorf("program address is required")
 	}
 
-	// Create instruction data starting with discriminator
-	data := make([]byte, len(sellDiscriminator))
-	copy(data, sellDiscriminator)
+	// Create instruction data with precise byte layout:
+	// 1. 8-byte discriminator prefix
+	// 2. 8-byte little-endian encoded amount
+	// 3. 8-byte little-endian encoded minSolOutput
+	data := make([]byte, 24) // Pre-allocate for all data (8+8+8 bytes)
+	
+	// Copy discriminator (8 bytes)
+	copy(data[0:8], sellDiscriminator)
+	
+	// Add amount in little-endian bytes (8 bytes)
+	binary.LittleEndian.PutUint64(data[8:16], amount)
+	
+	// Add min SOL output in little-endian bytes (8 bytes)
+	binary.LittleEndian.PutUint64(data[16:24], minSolOutput)
 
-	// Add amount in little-endian bytes
-	amountBytes := make([]byte, 8)
-	binary.LittleEndian.PutUint64(amountBytes, amount)
-	data = append(data, amountBytes...)
-
-	// Add min SOL output in little-endian bytes
-	minSolBytes := make([]byte, 8)
-	binary.LittleEndian.PutUint64(minSolBytes, minSolOutput)
-	data = append(data, minSolBytes...)
-
-	// Get user's associated token account
-	associatedUser, err := userWallet.GetATA(accounts.Mint)
+	// Get user's associated token account using direct derivation
+	associatedUser, _, err := solana.FindAssociatedTokenAddress(userWallet.PublicKey, accounts.Mint)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get associated token account: %w", err)
+		return nil, fmt.Errorf("failed to derive associated token account: %w", err)
 	}
 
 	// Account list must be in the exact order expected by the program
-	// This order is critical for the instruction to be accepted
+	// The sell instruction needs all the same accounts as buy, plus the Associated Token Program
 	insAccounts := []*solana.AccountMeta{
 		{PublicKey: accounts.Global, IsSigner: false, IsWritable: false},
 		{PublicKey: accounts.FeeRecipient, IsSigner: false, IsWritable: true},
@@ -157,7 +170,7 @@ func BuildSellTokenInstruction(
 		{PublicKey: userWallet.PublicKey, IsSigner: true, IsWritable: true},
 		{PublicKey: solana.SystemProgramID, IsSigner: false, IsWritable: false},
 		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
-		{PublicKey: AssociatedTokenProgramID, IsSigner: false, IsWritable: false},
+		{PublicKey: SysvarRentPubkey, IsSigner: false, IsWritable: false},
 		{PublicKey: accounts.EventAuthority, IsSigner: false, IsWritable: false},
 		{PublicKey: accounts.Program, IsSigner: false, IsWritable: false},
 	}

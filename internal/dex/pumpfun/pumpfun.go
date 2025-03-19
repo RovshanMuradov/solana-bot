@@ -98,25 +98,27 @@ func (d *DEX) VerifyAccounts(ctx context.Context) error {
 		return fmt.Errorf("program state not ready: %s", state.Error)
 	}
 
-	// Verify associated bonding curve
+	// Verify associated bonding curve - using direct token address derivation
 	if d.config.AssociatedBondingCurve.IsZero() {
-		d.logger.Warn("Associated bonding curve is not set, will attempt to derive it")
+		d.logger.Warn("Associated bonding curve is not set, will derive it using token address derivation")
 
-		// Make sure bonding curve address is valid
+		// Make sure bonding curve address and mint are valid
 		if d.config.BondingCurve.IsZero() {
 			return fmt.Errorf("cannot derive associated bonding curve: bonding curve address is zero")
 		}
+		if d.config.Mint.IsZero() {
+			return fmt.Errorf("cannot derive associated bonding curve: mint address is zero")
+		}
 
-		// Derive associated bonding curve address
-		derivedAddress, bump, err := deriveAssociatedCurveAddress(d.config.BondingCurve, d.config.ContractAddress)
+		// Derive associated bonding curve address using direct ATA derivation
+		associatedBondingCurve, _, err := solana.FindAssociatedTokenAddress(d.config.BondingCurve, d.config.Mint)
 		if err != nil {
 			return fmt.Errorf("failed to derive associated bonding curve: %w", err)
 		}
 
-		d.config.AssociatedBondingCurve = derivedAddress
-		d.logger.Info("Derived associated bonding curve",
-			zap.String("address", derivedAddress.String()),
-			zap.Uint8("bump", bump))
+		d.config.AssociatedBondingCurve = associatedBondingCurve
+		d.logger.Info("Derived associated bonding curve using token address derivation",
+			zap.String("address", associatedBondingCurve.String()))
 	}
 	
 	// Verify both bonding curve accounts are properly initialized
@@ -758,48 +760,74 @@ func ensureUserATA(
 }
 
 // ensureAssociatedBondingCurve verifies that the associated bonding curve account exists and is properly initialized
-// Using the new dynamic discovery pattern for more reliable operation
+// using the correct Solana-standard associated token address derivation
 func (d *DEX) ensureAssociatedBondingCurve(ctx context.Context) error {
-	d.logger.Debug("Verifying bonding curve accounts with dynamic discovery",
+	d.logger.Debug("Verifying bonding curve accounts",
 		zap.String("bonding_curve", d.config.BondingCurve.String()),
-		zap.String("associated_bonding_curve", d.config.AssociatedBondingCurve.String()))
+		zap.String("associated_bonding_curve", d.config.AssociatedBondingCurve.String()),
+		zap.String("mint", d.config.Mint.String()))
 
-	// Use the IsTokenEligibleForPumpfun function which implements the full verification pipeline
-	eligible, discoveredAddress, err := IsTokenEligibleForPumpfun(
-		ctx,
-		d.client,
-		d.config.Mint,
-		d.config.BondingCurve,
-		d.config.ContractAddress,
-		d.logger,
-	)
-
+	// Step 1: Verify bonding curve exists and is owned by the Pump.fun program
+	bcInfo, err := d.client.GetAccountInfo(ctx, d.config.BondingCurve)
 	if err != nil {
-		d.logger.Error("Token eligibility check failed",
-			zap.String("mint", d.config.Mint.String()),
+		d.logger.Error("Failed to get bonding curve account",
 			zap.String("bonding_curve", d.config.BondingCurve.String()),
 			zap.Error(err))
-		return fmt.Errorf("token eligibility verification failed: %w", err)
+		return fmt.Errorf("bonding curve verification failed: %w", err)
 	}
 
-	if !eligible {
-		d.logger.Error("Token is not eligible for Pump.fun operations",
-			zap.String("mint", d.config.Mint.String()),
+	if bcInfo == nil || bcInfo.Value == nil {
+		d.logger.Error("Bonding curve account not found",
 			zap.String("bonding_curve", d.config.BondingCurve.String()))
-		return fmt.Errorf("token is not eligible for Pump.fun operations; required accounts are not properly initialized")
+		return fmt.Errorf("bonding curve account not found")
 	}
 
-	// Update the associated bonding curve address if it was dynamically discovered
-	if d.config.AssociatedBondingCurve.IsZero() || !d.config.AssociatedBondingCurve.Equals(discoveredAddress) {
-		d.logger.Info("Updating associated bonding curve address from discovery",
+	if !bcInfo.Value.Owner.Equals(d.config.ContractAddress) {
+		d.logger.Error("Bonding curve has incorrect owner",
+			zap.String("bonding_curve", d.config.BondingCurve.String()),
+			zap.String("actual_owner", bcInfo.Value.Owner.String()),
+			zap.String("expected_owner", d.config.ContractAddress.String()))
+		return fmt.Errorf("bonding curve has incorrect ownership")
+	}
+
+	// Step 2: Verify or re-derive associated bonding curve - critical fix
+	associatedBondingCurve, _, err := solana.FindAssociatedTokenAddress(d.config.BondingCurve, d.config.Mint)
+	if err != nil {
+		d.logger.Error("Failed to derive associated bonding curve address",
+			zap.String("bonding_curve", d.config.BondingCurve.String()),
+			zap.String("mint", d.config.Mint.String()),
+			zap.Error(err))
+		return fmt.Errorf("failed to derive associated bonding curve: %w", err)
+	}
+
+	// Ensure the derived address matches our stored address or update it
+	if !d.config.AssociatedBondingCurve.Equals(associatedBondingCurve) {
+		d.logger.Warn("Associated bonding curve address mismatch - updating to correct value",
 			zap.String("old_address", d.config.AssociatedBondingCurve.String()),
-			zap.String("discovered_address", discoveredAddress.String()))
-		d.config.AssociatedBondingCurve = discoveredAddress
+			zap.String("correct_address", associatedBondingCurve.String()))
+		d.config.AssociatedBondingCurve = associatedBondingCurve
 	}
 
-	d.logger.Info("Bonding curve accounts successfully verified",
-		zap.String("bonding_curve", d.config.BondingCurve.String()),
-		zap.String("associated_bonding_curve", d.config.AssociatedBondingCurve.String()))
+	// Step 3: Verify associated bonding curve account exists and is owned by the Token Program
+	abcInfo, err := d.client.GetAccountInfo(ctx, d.config.AssociatedBondingCurve)
+	if err != nil {
+		d.logger.Warn("Associated bonding curve account not found - it may need to be created",
+			zap.String("address", d.config.AssociatedBondingCurve.String()),
+			zap.Error(err))
+		// We don't return error here as the ATA might be created during transaction
+	} else if abcInfo == nil || abcInfo.Value == nil {
+		d.logger.Warn("Associated bonding curve account info is nil",
+			zap.String("address", d.config.AssociatedBondingCurve.String()))
+	} else if !abcInfo.Value.Owner.Equals(solana.TokenProgramID) {
+		d.logger.Error("Associated bonding curve has incorrect owner",
+			zap.String("address", d.config.AssociatedBondingCurve.String()),
+			zap.String("actual_owner", abcInfo.Value.Owner.String()),
+			zap.String("expected_owner", solana.TokenProgramID.String()))
+		return fmt.Errorf("associated bonding curve has incorrect ownership")
+	} else {
+		d.logger.Info("Associated bonding curve account verified",
+			zap.String("address", d.config.AssociatedBondingCurve.String()))
+	}
 
 	return nil
 }

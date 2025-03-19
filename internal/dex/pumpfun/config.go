@@ -127,9 +127,9 @@ func (cfg *Config) SetupForToken(tokenMint string, logger *zap.Logger) error {
 		return fmt.Errorf("failed to derive bonding curve: %w", err)
 	}
 
-	// Calculate associated bonding curve
-	var associatedBondingCurveBump uint8
-	cfg.AssociatedBondingCurve, associatedBondingCurveBump, err = deriveAssociatedCurveAddress(cfg.BondingCurve, cfg.ContractAddress)
+	// Calculate associated bonding curve using direct FindAssociatedTokenAddress method
+	// This is the key fix according to the technical specification
+	cfg.AssociatedBondingCurve, _, err = solana.FindAssociatedTokenAddress(cfg.BondingCurve, cfg.Mint)
 	if err != nil {
 		return fmt.Errorf("failed to derive associated bonding curve: %w", err)
 	}
@@ -144,8 +144,7 @@ func (cfg *Config) SetupForToken(tokenMint string, logger *zap.Logger) error {
 		zap.String("token_mint", cfg.Mint.String()),
 		zap.String("bonding_curve", cfg.BondingCurve.String()),
 		zap.Uint8("bonding_curve_bump", bondingCurveBump),
-		zap.String("associated_bonding_curve", cfg.AssociatedBondingCurve.String()),
-		zap.Uint8("associated_bonding_curve_bump", associatedBondingCurveBump))
+		zap.String("associated_bonding_curve", cfg.AssociatedBondingCurve.String()))
 
 	return nil
 }
@@ -184,31 +183,5 @@ func deriveBondingCurveAddress(tokenMint, programID solana.PublicKey) (solana.Pu
 	return address, bump, nil
 }
 
-// deriveAssociatedCurveAddress calculates the Program Derived Address (PDA) for the associated bonding curve.
-// It takes a bonding curve public key and program ID, then derives the associated curve address
-// using the "associated-curve" seed and the bonding curve bytes.
-//
-// Returns:
-// - The derived associated curve address
-// - The bump seed used in derivation
-// - Any error encountered during the process
-func deriveAssociatedCurveAddress(bondingCurve, programID solana.PublicKey) (solana.PublicKey, uint8, error) {
-	// Validate input parameters
-	if bondingCurve.IsZero() {
-		return solana.PublicKey{}, 0, fmt.Errorf("bondingCurve cannot be zero")
-	}
-	if programID.IsZero() {
-		return solana.PublicKey{}, 0, fmt.Errorf("programID cannot be zero")
-	}
-
-	// Calculate the program derived address
-	address, bump, err := solana.FindProgramAddress(
-		[][]byte{associatedCurveSeed, bondingCurve.Bytes()},
-		programID,
-	)
-	if err != nil {
-		return solana.PublicKey{}, 0, fmt.Errorf("failed to derive associated curve address: %w", err)
-	}
-
-	return address, bump, nil
-}
+// Note: We've removed deriveAssociatedCurveAddress in favor of the direct solana.FindAssociatedTokenAddress
+// method, which correctly implements the protocol's address derivation scheme
