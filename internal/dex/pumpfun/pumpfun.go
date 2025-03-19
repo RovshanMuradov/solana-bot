@@ -348,14 +348,33 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error
 		zap.Uint64("amount", amount),
 		zap.Uint64("max_sol_cost", maxSolCost))
 
+	// Set compute budget instructions as recommended by analysis
+	// This is critical for proper transaction execution on Solana
+	computeBudgetInstructions, err := CreateComputeBudgetInstructions(
+		62000,  // Compute unit limit (slightly more than observed 61,368 units)
+		100000, // Price in micro-lamports (0.1 lamports per unit)
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create compute budget instructions: %w", err)
+	}
+
 	// Build buy instruction
 	buyIx, err := BuildBuyTokenInstruction(buyAccounts, d.wallet, amount, maxSolCost)
 	if err != nil {
 		return fmt.Errorf("failed to build buy instruction: %w", err)
 	}
 
-	// Send transaction
-	txSig, err := CreateAndSendTransaction(opCtx, d.client, d.wallet, []solana.Instruction{buyIx}, d.logger)
+	// Create instruction array with compute budget settings first
+	instructions := computeBudgetInstructions
+	instructions = append(instructions, buyIx)
+
+	// Log transaction details for debugging
+	d.logger.Info("Sending transaction with compute budget settings",
+		zap.Uint64("compute_units", 62000),
+		zap.String("compute_price", "0.1 lamports/unit"))
+
+	// Send transaction with all instructions
+	txSig, err := CreateAndSendTransaction(opCtx, d.client, d.wallet, instructions, d.logger)
 	if err != nil {
 		// Analyze the error
 		analysis := d.errorAnalyzer.AnalyzeRPCError(err)
@@ -519,14 +538,33 @@ func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64) erro
 		zap.Uint64("amount", amount),
 		zap.Uint64("min_sol_output", minSolOutput))
 
+	// Set compute budget instructions as recommended by analysis
+	// This is critical for proper transaction execution on Solana
+	computeBudgetInstructions, err := CreateComputeBudgetInstructions(
+		62000,  // Compute unit limit (slightly more than observed 61,368 units)
+		100000, // Price in micro-lamports (0.1 lamports per unit)
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create compute budget instructions: %w", err)
+	}
+
 	// Build sell instruction
 	sellIx, err := BuildSellTokenInstruction(sellAccounts, d.wallet, amount, minSolOutput)
 	if err != nil {
 		return fmt.Errorf("failed to build sell token instruction: %w", err)
 	}
 
-	// Send transaction
-	txSig, err := CreateAndSendTransaction(opCtx, d.client, d.wallet, []solana.Instruction{sellIx}, d.logger)
+	// Create instruction array with compute budget settings first
+	instructions := computeBudgetInstructions
+	instructions = append(instructions, sellIx)
+
+	// Log transaction details for debugging
+	d.logger.Info("Sending transaction with compute budget settings",
+		zap.Uint64("compute_units", 62000),
+		zap.String("compute_price", "0.1 lamports/unit"))
+
+	// Send transaction with all instructions
+	txSig, err := CreateAndSendTransaction(opCtx, d.client, d.wallet, instructions, d.logger)
 	if err != nil {
 		// Analyze the error
 		analysis := d.errorAnalyzer.AnalyzeRPCError(err)
@@ -720,82 +758,48 @@ func ensureUserATA(
 }
 
 // ensureAssociatedBondingCurve verifies that the associated bonding curve account exists and is properly initialized
+// Using the new dynamic discovery pattern for more reliable operation
 func (d *DEX) ensureAssociatedBondingCurve(ctx context.Context) error {
-	d.logger.Debug("Verifying bonding curve accounts",
+	d.logger.Debug("Verifying bonding curve accounts with dynamic discovery",
 		zap.String("bonding_curve", d.config.BondingCurve.String()),
 		zap.String("associated_bonding_curve", d.config.AssociatedBondingCurve.String()))
 
-	// Check bonding curve account - this must exist and be properly owned
-	bcInfo, err := d.client.GetAccountInfo(ctx, d.config.BondingCurve)
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			d.logger.Error("Primary bonding curve account does not exist",
-				zap.String("bonding_curve", d.config.BondingCurve.String()))
-			return fmt.Errorf("primary bonding curve does not exist; operation cannot proceed")
-		}
-		return fmt.Errorf("failed to get bonding curve info: %w", err)
-	}
+	// Use the IsTokenEligibleForPumpfun function which implements the full verification pipeline
+	eligible, discoveredAddress, err := IsTokenEligibleForPumpfun(
+		ctx,
+		d.client,
+		d.config.Mint,
+		d.config.BondingCurve,
+		d.config.ContractAddress,
+		d.logger,
+	)
 
-	// Verify the primary bonding curve exists and is owned by the correct program
-	if bcInfo.Value == nil || !bcInfo.Value.Owner.Equals(d.config.ContractAddress) {
-		var ownerStr string
-		if bcInfo.Value != nil {
-			ownerStr = bcInfo.Value.Owner.String()
-		} else {
-			ownerStr = "nil"
-		}
-		
-		d.logger.Error("Primary bonding curve is not properly initialized",
+	if err != nil {
+		d.logger.Error("Token eligibility check failed",
+			zap.String("mint", d.config.Mint.String()),
 			zap.String("bonding_curve", d.config.BondingCurve.String()),
-			zap.String("owner", ownerStr),
-			zap.String("expected_owner", d.config.ContractAddress.String()))
-		return fmt.Errorf("primary bonding curve is not properly owned by the expected program")
+			zap.Error(err))
+		return fmt.Errorf("token eligibility verification failed: %w", err)
 	}
 
-	d.logger.Info("Primary bonding curve account verified successfully",
-		zap.String("bonding_curve", d.config.BondingCurve.String()))
-
-	// Check associated bonding curve - this MUST exist and be properly owned according to protocol specs
-	abcInfo, err := d.client.GetAccountInfo(ctx, d.config.AssociatedBondingCurve)
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			d.logger.Error("Associated bonding curve account does not exist",
-				zap.String("associated_bonding_curve", d.config.AssociatedBondingCurve.String()))
-
-			// CRITICAL UPDATE: According to Pump.fun protocol specifications, the
-			// associated bonding curve account must be initialized by the token creator
-			// during token creation. It cannot be initialized separately and is not
-			// auto-created by the protocol during transactions.
-			d.logger.Error("Cannot proceed without associated bonding curve - it must be created by token creator",
-				zap.String("mint", d.config.Mint.String()),
-				zap.String("bonding_curve", d.config.BondingCurve.String()))
-
-			return fmt.Errorf("associated bonding curve does not exist; this must be created by the token creator during token creation")
-		}
-		// Other errors should still be reported
-		return fmt.Errorf("failed to check associated bonding curve: %w", err)
+	if !eligible {
+		d.logger.Error("Token is not eligible for Pump.fun operations",
+			zap.String("mint", d.config.Mint.String()),
+			zap.String("bonding_curve", d.config.BondingCurve.String()))
+		return fmt.Errorf("token is not eligible for Pump.fun operations; required accounts are not properly initialized")
 	}
 
-	// If associated bonding curve exists, verify it is properly owned
-	if abcInfo.Value == nil {
-		d.logger.Error("Associated bonding curve account exists but has no data",
-			zap.String("associated_bonding_curve", d.config.AssociatedBondingCurve.String()))
-		return fmt.Errorf("associated bonding curve has no data")
+	// Update the associated bonding curve address if it was dynamically discovered
+	if d.config.AssociatedBondingCurve.IsZero() || !d.config.AssociatedBondingCurve.Equals(discoveredAddress) {
+		d.logger.Info("Updating associated bonding curve address from discovery",
+			zap.String("old_address", d.config.AssociatedBondingCurve.String()),
+			zap.String("discovered_address", discoveredAddress.String()))
+		d.config.AssociatedBondingCurve = discoveredAddress
 	}
-	
-	// Verify proper ownership
-	if !abcInfo.Value.Owner.Equals(d.config.ContractAddress) {
-		d.logger.Error("Associated bonding curve exists but has incorrect ownership",
-			zap.String("associated_bonding_curve", d.config.AssociatedBondingCurve.String()),
-			zap.String("owner", abcInfo.Value.Owner.String()),
-			zap.String("expected_owner", d.config.ContractAddress.String()))
-		return fmt.Errorf("associated bonding curve has incorrect ownership")
-	}
-	
-	d.logger.Info("Associated bonding curve account successfully verified",
-		zap.String("associated_bonding_curve", d.config.AssociatedBondingCurve.String()),
-		zap.String("owner", abcInfo.Value.Owner.String()))
 
-	// Both primary and associated bonding curves are valid
+	d.logger.Info("Bonding curve accounts successfully verified",
+		zap.String("bonding_curve", d.config.BondingCurve.String()),
+		zap.String("associated_bonding_curve", d.config.AssociatedBondingCurve.String()))
+
 	return nil
 }

@@ -17,20 +17,42 @@ import (
 )
 
 // BuildBuyTokenInstruction builds a buy instruction for Pump.fun protocol
+// with optimized instruction construction and validation
 func BuildBuyTokenInstruction(
 	accounts InstructionAccounts,
 	userWallet *wallet.Wallet,
 	amount, maxSolCost uint64,
 ) (solana.Instruction, error) {
-	// Use configured discriminator version
-	discriminator, ok := BuyDiscriminators[DiscriminatorVersion]
-	if !ok {
-		return nil, fmt.Errorf("discriminator version %s not found", DiscriminatorVersion)
+	// Fixed buy instruction discriminator from Pump.fun protocol
+	// This is the exact discriminator observed in successful transactions
+	buyDiscriminator := []byte{0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea}
+
+	// Validate account constraints before building instruction
+	if accounts.Global.IsZero() {
+		return nil, fmt.Errorf("global account address is required")
+	}
+	if accounts.FeeRecipient.IsZero() {
+		return nil, fmt.Errorf("fee recipient address is required")
+	}
+	if accounts.Mint.IsZero() {
+		return nil, fmt.Errorf("token mint address is required")
+	}
+	if accounts.BondingCurve.IsZero() {
+		return nil, fmt.Errorf("bonding curve address is required")
+	}
+	if accounts.AssociatedBondingCurve.IsZero() {
+		return nil, fmt.Errorf("associated bonding curve address is required")
+	}
+	if accounts.EventAuthority.IsZero() {
+		return nil, fmt.Errorf("event authority address is required")
+	}
+	if accounts.Program.IsZero() {
+		return nil, fmt.Errorf("program address is required")
 	}
 
-	// Create instruction data
-	data := make([]byte, len(discriminator))
-	copy(data, discriminator)
+	// Create instruction data starting with discriminator
+	data := make([]byte, len(buyDiscriminator))
+	copy(data, buyDiscriminator)
 
 	// Add amount in little-endian bytes
 	amountBytes := make([]byte, 8)
@@ -49,6 +71,7 @@ func BuildBuyTokenInstruction(
 	}
 
 	// Account list must be in the exact order expected by the program
+	// This order is critical for the instruction to be accepted
 	insAccounts := []*solana.AccountMeta{
 		{PublicKey: accounts.Global, IsSigner: false, IsWritable: false},
 		{PublicKey: accounts.FeeRecipient, IsSigner: false, IsWritable: true},
@@ -69,20 +92,42 @@ func BuildBuyTokenInstruction(
 }
 
 // BuildSellTokenInstruction builds a sell instruction for Pump.fun protocol
+// with optimized instruction construction and validation
 func BuildSellTokenInstruction(
 	accounts InstructionAccounts,
 	userWallet *wallet.Wallet,
 	amount, minSolOutput uint64,
 ) (solana.Instruction, error) {
-	// Use configured discriminator version
-	discriminator, ok := SellDiscriminators[DiscriminatorVersion]
-	if !ok {
-		return nil, fmt.Errorf("discriminator version %s not found", DiscriminatorVersion)
+	// Fixed sell instruction discriminator from Pump.fun protocol
+	// This is the exact discriminator observed in successful transactions
+	sellDiscriminator := []byte{0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad}
+
+	// Validate account constraints before building instruction
+	if accounts.Global.IsZero() {
+		return nil, fmt.Errorf("global account address is required")
+	}
+	if accounts.FeeRecipient.IsZero() {
+		return nil, fmt.Errorf("fee recipient address is required")
+	}
+	if accounts.Mint.IsZero() {
+		return nil, fmt.Errorf("token mint address is required")
+	}
+	if accounts.BondingCurve.IsZero() {
+		return nil, fmt.Errorf("bonding curve address is required")
+	}
+	if accounts.AssociatedBondingCurve.IsZero() {
+		return nil, fmt.Errorf("associated bonding curve address is required")
+	}
+	if accounts.EventAuthority.IsZero() {
+		return nil, fmt.Errorf("event authority address is required")
+	}
+	if accounts.Program.IsZero() {
+		return nil, fmt.Errorf("program address is required")
 	}
 
-	// Create instruction data
-	data := make([]byte, len(discriminator))
-	copy(data, discriminator)
+	// Create instruction data starting with discriminator
+	data := make([]byte, len(sellDiscriminator))
+	copy(data, sellDiscriminator)
 
 	// Add amount in little-endian bytes
 	amountBytes := make([]byte, 8)
@@ -101,6 +146,7 @@ func BuildSellTokenInstruction(
 	}
 
 	// Account list must be in the exact order expected by the program
+	// This order is critical for the instruction to be accepted
 	insAccounts := []*solana.AccountMeta{
 		{PublicKey: accounts.Global, IsSigner: false, IsWritable: false},
 		{PublicKey: accounts.FeeRecipient, IsSigner: false, IsWritable: true},
@@ -122,6 +168,40 @@ func BuildSellTokenInstruction(
 
 // CreateDiscriminator is the instruction discriminator for creating a token and its bonding curve
 var CreateDiscriminator = []byte{0x20, 0xca, 0xb0, 0x52, 0xf7, 0x6d, 0xd0, 0x57}
+
+// CreateComputeBudgetInstructions creates the compute budget instructions for Solana transactions
+// Returns two instructions: one to set compute unit limit and one to set compute unit price
+func CreateComputeBudgetInstructions(computeUnits uint32, microLamportsPerUnit uint64) ([]solana.Instruction, error) {
+	// Compute Budget Program ID
+	computeBudgetProgramID := solana.MustPublicKeyFromBase58("ComputeBudget111111111111111111111111111111")
+	
+	// Create instruction array
+	instructions := make([]solana.Instruction, 2)
+	
+	// Create set compute unit limit instruction
+	// Instruction data: first byte is 0x02 (instruction index), followed by 4-byte little-endian uint32
+	unitLimitData := []byte{0x02, 0x00, 0x00, 0x00, 0x00}
+	binary.LittleEndian.PutUint32(unitLimitData[1:], computeUnits)
+	
+	instructions[0] = solana.NewInstruction(
+		computeBudgetProgramID,
+		[]*solana.AccountMeta{}, // No accounts needed
+		unitLimitData,
+	)
+	
+	// Create set compute unit price instruction
+	// Instruction data: first byte is 0x03 (instruction index), followed by 8-byte little-endian uint64
+	unitPriceData := []byte{0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+	binary.LittleEndian.PutUint64(unitPriceData[1:], microLamportsPerUnit)
+	
+	instructions[1] = solana.NewInstruction(
+		computeBudgetProgramID,
+		[]*solana.AccountMeta{}, // No accounts needed
+		unitPriceData,
+	)
+	
+	return instructions, nil
+}
 
 // VerifyBondingCurveInstruction builds an instruction to verify the existence and ownership
 // of the bonding curve and associated bonding curve accounts
