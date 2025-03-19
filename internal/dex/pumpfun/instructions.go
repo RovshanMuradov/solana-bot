@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
@@ -119,40 +120,60 @@ func BuildSellTokenInstruction(
 	return solana.NewInstruction(accounts.Program, insAccounts, data), nil
 }
 
-// InitializeAssociatedBondingCurveDiscriminator is the instruction discriminator for initializing 
-// an associated bonding curve account
-var InitializeAssociatedBondingCurveDiscriminator = []byte{0x12, 0x65, 0x4a, 0xb9, 0x32, 0x67, 0xcd, 0xaa}
+// CreateDiscriminator is the instruction discriminator for creating a token and its bonding curve
+var CreateDiscriminator = []byte{0x20, 0xca, 0xb0, 0x52, 0xf7, 0x6d, 0xd0, 0x57}
 
-// BuildInitializeAssociatedBondingCurveInstruction builds an instruction to initialize
-// the associated bonding curve account with the Pump.fun program
-func BuildInitializeAssociatedBondingCurveInstruction(
+// VerifyBondingCurveInstruction builds an instruction to verify the existence and ownership
+// of the bonding curve and associated bonding curve accounts
+func VerifyBondingCurveInstruction(
+	ctx context.Context,
+	client *solbc.Client,
 	mint solana.PublicKey,
 	bondingCurve solana.PublicKey,
 	associatedBondingCurve solana.PublicKey,
-	programID solana.PublicKey,
-	payer solana.PublicKey,
-) solana.Instruction {
-	// Create instruction data with the initialize discriminator
-	data := make([]byte, len(InitializeAssociatedBondingCurveDiscriminator))
-	copy(data, InitializeAssociatedBondingCurveDiscriminator)
+	wallet *wallet.Wallet,
+	logger *zap.Logger,
+) (bool, error) {
+	// Create a timeout context for verification operations
+	verifyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 
-	// Get bonding curve ATA
-	bondingCurveATA, _, _ := solana.FindAssociatedTokenAddress(bondingCurve, mint)
-
-	// Account list in the exact order expected by the program for initialization
-	insAccounts := []*solana.AccountMeta{
-		{PublicKey: bondingCurve, IsSigner: false, IsWritable: true},
-		{PublicKey: associatedBondingCurve, IsSigner: false, IsWritable: true},
-		{PublicKey: bondingCurveATA, IsSigner: false, IsWritable: false},
-		{PublicKey: mint, IsSigner: false, IsWritable: false},
-		{PublicKey: payer, IsSigner: true, IsWritable: true},
-		{PublicKey: solana.SystemProgramID, IsSigner: false, IsWritable: false},
-		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
-		{PublicKey: SysvarRentPubkey, IsSigner: false, IsWritable: false},
+	// Check if bonding curve exists and is owned by the program
+	bcInfo, err := client.GetAccountInfo(verifyCtx, bondingCurve)
+	if err != nil {
+		return false, fmt.Errorf("failed to get bonding curve info: %w", err)
 	}
 
-	// Create and return the instruction
-	return solana.NewInstruction(programID, insAccounts, data)
+	// Check if associated bonding curve exists and is owned by the program
+	abcInfo, err := client.GetAccountInfo(verifyCtx, associatedBondingCurve)
+	if err != nil {
+		return false, fmt.Errorf("failed to get associated bonding curve info: %w", err)
+	}
+
+	// Verify that both accounts exist and are owned by the program
+	if bcInfo.Value == nil || abcInfo.Value == nil {
+		logger.Info("One or both bonding curve accounts do not exist",
+			zap.Bool("bonding_curve_exists", bcInfo.Value != nil),
+			zap.Bool("associated_bonding_curve_exists", abcInfo.Value != nil))
+		return false, nil
+	}
+
+	// Check ownership
+	validBondingCurve := bcInfo.Value.Owner.Equals(PumpFunProgramID)
+	validAssociatedBondingCurve := abcInfo.Value.Owner.Equals(PumpFunProgramID)
+
+	if !validBondingCurve || !validAssociatedBondingCurve {
+		logger.Info("One or both bonding curve accounts have incorrect ownership",
+			zap.Bool("valid_bonding_curve", validBondingCurve),
+			zap.Bool("valid_associated_bonding_curve", validAssociatedBondingCurve),
+			zap.String("bonding_curve_owner", bcInfo.Value.Owner.String()),
+			zap.String("associated_bonding_curve_owner", abcInfo.Value.Owner.String()),
+			zap.String("expected_owner", PumpFunProgramID.String()))
+		return false, nil
+	}
+
+	logger.Debug("Both bonding curve accounts exist and are correctly owned")
+	return true, nil
 }
 
 // createAssociatedTokenAccount creates the associated token account if it doesn't exist
