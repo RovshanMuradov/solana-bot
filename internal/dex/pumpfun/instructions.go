@@ -170,51 +170,50 @@ func VerifyBondingCurveInstruction(
 	// Check if associated bonding curve exists and is owned by the program
 	abcInfo, err := client.GetAccountInfo(verifyCtx, associatedBondingCurve)
 	if err != nil {
-		// Handle "not found" error specifically - this is the key fix
+		// Handle "not found" error specifically - the critical fix
 		if strings.Contains(err.Error(), "not found") {
-			logger.Warn("Associated bonding curve account does not exist, but we'll proceed",
+			logger.Error("Associated bonding curve account does not exist",
 				zap.String("associated_bonding_curve", associatedBondingCurve.String()))
 			
-			// CRITICAL: Some configurations of Pump.fun tokens might not have
-			// an associated bonding curve, or it might be created during the first
-			// transaction. Let's allow the operation to proceed as long as the main
-			// bonding curve exists.
-			logger.Info("Continuing without associated bonding curve - will be created by protocol if needed", 
+			// CRITICAL: According to the Pump.fun protocol specifications,
+			// the associated bonding curve MUST be initialized before transactions.
+			// The account is NOT automatically created by the protocol during transactions.
+			logger.Info("Associated bonding curve must be properly initialized before transactions", 
 				zap.String("mint", mint.String()),
 				zap.String("bonding_curve", bondingCurve.String()))
 				
-			return true, nil  // Return success to allow operation to continue
+			return false, nil  // Return failure to prevent proceeding with uninitialized account
 		}
 		return false, fmt.Errorf("failed to get associated bonding curve info: %w", err)
 	}
 
 	// Check if associated bonding curve account exists
 	if abcInfo.Value == nil {
-		logger.Warn("Associated bonding curve account response is empty",
+		logger.Error("Associated bonding curve account response is empty",
 			zap.String("associated_bonding_curve", associatedBondingCurve.String()))
 		
-		// Still allow operation to proceed
-		logger.Info("Continuing despite empty associated bonding curve response", 
+		// Don't allow operation to proceed with empty account data
+		logger.Info("Cannot proceed with empty associated bonding curve account", 
 			zap.String("mint", mint.String()),
 			zap.String("bonding_curve", bondingCurve.String()))
 			
-		return true, nil
+		return false, nil
 	}
 
 	// Check ownership of associated bonding curve if it exists
 	validAssociatedBondingCurve := abcInfo.Value.Owner.Equals(PumpFunProgramID)
 	if !validAssociatedBondingCurve {
-		logger.Warn("Associated bonding curve exists but has incorrect ownership",
+		logger.Error("Associated bonding curve exists but has incorrect ownership",
 			zap.String("associated_bonding_curve", associatedBondingCurve.String()),
 			zap.String("owner", abcInfo.Value.Owner.String()),
 			zap.String("expected_owner", PumpFunProgramID.String()))
 		
-		// Still allow operation to proceed
-		logger.Info("Continuing despite incorrect ownership of associated bonding curve", 
+		// Don't allow operation to proceed with incorrect ownership
+		logger.Info("Cannot proceed with incorrectly owned associated bonding curve", 
 			zap.String("mint", mint.String()),
 			zap.String("bonding_curve", bondingCurve.String()))
 			
-		return true, nil
+		return false, nil
 	}
 
 	logger.Debug("Bonding curve accounts verified successfully")

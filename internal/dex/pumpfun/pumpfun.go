@@ -7,6 +7,7 @@ package pumpfun
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -116,19 +117,19 @@ func (d *DEX) VerifyAccounts(ctx context.Context) error {
 		d.logger.Info("Derived associated bonding curve",
 			zap.String("address", derivedAddress.String()),
 			zap.Uint8("bump", bump))
-
-		// Verify the derived account exists on-chain
-		accountInfo, err := d.client.GetAccountInfo(ctx, derivedAddress)
-		if err != nil {
-			return fmt.Errorf("failed to verify derived associated bonding curve: %w", err)
-		}
-
-		// Правильная проверка существования данных аккаунта
-		if accountInfo == nil || accountInfo.Value == nil || len(accountInfo.Value.Data.GetBinary()) == 0 {
-			d.logger.Warn("Derived associated bonding curve account does not exist or is empty")
-			// Depending on your requirements, you might want to return an error here
-			// or continue with the knowledge that the account needs to be created
-		}
+	}
+	
+	// Verify both bonding curve accounts are properly initialized
+	if err := d.ensureAssociatedBondingCurve(ctx); err != nil {
+		d.logger.Error("Failed to verify bonding curve accounts",
+			zap.Error(err),
+			zap.String("bonding_curve", d.config.BondingCurve.String()),
+			zap.String("associated_bonding_curve", d.config.AssociatedBondingCurve.String()))
+		
+		// Add more detailed error message about required account setup
+		return fmt.Errorf("bonding curve verification failed: %w. According to Pump.fun protocol, "+
+			"associated bonding curve accounts must be created during token creation by the token creator. "+
+			"This token cannot be interacted with using this protocol until it has a proper associated bonding curve", err)
 	}
 
 	d.logger.Debug("All critical accounts verified successfully")
@@ -196,6 +197,40 @@ func isAccountNotInitializedError(err error, analysis map[string]interface{}) bo
 	return strings.Contains(errStr, "AccountNotInitialized") ||
 		strings.Contains(errStr, "0xbc4") || // AccountNotInitialized error hex
 		strings.Contains(errStr, "3012") // AccountNotInitialized error code
+}
+
+// extractErrorDetails extracts detailed information from Solana error messages
+func extractErrorDetails(errMsg string) map[string]string {
+	details := make(map[string]string)
+
+	// Look for AnchorError patterns
+	if strings.Contains(errMsg, "AnchorError") {
+		// Extract account information
+		accountMatch := regexp.MustCompile(`caused by account: ([\w_-]+)`).FindStringSubmatch(errMsg)
+		if len(accountMatch) > 1 {
+			details["account"] = accountMatch[1]
+		}
+
+		// Extract error code
+		codeMatch := regexp.MustCompile(`Error Code: ([\w]+)`).FindStringSubmatch(errMsg)
+		if len(codeMatch) > 1 {
+			details["error_code"] = codeMatch[1]
+		}
+
+		// Extract error number
+		numberMatch := regexp.MustCompile(`Error Number: (\d+)`).FindStringSubmatch(errMsg)
+		if len(numberMatch) > 1 {
+			details["error_number"] = numberMatch[1]
+		}
+
+		// Extract error message
+		msgMatch := regexp.MustCompile(`Error Message: (.+?)(?:\.|$)`).FindStringSubmatch(errMsg)
+		if len(msgMatch) > 1 {
+			details["error_message"] = msgMatch[1]
+		}
+	}
+
+	return details
 }
 
 // ExecuteSnipe executes a buy operation on the Pump.fun protocol
@@ -273,27 +308,40 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error
 		return fmt.Errorf("failed to ensure bonding curve token account: %w", err)
 	}
 
-	// Step 3: Verify that both bonding curve accounts exist and are properly owned
-	d.logger.Debug("Step 3: Verifying bonding curve accounts")
-	verified, err := VerifyBondingCurveInstruction(
-		opCtx,
-		d.client,
-		d.config.Mint,
-		d.config.BondingCurve,
-		d.config.AssociatedBondingCurve,
-		d.wallet,
-		d.logger,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to verify bonding curve accounts: %w", err)
+	// Skip direct VerifyBondingCurveInstruction call since we're now doing full verification in VerifyAccounts
+	d.logger.Debug("Step 3: Bonding curve accounts were already verified in initial verification step")
+	
+	// Additional diagnostic logging to help understand account states
+	diagInfo := map[string]interface{}{}
+	
+	// Get information about bonding curve
+	bcInfo, bcErr := d.client.GetAccountInfo(opCtx, d.config.BondingCurve)
+	if bcErr == nil && bcInfo != nil && bcInfo.Value != nil {
+		diagInfo["bonding_curve_exists"] = true
+		diagInfo["bonding_curve_owner"] = bcInfo.Value.Owner.String()
+		diagInfo["bonding_curve_data_size"] = len(bcInfo.Value.Data.GetBinary())
+	} else {
+		diagInfo["bonding_curve_exists"] = false
+		if bcErr != nil {
+			diagInfo["bonding_curve_error"] = bcErr.Error()
+		}
 	}
-
-	if !verified {
-		d.logger.Error("Cannot proceed with buy operation: bonding curve accounts not properly initialized",
-			zap.String("bonding_curve", d.config.BondingCurve.String()),
-			zap.String("associated_bonding_curve", d.config.AssociatedBondingCurve.String()))
-		return fmt.Errorf("bonding curve accounts not properly initialized; these must be set up by the token creator")
+	
+	// Get information about associated bonding curve
+	abcInfo, abcErr := d.client.GetAccountInfo(opCtx, d.config.AssociatedBondingCurve)
+	if abcErr == nil && abcInfo != nil && abcInfo.Value != nil {
+		diagInfo["associated_bonding_curve_exists"] = true
+		diagInfo["associated_bonding_curve_owner"] = abcInfo.Value.Owner.String()
+		diagInfo["associated_bonding_curve_data_size"] = len(abcInfo.Value.Data.GetBinary())
+	} else {
+		diagInfo["associated_bonding_curve_exists"] = false
+		if abcErr != nil {
+			diagInfo["associated_bonding_curve_error"] = abcErr.Error()
+		}
 	}
+	
+	// Log the diagnostic information
+	d.logger.Info("Account diagnostic information for transaction", zap.Any("diagnostics", diagInfo))
 
 	// TRANSACTION EXECUTION PHASE
 	d.logger.Info("Executing Pump.fun buy transaction",
@@ -317,7 +365,7 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error
 
 		// If it's an uninitialized account error, this means our verification wasn't sufficient
 		if isAccountNotInitializedError(err, analysis) {
-			d.logger.Error("Account initialization error detected despite verification",
+			d.logger.Error("Account initialization error detected for buy operation",
 				zap.Error(err))
 
 			// Re-check accounts to provide detailed diagnostics
@@ -332,7 +380,7 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error
 				zap.Bool("associated_bonding_curve_exists", abcInfo != nil && abcInfo.Value != nil),
 				zap.Bool("user_ata_exists", ataInfo != nil && ataInfo.Value != nil))
 
-			return fmt.Errorf("transaction failed due to uninitialized account despite verification: %w", err)
+			return fmt.Errorf("transaction failed due to uninitialized account: %w", err)
 		}
 
 		// Handle other types of errors
@@ -431,27 +479,40 @@ func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64) erro
 		return fmt.Errorf("failed to ensure bonding curve token account: %w", err)
 	}
 
-	// Step 3: Verify that both bonding curve accounts exist and are properly owned
-	d.logger.Debug("Step 3: Verifying bonding curve accounts")
-	verified, err := VerifyBondingCurveInstruction(
-		opCtx,
-		d.client,
-		d.config.Mint,
-		d.config.BondingCurve,
-		d.config.AssociatedBondingCurve,
-		d.wallet,
-		d.logger,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to verify bonding curve accounts: %w", err)
+	// Skip direct VerifyBondingCurveInstruction call since we're now doing full verification in VerifyAccounts
+	d.logger.Debug("Step 3: Bonding curve accounts were already verified in initial verification step")
+	
+	// Additional diagnostic logging to help understand account states
+	diagInfo := map[string]interface{}{}
+	
+	// Get information about bonding curve
+	bcInfo, bcErr := d.client.GetAccountInfo(opCtx, d.config.BondingCurve)
+	if bcErr == nil && bcInfo != nil && bcInfo.Value != nil {
+		diagInfo["bonding_curve_exists"] = true
+		diagInfo["bonding_curve_owner"] = bcInfo.Value.Owner.String()
+		diagInfo["bonding_curve_data_size"] = len(bcInfo.Value.Data.GetBinary())
+	} else {
+		diagInfo["bonding_curve_exists"] = false
+		if bcErr != nil {
+			diagInfo["bonding_curve_error"] = bcErr.Error()
+		}
 	}
-
-	if !verified {
-		d.logger.Error("Cannot proceed with sell operation: bonding curve accounts not properly initialized",
-			zap.String("bonding_curve", d.config.BondingCurve.String()),
-			zap.String("associated_bonding_curve", d.config.AssociatedBondingCurve.String()))
-		return fmt.Errorf("bonding curve accounts not properly initialized; these must be set up by the token creator")
+	
+	// Get information about associated bonding curve
+	abcInfo, abcErr := d.client.GetAccountInfo(opCtx, d.config.AssociatedBondingCurve)
+	if abcErr == nil && abcInfo != nil && abcInfo.Value != nil {
+		diagInfo["associated_bonding_curve_exists"] = true
+		diagInfo["associated_bonding_curve_owner"] = abcInfo.Value.Owner.String()
+		diagInfo["associated_bonding_curve_data_size"] = len(abcInfo.Value.Data.GetBinary())
+	} else {
+		diagInfo["associated_bonding_curve_exists"] = false
+		if abcErr != nil {
+			diagInfo["associated_bonding_curve_error"] = abcErr.Error()
+		}
 	}
+	
+	// Log the diagnostic information
+	d.logger.Info("Account diagnostic information for transaction", zap.Any("diagnostics", diagInfo))
 
 	// TRANSACTION EXECUTION PHASE
 	d.logger.Info("Executing Pump.fun sell transaction",
@@ -475,7 +536,7 @@ func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64) erro
 
 		// If it's an uninitialized account error, this means our verification wasn't sufficient
 		if isAccountNotInitializedError(err, analysis) {
-			d.logger.Error("Account initialization error detected despite verification",
+			d.logger.Error("Account initialization error detected",
 				zap.Error(err))
 
 			// Re-check accounts to provide detailed diagnostics
@@ -490,7 +551,7 @@ func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64) erro
 				zap.Bool("associated_bonding_curve_exists", abcInfo != nil && abcInfo.Value != nil),
 				zap.Bool("user_ata_exists", ataInfo != nil && ataInfo.Value != nil))
 
-			return fmt.Errorf("transaction failed due to uninitialized account despite verification: %w", err)
+			return fmt.Errorf("transaction failed due to uninitialized account: %w", err)
 		}
 
 		// Handle other types of errors
@@ -694,40 +755,47 @@ func (d *DEX) ensureAssociatedBondingCurve(ctx context.Context) error {
 	d.logger.Info("Primary bonding curve account verified successfully",
 		zap.String("bonding_curve", d.config.BondingCurve.String()))
 
-	// Check associated bonding curve - this is allowed to be missing
+	// Check associated bonding curve - this MUST exist and be properly owned according to protocol specs
 	abcInfo, err := d.client.GetAccountInfo(ctx, d.config.AssociatedBondingCurve)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
-			d.logger.Warn("Associated bonding curve account does not exist, but we'll proceed",
+			d.logger.Error("Associated bonding curve account does not exist",
 				zap.String("associated_bonding_curve", d.config.AssociatedBondingCurve.String()))
 
-			// CRITICAL UPDATE: We'll now allow operations to proceed even if the
-			// associated bonding curve account is missing. The protocol should handle
-			// this correctly for token purchase operations.
-			d.logger.Info("Continuing without associated bonding curve - protocol will handle it",
+			// CRITICAL UPDATE: According to Pump.fun protocol specifications, the
+			// associated bonding curve account must be initialized by the token creator
+			// during token creation. It cannot be initialized separately and is not
+			// auto-created by the protocol during transactions.
+			d.logger.Error("Cannot proceed without associated bonding curve - it must be created by token creator",
 				zap.String("mint", d.config.Mint.String()),
 				zap.String("bonding_curve", d.config.BondingCurve.String()))
 
-			return nil
+			return fmt.Errorf("associated bonding curve does not exist; this must be created by the token creator during token creation")
 		}
 		// Other errors should still be reported
 		return fmt.Errorf("failed to check associated bonding curve: %w", err)
 	}
 
-	// If associated bonding curve exists, log its state but don't block operation
-	if abcInfo.Value != nil && abcInfo.Value.Owner.Equals(d.config.ContractAddress) {
-		d.logger.Info("Associated bonding curve account already exists and is correctly owned",
-			zap.String("associated_bonding_curve", d.config.AssociatedBondingCurve.String()),
-			zap.String("owner", abcInfo.Value.Owner.String()))
-	} else if abcInfo.Value != nil {
-		d.logger.Warn("Associated bonding curve exists but has incorrect ownership",
+	// If associated bonding curve exists, verify it is properly owned
+	if abcInfo.Value == nil {
+		d.logger.Error("Associated bonding curve account exists but has no data",
+			zap.String("associated_bonding_curve", d.config.AssociatedBondingCurve.String()))
+		return fmt.Errorf("associated bonding curve has no data")
+	}
+	
+	// Verify proper ownership
+	if !abcInfo.Value.Owner.Equals(d.config.ContractAddress) {
+		d.logger.Error("Associated bonding curve exists but has incorrect ownership",
 			zap.String("associated_bonding_curve", d.config.AssociatedBondingCurve.String()),
 			zap.String("owner", abcInfo.Value.Owner.String()),
 			zap.String("expected_owner", d.config.ContractAddress.String()))
-	} else {
-		d.logger.Warn("Associated bonding curve exists but has no data")
+		return fmt.Errorf("associated bonding curve has incorrect ownership")
 	}
+	
+	d.logger.Info("Associated bonding curve account successfully verified",
+		zap.String("associated_bonding_curve", d.config.AssociatedBondingCurve.String()),
+		zap.String("owner", abcInfo.Value.Owner.String()))
 
-	// Always return success as long as the primary bonding curve is valid
+	// Both primary and associated bonding curves are valid
 	return nil
 }
