@@ -200,16 +200,25 @@ func isAccountNotInitializedError(err error, analysis map[string]interface{}) bo
 
 // ExecuteSnipe executes a buy operation on the Pump.fun protocol
 func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error {
+	// Create a context with timeout for the entire operation
+	opCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+
+	d.logger.Info("Starting Pump.fun buy operation",
+		zap.Uint64("amount", amount),
+		zap.Uint64("max_sol_cost", maxSolCost))
+
 	// Verify accounts before execution
-	if err := d.VerifyAccounts(ctx); err != nil {
+	if err := d.VerifyAccounts(opCtx); err != nil {
 		return fmt.Errorf("account verification failed before execution: %w", err)
 	}
 
 	// Check if fee recipient is set, if not, try to fetch it from global account
 	if d.config.FeeRecipient.IsZero() {
-		fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
+		fetchCtx, fetchCancel := context.WithTimeout(opCtx, 10*time.Second)
+		defer fetchCancel()
 
+		d.logger.Debug("Fetching global account to get fee recipient")
 		globalAccount, err := FetchGlobalAccount(fetchCtx, d.client, d.config.Global, d.logger)
 		if err != nil {
 			return fmt.Errorf("fee recipient not set and failed to fetch global account: %w", err)
@@ -223,10 +232,6 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error
 			return fmt.Errorf("fee recipient is not available, cannot execute snipe")
 		}
 	}
-
-	d.logger.Info("Executing Pump.fun buy operation",
-		zap.Uint64("amount", amount),
-		zap.Uint64("max_sol_cost", maxSolCost))
 
 	// Setup accounts for buy instruction
 	buyAccounts := InstructionAccounts{
@@ -249,35 +254,61 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error
 	if buyAccounts.EventAuthority.IsZero() {
 		return fmt.Errorf("event authority address is zero")
 	}
+	if buyAccounts.AssociatedBondingCurve.IsZero() {
+		return fmt.Errorf("associated bonding curve address is zero")
+	}
 
-	// 1. Сначала создать ATA пользователя
-	if err := ensureUserATA(ctx, d.client, d.wallet, d.config.Mint, d.logger); err != nil {
+	// ACCOUNT INITIALIZATION PHASE - in correct sequence
+	d.logger.Info("Initializing required accounts")
+
+	// Step 1: First create user ATA to receive tokens
+	d.logger.Debug("Step 1: Ensuring user associated token account")
+	if err := ensureUserATA(opCtx, d.client, d.wallet, d.config.Mint, d.logger); err != nil {
 		return fmt.Errorf("failed to ensure user token account: %w", err)
 	}
 
-	// 2. Затем создать ATA для бондинг-кривой
-	if err := ensureBondingCurveATA(ctx, d.client, d.wallet, d.config.Mint, d.config.BondingCurve, d.logger); err != nil {
+	// Step 2: Then create bonding curve ATA
+	d.logger.Debug("Step 2: Ensuring bonding curve associated token account")
+	if err := ensureBondingCurveATA(opCtx, d.client, d.wallet, d.config.Mint, d.config.BondingCurve, d.logger); err != nil {
 		return fmt.Errorf("failed to ensure bonding curve token account: %w", err)
 	}
 
-	// 3. Только потом проверить/создать associated bonding curve
-	if err := d.ensureAssociatedBondingCurve(ctx); err != nil {
-		return fmt.Errorf("failed to initialize required accounts: %w", err)
+	// Step 3: Initialize associated bonding curve with program
+	d.logger.Debug("Step 3: Initializing associated bonding curve account")
+	if err := d.ensureAssociatedBondingCurve(opCtx); err != nil {
+		return fmt.Errorf("failed to initialize associated bonding curve: %w", err)
 	}
 
-	//// Ensure associated bonding curve is initialized
-	//if err := d.ensureAssociatedBondingCurve(ctx); err != nil {
-	//	return fmt.Errorf("failed to initialize required accounts: %w", err)
-	//}
-	//
-	//// Ensure necessary ATAs exist
-	//if err := ensureUserATA(ctx, d.client, d.wallet, d.config.Mint, d.logger); err != nil {
-	//	return fmt.Errorf("failed to ensure user token account: %w", err)
-	//}
-	//
-	//if err := ensureBondingCurveATA(ctx, d.client, d.wallet, d.config.Mint, d.config.BondingCurve, d.logger); err != nil {
-	//	return fmt.Errorf("failed to ensure bonding curve token account: %w", err)
-	//}
+	// After account initialization, double-check that all accounts exist
+	d.logger.Debug("Verifying all accounts after initialization")
+	checkCtx, checkCancel := context.WithTimeout(opCtx, 5*time.Second)
+	defer checkCancel()
+	
+	// Verify the associated bonding curve is properly initialized
+	accInfo, err := d.client.GetAccountInfo(checkCtx, d.config.AssociatedBondingCurve)
+	if err != nil || accInfo.Value == nil || !accInfo.Value.Owner.Equals(d.config.ContractAddress) {
+		d.logger.Warn("Associated bonding curve is still not properly initialized",
+			zap.Error(err),
+			zap.String("address", d.config.AssociatedBondingCurve.String()))
+		
+		if accInfo != nil && accInfo.Value != nil {
+			d.logger.Debug("Current owner",
+				zap.String("owner", accInfo.Value.Owner.String()),
+				zap.String("expected", d.config.ContractAddress.String()))
+		}
+		
+		// Try to reinitialize one more time with a slight delay
+		time.Sleep(2 * time.Second)
+		if initErr := d.ensureAssociatedBondingCurve(opCtx); initErr != nil {
+			d.logger.Warn("Final attempt to initialize associated bonding curve failed", 
+				zap.Error(initErr))
+		}
+	}
+
+	// TRANSACTION EXECUTION PHASE
+	d.logger.Info("Executing Pump.fun buy transaction",
+		zap.Uint64("amount", amount),
+		zap.Uint64("max_sol_cost", maxSolCost))
 
 	// Build buy instruction
 	buyIx, err := BuildBuyTokenInstruction(buyAccounts, d.wallet, amount, maxSolCost)
@@ -286,23 +317,42 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error
 	}
 
 	// Send transaction
-	txSig, err := CreateAndSendTransaction(ctx, d.client, d.wallet, []solana.Instruction{buyIx}, d.logger)
+	txSig, err := CreateAndSendTransaction(opCtx, d.client, d.wallet, []solana.Instruction{buyIx}, d.logger)
 	if err != nil {
 		// Analyze the error
 		analysis := d.errorAnalyzer.AnalyzeRPCError(err)
+		d.logger.Warn("Error sending buy transaction", 
+			zap.Error(err),
+			zap.Any("analysis", analysis))
 
 		// If it's an uninitialized account error
 		if isAccountNotInitializedError(err, analysis) {
-			// Verify accounts again
-			verifyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			defer cancel()
-
-			if verifyErr := d.VerifyAccounts(verifyCtx); verifyErr != nil {
-				return fmt.Errorf("account verification failed after error: %w", verifyErr)
+			d.logger.Info("AccountNotInitialized error detected, trying to recover")
+			
+			// Try one more time to initialize the account
+			reinitCtx, reinitCancel := context.WithTimeout(opCtx, 10*time.Second)
+			defer reinitCancel()
+			
+			if err := d.ensureAssociatedBondingCurve(reinitCtx); err != nil {
+				d.logger.Error("Failed to reinitialize associated bonding curve", zap.Error(err))
+				return fmt.Errorf("account initialization failed after error: %w", err)
 			}
-
-			// Try again with updated configuration
-			return d.ExecuteSnipe(ctx, amount, maxSolCost)
+			
+			// Wait a short time for blockchain state to update
+			time.Sleep(2 * time.Second)
+			
+			// Try to execute the transaction again
+			d.logger.Info("Retrying buy transaction after account initialization")
+			retryTxSig, retryErr := CreateAndSendTransaction(opCtx, d.client, d.wallet, []solana.Instruction{buyIx}, d.logger)
+			if retryErr != nil {
+				return fmt.Errorf("failed to send transaction after reinitialization: %w", retryErr)
+			}
+			
+			d.logger.Info("Pump.fun buy operation successful on retry",
+				zap.String("tx", retryTxSig.String()),
+				zap.Uint64("amount", amount))
+				
+			return nil
 		}
 
 		return fmt.Errorf("failed to send Pump.fun buy transaction: %w", err)
@@ -317,16 +367,30 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error
 
 // ExecuteSell executes a sell operation on Pump.fun protocol
 func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64) error {
+	// Create a context with timeout for the entire operation
+	opCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+
+	d.logger.Info("Starting Pump.fun sell operation",
+		zap.Uint64("amount", amount),
+		zap.Uint64("min_sol_output", minSolOutput))
+
+	// Check sell permission
+	if !d.config.AllowSellBeforeFull {
+		return fmt.Errorf("selling not allowed before 100%% bonding curve")
+	}
+
 	// Verify accounts before execution
-	if err := d.VerifyAccounts(ctx); err != nil {
+	if err := d.VerifyAccounts(opCtx); err != nil {
 		return fmt.Errorf("account verification failed before execution: %w", err)
 	}
 
 	// Check if fee recipient is set, if not, try to fetch it from global account
 	if d.config.FeeRecipient.IsZero() {
-		fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
+		fetchCtx, fetchCancel := context.WithTimeout(opCtx, 10*time.Second)
+		defer fetchCancel()
 
+		d.logger.Debug("Fetching global account to get fee recipient")
 		globalAccount, err := FetchGlobalAccount(fetchCtx, d.client, d.config.Global, d.logger)
 		if err != nil {
 			return fmt.Errorf("fee recipient not set and failed to fetch global account: %w", err)
@@ -340,14 +404,6 @@ func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64) erro
 			return fmt.Errorf("fee recipient is not available, cannot execute sell")
 		}
 	}
-
-	if !d.config.AllowSellBeforeFull {
-		return fmt.Errorf("selling not allowed before 100%% bonding curve")
-	}
-
-	d.logger.Info("Executing Pump.fun sell operation",
-		zap.Uint64("amount", amount),
-		zap.Uint64("min_sol_output", minSolOutput))
 
 	// Setup accounts for sell instruction
 	sellAccounts := InstructionAccounts{
@@ -370,6 +426,35 @@ func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64) erro
 	if sellAccounts.EventAuthority.IsZero() {
 		return fmt.Errorf("event authority address is zero")
 	}
+	if sellAccounts.AssociatedBondingCurve.IsZero() {
+		return fmt.Errorf("associated bonding curve address is zero")
+	}
+
+	// ACCOUNT INITIALIZATION PHASE - in correct sequence
+	d.logger.Info("Initializing required accounts")
+
+	// Step 1: First create user ATA to receive tokens
+	d.logger.Debug("Step 1: Ensuring user associated token account")
+	if err := ensureUserATA(opCtx, d.client, d.wallet, d.config.Mint, d.logger); err != nil {
+		return fmt.Errorf("failed to ensure user token account: %w", err)
+	}
+
+	// Step 2: Then create bonding curve ATA
+	d.logger.Debug("Step 2: Ensuring bonding curve associated token account")
+	if err := ensureBondingCurveATA(opCtx, d.client, d.wallet, d.config.Mint, d.config.BondingCurve, d.logger); err != nil {
+		return fmt.Errorf("failed to ensure bonding curve token account: %w", err)
+	}
+
+	// Step 3: Initialize associated bonding curve with program
+	d.logger.Debug("Step 3: Initializing associated bonding curve account")
+	if err := d.ensureAssociatedBondingCurve(opCtx); err != nil {
+		return fmt.Errorf("failed to initialize associated bonding curve: %w", err)
+	}
+
+	// TRANSACTION EXECUTION PHASE
+	d.logger.Info("Executing Pump.fun sell transaction",
+		zap.Uint64("amount", amount),
+		zap.Uint64("min_sol_output", minSolOutput))
 
 	// Build sell instruction
 	sellIx, err := BuildSellTokenInstruction(sellAccounts, d.wallet, amount, minSolOutput)
@@ -378,23 +463,43 @@ func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64) erro
 	}
 
 	// Send transaction
-	txSig, err := CreateAndSendTransaction(ctx, d.client, d.wallet, []solana.Instruction{sellIx}, d.logger)
+	txSig, err := CreateAndSendTransaction(opCtx, d.client, d.wallet, []solana.Instruction{sellIx}, d.logger)
 	if err != nil {
 		// Analyze the error
 		analysis := d.errorAnalyzer.AnalyzeRPCError(err)
+		d.logger.Warn("Error sending sell transaction", 
+			zap.Error(err),
+			zap.Any("analysis", analysis))
 
 		// If it's an uninitialized account error
 		if isAccountNotInitializedError(err, analysis) {
-			// Verify accounts again
-			verifyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			defer cancel()
-
-			if verifyErr := d.VerifyAccounts(verifyCtx); verifyErr != nil {
-				return fmt.Errorf("account verification failed after error: %w", verifyErr)
+			d.logger.Info("AccountNotInitialized error detected, trying to recover")
+			
+			// Try one more time to initialize the account
+			reinitCtx, reinitCancel := context.WithTimeout(opCtx, 10*time.Second)
+			defer reinitCancel()
+			
+			if err := d.ensureAssociatedBondingCurve(reinitCtx); err != nil {
+				d.logger.Error("Failed to reinitialize associated bonding curve", zap.Error(err))
+				return fmt.Errorf("account initialization failed after error: %w", err)
 			}
-
-			// Try again with updated configuration
-			return d.ExecuteSell(ctx, amount, minSolOutput)
+			
+			// Wait a short time for blockchain state to update
+			time.Sleep(2 * time.Second)
+			
+			// Try to execute the transaction again
+			d.logger.Info("Retrying sell transaction after account initialization")
+			retryTxSig, retryErr := CreateAndSendTransaction(opCtx, d.client, d.wallet, []solana.Instruction{sellIx}, d.logger)
+			if retryErr != nil {
+				return fmt.Errorf("failed to send transaction after reinitialization: %w", retryErr)
+			}
+			
+			d.logger.Info("Pump.fun sell operation successful on retry",
+				zap.String("tx", retryTxSig.String()),
+				zap.Uint64("amount", amount),
+				zap.Uint64("min_sol_output", minSolOutput))
+				
+			return nil
 		}
 
 		return fmt.Errorf("failed to send Pump.fun sell transaction: %w", err)
@@ -551,48 +656,106 @@ func ensureUserATA(
 	return nil
 }
 
-// ensureAssociatedBondingCurve ensures that the associated bonding curve account exists
+// ensureAssociatedBondingCurve ensures that the associated bonding curve account exists and is properly initialized
 func (d *DEX) ensureAssociatedBondingCurve(ctx context.Context) error {
+	d.logger.Debug("Checking associated bonding curve account",
+		zap.String("address", d.config.AssociatedBondingCurve.String()))
+
 	// Check if account exists
 	accInfo, err := d.client.GetAccountInfo(ctx, d.config.AssociatedBondingCurve)
 
-	// If account exists and is initialized, we're done
-	if err == nil && accInfo.Value != nil && !accInfo.Value.Owner.IsZero() {
+	// If account exists and is initialized by the program, we're done
+	if err == nil && accInfo.Value != nil && accInfo.Value.Owner.Equals(d.config.ContractAddress) {
+		d.logger.Debug("Associated bonding curve account already initialized by program",
+			zap.String("owner", accInfo.Value.Owner.String()))
 		return nil
 	}
 
-	// Create the associated token account
-	createTx, err := createAssociatedTokenAccount(
-		ctx,
-		d.client,
-		d.wallet,
-		d.config.Mint,
-		d.config.BondingCurve,
-		d.logger,
-	)
-
+	// If there was an error or the account doesn't exist, log it
 	if err != nil {
-		return fmt.Errorf("failed to prepare bonding curve creation: %w", err)
+		d.logger.Debug("Associated bonding curve account check failed",
+			zap.Error(err))
+	} else if accInfo.Value == nil || accInfo.Value.Owner.IsZero() {
+		d.logger.Debug("Associated bonding curve account not initialized")
+	} else {
+		d.logger.Debug("Associated bonding curve account has wrong owner",
+			zap.String("current_owner", accInfo.Value.Owner.String()),
+			zap.String("expected_owner", d.config.ContractAddress.String()))
 	}
 
-	// If no transaction needed (already exists), we're done
-	if createTx == nil {
-		return nil
+	d.logger.Info("Creating and initializing associated bonding curve account",
+		zap.String("address", d.config.AssociatedBondingCurve.String()))
+
+	// Step 1: Get recent blockhash
+	blockhash, err := d.client.GetRecentBlockhash(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get recent blockhash: %w", err)
+	}
+
+	// Step 2: Build the initialize instruction
+	// This will explicitly initialize the associated bonding curve with the correct program
+	initInstructions := []solana.Instruction{
+		// First ensure the bonding curve ATA exists (already called)
+		// Then initialize the associated bonding curve
+		BuildInitializeAssociatedBondingCurveInstruction(
+			d.config.Mint,
+			d.config.BondingCurve,
+			d.config.AssociatedBondingCurve,
+			d.config.ContractAddress,
+			d.wallet.PublicKey,
+		),
+	}
+
+	// Create transaction
+	tx, err := solana.NewTransaction(
+		initInstructions,
+		blockhash,
+		solana.TransactionPayer(d.wallet.PublicKey),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create associated bonding curve init transaction: %w", err)
+	}
+
+	// Sign the transaction
+	err = d.wallet.SignTransaction(tx)
+	if err != nil {
+		return fmt.Errorf("failed to sign transaction: %w", err)
 	}
 
 	// Send transaction and capture the signature
-	sig, err := d.client.SendTransaction(ctx, createTx)
+	sig, err := d.client.SendTransaction(ctx, tx)
 	if err != nil {
-		return fmt.Errorf("failed to send transaction: %w", err)
+		// If there's an error, it could be because the account was created in parallel or by another user
+		// We should check if it's a specific type of error and handle it accordingly
+		d.logger.Warn("Error sending associated bonding curve initialization transaction",
+			zap.Error(err))
+		
+		// Analyze the error
+		if strings.Contains(err.Error(), "already in use") {
+			d.logger.Info("Account already in use, this is expected if someone else initialized it")
+			// Verify the account now exists and is properly owned
+			verifyAccInfo, verifyErr := d.client.GetAccountInfo(ctx, d.config.AssociatedBondingCurve)
+			if verifyErr == nil && verifyAccInfo.Value != nil && verifyAccInfo.Value.Owner.Equals(d.config.ContractAddress) {
+				d.logger.Info("Associated bonding curve now properly initialized")
+				return nil
+			}
+		}
+		return fmt.Errorf("failed to send associated bonding curve initialization: %w", err)
 	}
 
 	// Wait for confirmation using the actual transaction signature
+	d.logger.Info("Waiting for associated bonding curve initialization confirmation",
+		zap.String("signature", sig.String()))
+	
 	confirmCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
 	if err = d.client.WaitForTransactionConfirmation(confirmCtx, sig, rpc.CommitmentConfirmed); err != nil {
-		return fmt.Errorf("transaction confirmation failed: %w", err)
+		return fmt.Errorf("associated bonding curve initialization confirmation failed: %w", err)
 	}
+
+	d.logger.Info("Associated bonding curve initialized successfully",
+		zap.String("address", d.config.AssociatedBondingCurve.String()))
 
 	return nil
 }

@@ -119,6 +119,42 @@ func BuildSellTokenInstruction(
 	return solana.NewInstruction(accounts.Program, insAccounts, data), nil
 }
 
+// InitializeAssociatedBondingCurveDiscriminator is the instruction discriminator for initializing 
+// an associated bonding curve account
+var InitializeAssociatedBondingCurveDiscriminator = []byte{0x12, 0x65, 0x4a, 0xb9, 0x32, 0x67, 0xcd, 0xaa}
+
+// BuildInitializeAssociatedBondingCurveInstruction builds an instruction to initialize
+// the associated bonding curve account with the Pump.fun program
+func BuildInitializeAssociatedBondingCurveInstruction(
+	mint solana.PublicKey,
+	bondingCurve solana.PublicKey,
+	associatedBondingCurve solana.PublicKey,
+	programID solana.PublicKey,
+	payer solana.PublicKey,
+) solana.Instruction {
+	// Create instruction data with the initialize discriminator
+	data := make([]byte, len(InitializeAssociatedBondingCurveDiscriminator))
+	copy(data, InitializeAssociatedBondingCurveDiscriminator)
+
+	// Get bonding curve ATA
+	bondingCurveATA, _, _ := solana.FindAssociatedTokenAddress(bondingCurve, mint)
+
+	// Account list in the exact order expected by the program for initialization
+	insAccounts := []*solana.AccountMeta{
+		{PublicKey: bondingCurve, IsSigner: false, IsWritable: true},
+		{PublicKey: associatedBondingCurve, IsSigner: false, IsWritable: true},
+		{PublicKey: bondingCurveATA, IsSigner: false, IsWritable: false},
+		{PublicKey: mint, IsSigner: false, IsWritable: false},
+		{PublicKey: payer, IsSigner: true, IsWritable: true},
+		{PublicKey: solana.SystemProgramID, IsSigner: false, IsWritable: false},
+		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
+		{PublicKey: SysvarRentPubkey, IsSigner: false, IsWritable: false},
+	}
+
+	// Create and return the instruction
+	return solana.NewInstruction(programID, insAccounts, data)
+}
+
 // createAssociatedTokenAccount creates the associated token account if it doesn't exist
 func createAssociatedTokenAccount(
 	ctx context.Context,
