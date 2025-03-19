@@ -250,19 +250,34 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error
 		return fmt.Errorf("event authority address is zero")
 	}
 
-	// Ensure associated bonding curve is initialized
-	if err := d.ensureAssociatedBondingCurve(ctx); err != nil {
-		return fmt.Errorf("failed to initialize required accounts: %w", err)
-	}
-
-	// Ensure necessary ATAs exist
+	// 1. Сначала создать ATA пользователя
 	if err := ensureUserATA(ctx, d.client, d.wallet, d.config.Mint, d.logger); err != nil {
 		return fmt.Errorf("failed to ensure user token account: %w", err)
 	}
 
+	// 2. Затем создать ATA для бондинг-кривой
 	if err := ensureBondingCurveATA(ctx, d.client, d.wallet, d.config.Mint, d.config.BondingCurve, d.logger); err != nil {
 		return fmt.Errorf("failed to ensure bonding curve token account: %w", err)
 	}
+
+	// 3. Только потом проверить/создать associated bonding curve
+	if err := d.ensureAssociatedBondingCurve(ctx); err != nil {
+		return fmt.Errorf("failed to initialize required accounts: %w", err)
+	}
+
+	//// Ensure associated bonding curve is initialized
+	//if err := d.ensureAssociatedBondingCurve(ctx); err != nil {
+	//	return fmt.Errorf("failed to initialize required accounts: %w", err)
+	//}
+	//
+	//// Ensure necessary ATAs exist
+	//if err := ensureUserATA(ctx, d.client, d.wallet, d.config.Mint, d.logger); err != nil {
+	//	return fmt.Errorf("failed to ensure user token account: %w", err)
+	//}
+	//
+	//if err := ensureBondingCurveATA(ctx, d.client, d.wallet, d.config.Mint, d.config.BondingCurve, d.logger); err != nil {
+	//	return fmt.Errorf("failed to ensure bonding curve token account: %w", err)
+	//}
 
 	// Build buy instruction
 	buyIx, err := BuildBuyTokenInstruction(buyAccounts, d.wallet, amount, maxSolCost)
