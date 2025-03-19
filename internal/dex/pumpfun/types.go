@@ -1,71 +1,73 @@
-// ===================================
-// File: internal/dex/pumpfun/types.go
-// ===================================
+// package pumpfun provides integration with the Pump.fun protocol on Solana
 package pumpfun
 
 import (
-	"time"
+	"context"
+	"encoding/binary"
+	"fmt"
 
 	"github.com/gagliardetto/solana-go"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 )
-
-// Token is a basic Pump.fun token info.
-type Token struct {
-	Mint         solana.PublicKey
-	BondingCurve solana.PublicKey
-	Name         string
-	Symbol       string
-	MetadataURI  string
-	CreatedAt    int64
-}
-
-// BondingCurveInfo хранит расширенную информацию о состоянии bonding curve.
-type BondingCurveInfo struct {
-	Address                solana.PublicKey // Адрес аккаунта bonding curve
-	AssociatedTokenAccount solana.PublicKey // Адрес ассоциированного токен-аккаунта
-	Progress               float64          // Процент заполнения кривой (0-100)
-	TotalSOL               float64          // Общее количество SOL в bonding curve
-	MarketCap              float64          // Рыночная капитализация в SOL
-	LastUpdated            time.Time        // Время последнего обновления
-}
 
 // GlobalAccount represents the structure of the PumpFun global account data
 type GlobalAccount struct {
-	Discriminator               [8]byte
-	Initialized                 bool
-	Authority                   solana.PublicKey
-	FeeRecipient                solana.PublicKey
-	InitialVirtualTokenReserves uint64
-	InitialVirtualSolReserves   uint64
-	InitialRealTokenReserves    uint64
-	TokenTotalSupply            uint64
-	FeeBasisPoints              uint64
+	Discriminator  [8]byte
+	Initialized    bool
+	Authority      solana.PublicKey
+	FeeRecipient   solana.PublicKey
+	FeeBasisPoints uint64
 }
 
-// InstructionAccounts holds account references for all operations
-type InstructionAccounts struct {
-	Global                 solana.PublicKey
-	FeeRecipient           solana.PublicKey
-	Mint                   solana.PublicKey
-	BondingCurve           solana.PublicKey
-	AssociatedBondingCurve solana.PublicKey
-	EventAuthority         solana.PublicKey
-	Program                solana.PublicKey
-}
+// FetchGlobalAccount fetches and parses the global account data
+func FetchGlobalAccount(ctx context.Context, client *solbc.Client, globalAddr solana.PublicKey) (*GlobalAccount, error) {
+	// Get account info from the blockchain
+	accountInfo, err := client.GetAccountInfo(ctx, globalAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get global account: %w", err)
+	}
 
-// ProgramState represents the state of the PumpFun program and its key accounts
-type ProgramState struct {
-	ProgramID                  string `json:"program_id"`
-	IsExecutable               bool   `json:"is_executable"`
-	GlobalAccount              string `json:"global_account"`
-	GlobalInitialized          bool   `json:"global_initialized"`
-	GlobalOwner                string `json:"global_owner,omitempty"`
-	BondingCurve               string `json:"bonding_curve"`
-	BondingCurveInitialized    bool   `json:"bonding_curve_initialized"`
-	BondingCurveOwner          string `json:"bonding_curve_owner,omitempty"`
-	AssociatedCurve            string `json:"associated_curve,omitempty"`
-	AssociatedCurveInitialized bool   `json:"associated_curve_initialized"`
-	AssociatedCurveOwner       string `json:"associated_curve_owner,omitempty"`
-	TokenMint                  string `json:"token_mint"`
-	Error                      string `json:"error,omitempty"`
+	if accountInfo == nil || accountInfo.Value == nil {
+		return nil, fmt.Errorf("global account not found: %s", globalAddr.String())
+	}
+
+	// Make sure the account is owned by the PumpFun program
+	if !accountInfo.Value.Owner.Equals(PumpFunProgramID) {
+		return nil, fmt.Errorf("global account has incorrect owner: expected %s, got %s",
+			PumpFunProgramID.String(), accountInfo.Value.Owner.String())
+	}
+
+	// Get binary data
+	data := accountInfo.Value.Data.GetBinary()
+
+	// Need at least the discriminator + initialized flag + two public keys (32 bytes each)
+	if len(data) < 8+1+64 {
+		return nil, fmt.Errorf("global account data too short: %d bytes", len(data))
+	}
+
+	// Deserialize the data
+	account := &GlobalAccount{}
+
+	// Read discriminator (8 bytes)
+	copy(account.Discriminator[:], data[0:8])
+
+	// Read initialized flag (1 byte)
+	account.Initialized = data[8] != 0
+
+	// Read authority public key (32 bytes)
+	authorityBytes := make([]byte, 32)
+	copy(authorityBytes, data[9:41])
+	account.Authority = solana.PublicKeyFromBytes(authorityBytes)
+
+	// Read fee recipient public key (32 bytes)
+	feeRecipientBytes := make([]byte, 32)
+	copy(feeRecipientBytes, data[41:73])
+	account.FeeRecipient = solana.PublicKeyFromBytes(feeRecipientBytes)
+
+	// Read fee basis points (8 bytes)
+	if len(data) >= 81 {
+		account.FeeBasisPoints = binary.LittleEndian.Uint64(data[73:81])
+	}
+
+	return account, nil
 }

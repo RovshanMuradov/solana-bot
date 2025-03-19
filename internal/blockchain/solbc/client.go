@@ -4,7 +4,6 @@ package solbc
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
@@ -51,12 +50,9 @@ func (c *Client) SendTransaction(ctx context.Context, tx *solana.Transaction) (s
 func (c *Client) GetAccountInfo(ctx context.Context, pubkey solana.PublicKey) (*rpc.GetAccountInfoResult, error) {
 	result, err := c.rpc.GetAccountInfo(ctx, pubkey)
 	if err != nil {
-		// Если ошибка "not found", логируем на уровне DEBUG, а не ERROR
-		if strings.Contains(err.Error(), "not found") {
-			c.logger.Debug("GetAccountInfo: account not found", zap.String("pubkey", pubkey.String()))
-		} else {
-			c.logger.Error("GetAccountInfo error", zap.Error(err))
-		}
+		c.logger.Debug("GetAccountInfo error", 
+			zap.String("pubkey", pubkey.String()),
+			zap.Error(err))
 		return nil, err
 	}
 	return result, nil
