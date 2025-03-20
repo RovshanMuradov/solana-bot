@@ -5,7 +5,9 @@ package pumpfun
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
@@ -78,16 +80,16 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amountSol float64, slippagePerce
 
 	// Convert SOL amount to lamports
 	solAmountLamports := uint64(amountSol * 1_000_000_000)
-	
+
 	// In exact-sol program, we specify exactly how much to spend
 	// For now we just use the original amount
 	adjustedSolLamports := solAmountLamports
-	
+
 	// If we ever want to adjust for slippage, we can uncomment this:
 	/*
-	if slippagePercent > 0 {
-		adjustedSolLamports = uint64(float64(solAmountLamports) * (1 + slippagePercent/100))
-	}
+		if slippagePercent > 0 {
+			adjustedSolLamports = uint64(float64(solAmountLamports) * (1 + slippagePercent/100))
+		}
 	*/
 
 	d.logger.Info("Using exact SOL amount",
@@ -133,23 +135,23 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amountSol float64, slippagePerce
 
 	// Create buy-exact-sol instruction
 	buyIx := createBuyExactSolInstruction(
-		d.config.Global,          // Global account
-		d.config.FeeRecipient,    // Fee recipient
-		d.config.Mint,            // Token mint
-		bondingCurve,             // Bonding curve
-		associatedBondingCurve,   // Associated bonding curve ATA
-		userATA,                  // User's associated token account
-		d.wallet.PublicKey,       // User's wallet
-		d.config.EventAuthority,  // Event authority
-		adjustedSolLamports,      // Exact SOL amount in lamports
+		d.config.Global,         // Global account
+		d.config.FeeRecipient,   // Fee recipient
+		d.config.Mint,           // Token mint
+		bondingCurve,            // Bonding curve
+		associatedBondingCurve,  // Associated bonding curve ATA
+		userATA,                 // User's associated token account
+		d.wallet.PublicKey,      // User's wallet
+		d.config.EventAuthority, // Event authority
+		adjustedSolLamports,     // Exact SOL amount in lamports
 	)
 
 	// Assemble all instructions
 	var instructions []solana.Instruction
-	
+
 	// Add priority instructions first
 	instructions = append(instructions, priorityInstructions...)
-	
+
 	// Add ATA and buy instructions
 	instructions = append(instructions, ataInstruction, buyIx)
 
@@ -204,6 +206,7 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amountSol float64, slippagePerce
 }
 
 // ExecuteSell executes a sell operation on the Pump.fun protocol
+
 func (d *DEX) ExecuteSell(ctx context.Context, tokenAmount uint64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
 	d.logger.Info("Starting Pump.fun sell operation",
 		zap.Uint64("token_amount", tokenAmount),
@@ -256,17 +259,33 @@ func (d *DEX) ExecuteSell(ctx context.Context, tokenAmount uint64, slippagePerce
 	// For sell operations we need to estimate the minimum acceptable output
 	// Since we don't know the actual token price anymore (as we removed price.go),
 	// we'll use a conservative estimate based on the token amount and slippage
-	
-	// Estimate a conservative minimum SOL output
-	// Note: In a real implementation, you might want to query the current price or use a predefined price
-	estimatedSolValueLamports := tokenAmount // A simple 1:1 ratio as a placeholder
-	minSolOutput := uint64(float64(estimatedSolValueLamports) * (1.0 - slippagePercent/100.0))
-	
+
+	// Внутри ExecuteSell, после получения bondingCurve
+	bondingCurveData, err := d.FetchBondingCurveAccount(opCtx, bondingCurve)
+	if err != nil {
+		return fmt.Errorf("failed to fetch bonding curve data: %w", err)
+	}
+
+	// Проверка, не завершена ли bonding curve (примерная проверка)
+	if bondingCurveData.VirtualSolReserves < 1000 { // Порог в 0.000001 SOL, можно настроить
+		return fmt.Errorf("bonding curve has insufficient SOL reserves, possibly complete")
+	}
+
+	// Расчет ожидаемого SOL на основе текущих резервов
+	// Простая формула: (tokenAmount * virtual_sol_reserves) / virtual_token_reserves
+	// Реальная формула Pump.fun может быть сложнее (например, линейная bonding curve)
+	expectedSolValueLamports := (tokenAmount * bondingCurveData.VirtualSolReserves) / bondingCurveData.VirtualTokenReserves
+
+	// Применение проскальзывания
+	minSolOutput := uint64(float64(expectedSolValueLamports) * (1.0 - slippagePercent/100.0))
+
 	d.logger.Info("Calculated sell parameters",
 		zap.Uint64("token_amount", tokenAmount),
-		zap.Uint64("estimated_sol_value_lamports", estimatedSolValueLamports),
+		zap.Uint64("virtual_token_reserves", bondingCurveData.VirtualTokenReserves),
+		zap.Uint64("virtual_sol_reserves", bondingCurveData.VirtualSolReserves),
+		zap.Uint64("estimated_sol_value_lamports", expectedSolValueLamports),
 		zap.Uint64("min_sol_output_lamports", minSolOutput))
-	
+
 	// Instruction #4: sell
 	sellIx := createSellInstruction(
 		d.config.ContractAddress, // Program ID
@@ -284,10 +303,10 @@ func (d *DEX) ExecuteSell(ctx context.Context, tokenAmount uint64, slippagePerce
 
 	// Assemble all instructions
 	var instructions []solana.Instruction
-	
+
 	// Add priority instructions first
 	instructions = append(instructions, priorityInstructions...)
-	
+
 	// Add ATA and sell instructions
 	instructions = append(instructions, ataInstruction, sellIx)
 
@@ -319,9 +338,19 @@ func (d *DEX) ExecuteSell(ctx context.Context, tokenAmount uint64, slippagePerce
 			zap.Uint64("compute_units", simResult.UnitsConsumed))
 	}
 
-	// Send transaction
+	// Замените обработку ошибки после SendTransaction
 	txSig, err := d.client.SendTransaction(opCtx, tx)
 	if err != nil {
+		// Проверяем на ошибку BondingCurveComplete (код 0x1775 или 6005)
+		if strings.Contains(err.Error(), "BondingCurveComplete") ||
+			strings.Contains(err.Error(), "0x1775") ||
+			strings.Contains(err.Error(), "6005") {
+			d.logger.Error("Невозможно продать токен через Pump.fun",
+				zap.String("token_mint", d.config.Mint.String()),
+				zap.String("reason", "Токен перенесен на Raydium"))
+			return fmt.Errorf("токен %s перенесен на Raydium и не может быть продан через Pump.fun",
+				d.config.Mint.String())
+		}
 		return fmt.Errorf("failed to send transaction: %w", err)
 	}
 
@@ -339,4 +368,32 @@ func (d *DEX) ExecuteSell(ctx context.Context, tokenAmount uint64, slippagePerce
 	d.logger.Info("Sell transaction confirmed",
 		zap.String("signature", txSig.String()))
 	return nil
+}
+
+func (d *DEX) FetchBondingCurveAccount(ctx context.Context, bondingCurve solana.PublicKey) (*BondingCurve, error) {
+	// Получаем информацию об аккаунте
+	accountInfo, err := d.client.GetAccountInfo(ctx, bondingCurve)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get bonding curve account: %w", err)
+	}
+
+	// Проверяем, существует ли аккаунт
+	if accountInfo.Value == nil {
+		return nil, fmt.Errorf("bonding curve account not found")
+	}
+
+	// Извлекаем данные из accountInfo.Value.Data
+	data := accountInfo.Value.Data.GetBinary()
+	if len(data) < 16 {
+		return nil, fmt.Errorf("invalid bonding curve data: insufficient length")
+	}
+
+	// Парсим первые 16 байт как virtual_token_reserves и virtual_sol_reserves
+	virtualTokenReserves := binary.LittleEndian.Uint64(data[0:8])
+	virtualSolReserves := binary.LittleEndian.Uint64(data[8:16])
+
+	return &BondingCurve{
+		VirtualTokenReserves: virtualTokenReserves,
+		VirtualSolReserves:   virtualSolReserves,
+	}, nil
 }

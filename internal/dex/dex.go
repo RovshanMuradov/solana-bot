@@ -6,6 +6,7 @@ package dex
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -39,6 +40,7 @@ func (d *pumpfunDEXAdapter) GetName() string {
 }
 
 // Execute выполняет операцию, описанную в задаче.
+// Обновленная реализация метода Execute для pumpfunDEXAdapter
 func (d *pumpfunDEXAdapter) Execute(ctx context.Context, task *Task) error {
 	start := time.Now()
 	var txType string
@@ -89,38 +91,40 @@ func (d *pumpfunDEXAdapter) Execute(ctx context.Context, task *Task) error {
 	switch task.Operation {
 	case OperationSnipe:
 		txType = "snipe"
-		
+
 		d.logger.Info("Executing snipe on Pump.fun",
 			zap.String("token_mint", tokenMint),
 			zap.Float64("tokens_to_sell", task.AmountSol),
 			zap.Float64("slippage_percent", task.SlippagePercent),
 			zap.String("priority_fee", task.PriorityFee),
 			zap.Uint32("compute_units", task.ComputeUnits))
-			
+
 		err := d.inner.ExecuteSnipe(ctx, task.AmountSol, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
 		d.metrics.RecordTransaction(txType, d.GetName(), time.Since(start), err == nil)
 		return err
-		
+
 	case OperationSell:
 		txType = "sell"
-		
-		// Convert SOL amount to token amount for selling
-		// Note: this is an estimate and will be replaced with actual token balance check
-		// or specified token amount from the user
-		tokenAmount := uint64(task.AmountSol) // For sell operations, AmountSol actually represents the number of tokens to sell
-		
+
+		// Допустим, у вашего токена 6 десятичных знаков.
+		decimals := 6.0
+
+		// Преобразуем значение из tasks.csv (человеко-читаемый формат)
+		// в базовые единицы: например, "1564784.000000" -> 1564784 * 10^6.
+		tokenAmount := uint64(task.AmountSol * math.Pow(10, decimals))
+
 		d.logger.Info("Executing sell on Pump.fun",
 			zap.String("token_mint", tokenMint),
-			zap.Float64("tokens_to_sell", task.AmountSol), 
+			zap.Float64("tokens_to_sell", task.AmountSol),
 			zap.Uint64("token_amount", tokenAmount),
 			zap.Float64("slippage_percent", task.SlippagePercent),
 			zap.String("priority_fee", task.PriorityFee),
 			zap.Uint32("compute_units", task.ComputeUnits))
-			
+
 		err := d.inner.ExecuteSell(ctx, tokenAmount, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
 		d.metrics.RecordTransaction(txType, d.GetName(), time.Since(start), err == nil)
 		return err
-		
+
 	default:
 		err := fmt.Errorf("operation %s is not supported on Pump.fun", task.Operation)
 		d.metrics.RecordTransaction("unsupported", d.GetName(), time.Since(start), false)
@@ -195,7 +199,7 @@ func (d *raydiumDEXAdapter) Execute(ctx context.Context, task *Task) error {
 
 		// Convert SOL amount to lamports
 		amountInLamports := uint64(task.AmountSol * 1_000_000_000)
-		
+
 		// Calculate min output based on slippage
 		minOutLamports := uint64(task.AmountSol * (1 - task.SlippagePercent/100.0) * 1_000_000_000)
 

@@ -21,6 +21,12 @@ type GlobalAccount struct {
 	FeeBasisPoints uint64
 }
 
+type BondingCurve struct {
+	VirtualTokenReserves uint64
+	VirtualSolReserves   uint64
+	// Другие поля могут быть добавлены в зависимости от структуры аккаунта Pump.fun
+}
+
 // FetchGlobalAccount fetches and parses the global account data
 func FetchGlobalAccount(ctx context.Context, client *solbc.Client, globalAddr solana.PublicKey) (*GlobalAccount, error) {
 	// Get account info from the blockchain

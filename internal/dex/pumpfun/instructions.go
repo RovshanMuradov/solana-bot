@@ -14,9 +14,10 @@ var (
 	// Fixed discriminators for buy and sell functions
 	buyDiscriminator  = []byte{0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea}
 	sellDiscriminator = []byte{0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad}
-	
+
 	// Program ID for exact-sol operations
 	PumpFunExactSolProgramID = solana.MustPublicKeyFromBase58("6sbiyZ7mLKmYkES2AKYPHtg4FjQMaqVx3jTHez6ZtfmX")
+	AssociatedTokenProgramID = solana.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
 )
 
 // createAssociatedTokenAccountIdempotentInstruction creates an instruction to create an associated token account
@@ -42,7 +43,7 @@ func createAssociatedTokenAccountIdempotentInstruction(payer, wallet, mint solan
 }
 
 // createBuyInstruction creates a buy instruction for the Pump.fun protocol
-func createBuyInstruction(
+/*func createBuyInstruction(
 	programID,
 	global,
 	feeRecipient,
@@ -87,7 +88,7 @@ func createBuyInstruction(
 	}
 
 	return solana.NewInstruction(programID, accounts, data)
-}
+}*/
 
 // createBuyExactSolInstruction creates an instruction for buying with an exact SOL amount
 func createBuyExactSolInstruction(
@@ -163,8 +164,8 @@ func createSellInstruction(
 		{PublicKey: userATA, IsSigner: false, IsWritable: true},
 		{PublicKey: userWallet, IsSigner: true, IsWritable: true},
 		{PublicKey: solana.SystemProgramID, IsSigner: false, IsWritable: false},
-		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
-		{PublicKey: solana.SysVarRentPubkey, IsSigner: false, IsWritable: false},
+		{PublicKey: AssociatedTokenProgramID, IsSigner: false, IsWritable: false}, // Сначала Associated Token Program
+		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},    // Затем Token Program
 		{PublicKey: eventAuthority, IsSigner: false, IsWritable: false},
 		{PublicKey: programID, IsSigner: false, IsWritable: false},
 	}
