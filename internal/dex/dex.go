@@ -90,22 +90,14 @@ func (d *pumpfunDEXAdapter) Execute(ctx context.Context, task *Task) error {
 	case OperationSnipe:
 		txType = "snipe"
 		
-		// Convert SOL amount to lamports for maximum spend
-		maxSolCost := uint64(task.AmountSol * 1_000_000_000)
-		
-		// For now we'll use 0 as the amount of tokens, which means "buy as many tokens as possible"
-		// with the given SOL amount (maxSolCost)
-		tokenAmount := uint64(0)
-		
 		d.logger.Info("Executing snipe on Pump.fun",
 			zap.String("token_mint", tokenMint),
-			zap.Float64("amount_sol", task.AmountSol),
-			zap.Uint64("max_sol_cost_lamports", maxSolCost),
+			zap.Float64("tokens_to_sell", task.AmountSol),
 			zap.Float64("slippage_percent", task.SlippagePercent),
 			zap.String("priority_fee", task.PriorityFee),
 			zap.Uint32("compute_units", task.ComputeUnits))
 			
-		err := d.inner.ExecuteSnipe(ctx, tokenAmount, maxSolCost, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
+		err := d.inner.ExecuteSnipe(ctx, task.AmountSol, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
 		d.metrics.RecordTransaction(txType, d.GetName(), time.Since(start), err == nil)
 		return err
 		
@@ -113,23 +105,19 @@ func (d *pumpfunDEXAdapter) Execute(ctx context.Context, task *Task) error {
 		txType = "sell"
 		
 		// Convert SOL amount to token amount for selling
-		// This is an estimate - in practice you would need to know the current token price
-		// to properly convert SOL value to token amount
-		tokenAmount := uint64(task.AmountSol * 1_000_000_000) // This needs improvement
-		
-		// Min SOL output based on slippage
-		minSolOutput := uint64(task.AmountSol * (1.0 - task.SlippagePercent/100.0) * 1_000_000_000)
+		// Note: this is an estimate and will be replaced with actual token balance check
+		// or specified token amount from the user
+		tokenAmount := uint64(task.AmountSol) // For sell operations, AmountSol actually represents the number of tokens to sell
 		
 		d.logger.Info("Executing sell on Pump.fun",
 			zap.String("token_mint", tokenMint),
-			zap.Float64("amount_sol", task.AmountSol),
+			zap.Float64("tokens_to_sell", task.AmountSol), 
 			zap.Uint64("token_amount", tokenAmount),
-			zap.Uint64("min_sol_output_lamports", minSolOutput),
 			zap.Float64("slippage_percent", task.SlippagePercent),
 			zap.String("priority_fee", task.PriorityFee),
 			zap.Uint32("compute_units", task.ComputeUnits))
 			
-		err := d.inner.ExecuteSell(ctx, tokenAmount, minSolOutput, task.PriorityFee, task.ComputeUnits)
+		err := d.inner.ExecuteSell(ctx, tokenAmount, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
 		d.metrics.RecordTransaction(txType, d.GetName(), time.Since(start), err == nil)
 		return err
 		

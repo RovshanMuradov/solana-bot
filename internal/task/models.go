@@ -25,7 +25,7 @@ type Task struct {
 	Module              string
 	WalletName          string
 	Operation           string
-	AmountSol           float64  // Amount in SOL the user wants to spend (for buy) or sell
+	AmountSol           float64  // For buy: Amount in SOL to spend. For sell: Number of tokens to sell
 	SlippagePercent     float64  // Slippage tolerance in percent (0-100)
 	PriorityFeeSol      string   // Priority fee in SOL (string format, e.g. "0.000001")
 	ComputeUnits        uint32   // Compute units for the transaction
@@ -89,7 +89,9 @@ func NewManager(logger *zap.Logger) *Manager {
 }
 
 // LoadTasks reads tasks from CSV file
-// CSV format: task_name,module,wallet,operation,amount_sol,slippage_percent,priority_fee_sol,contract_address,compute_units
+// CSV format: task_name,module,wallet,operation,amount,slippage_percent,priority_fee_sol,contract_address,compute_units
+// For buy operations, amount = SOL to spend
+// For sell operations, amount = number of tokens to sell
 func (m *Manager) LoadTasks(path string) ([]Task, error) {
 	m.logger.Debug("Loading tasks", zap.String("path", path))
 
@@ -145,8 +147,8 @@ func (m *Manager) LoadTasks(path string) ([]Task, error) {
 			priorityFeeSol = "default" // Use default if not specified
 		}
 		
-		// Parse compute units
-		var computeUnits uint32 = 0 // 0 means use default value
+		// Parse compute units (default is 0 which means use default value)
+		var computeUnits uint32
 		if len(row) > 8 && row[8] != "" {
 			computeUnitsUint64, err := strconv.ParseUint(row[8], 10, 32)
 			if err != nil {

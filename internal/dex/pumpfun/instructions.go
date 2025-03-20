@@ -14,39 +14,10 @@ var (
 	// Fixed discriminators for buy and sell functions
 	buyDiscriminator  = []byte{0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea}
 	sellDiscriminator = []byte{0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad}
+	
+	// Program ID for exact-sol operations
+	PumpFunExactSolProgramID = solana.MustPublicKeyFromBase58("6sbiyZ7mLKmYkES2AKYPHtg4FjQMaqVx3jTHez6ZtfmX")
 )
-
-// createSetComputeUnitLimitInstruction creates an instruction to set compute unit limit
-func createSetComputeUnitLimitInstruction(units uint32) solana.Instruction {
-	computeBudgetProgramID := solana.MustPublicKeyFromBase58("ComputeBudget111111111111111111111111111111")
-
-	// Create instruction data: first byte is 0x02 (instruction index), followed by 4-byte little-endian uint32
-	data := make([]byte, 5)
-	data[0] = 0x02
-	binary.LittleEndian.PutUint32(data[1:], units)
-
-	return solana.NewInstruction(
-		computeBudgetProgramID,
-		[]*solana.AccountMeta{}, // No accounts needed
-		data,
-	)
-}
-
-// createSetComputeUnitPriceInstruction creates an instruction to set compute unit price
-func createSetComputeUnitPriceInstruction(microLamports uint64) solana.Instruction {
-	computeBudgetProgramID := solana.MustPublicKeyFromBase58("ComputeBudget111111111111111111111111111111")
-
-	// Create instruction data: first byte is 0x03 (instruction index), followed by 8-byte little-endian uint64
-	data := make([]byte, 9)
-	data[0] = 0x03
-	binary.LittleEndian.PutUint64(data[1:], microLamports)
-
-	return solana.NewInstruction(
-		computeBudgetProgramID,
-		[]*solana.AccountMeta{}, // No accounts needed
-		data,
-	)
-}
 
 // createAssociatedTokenAccountIdempotentInstruction creates an instruction to create an associated token account
 func createAssociatedTokenAccountIdempotentInstruction(payer, wallet, mint solana.PublicKey) solana.Instruction {
@@ -116,6 +87,41 @@ func createBuyInstruction(
 	}
 
 	return solana.NewInstruction(programID, accounts, data)
+}
+
+// createBuyExactSolInstruction creates an instruction for buying with an exact SOL amount
+func createBuyExactSolInstruction(
+	global,
+	feeRecipient,
+	mint,
+	bondingCurve,
+	associatedBondingCurve,
+	userATA,
+	userWallet,
+	eventAuthority solana.PublicKey,
+	solAmountLamports uint64,
+) solana.Instruction {
+	// Create instruction data - only 8 bytes for sol amount in lamports
+	data := make([]byte, 8)
+	binary.LittleEndian.PutUint64(data, solAmountLamports)
+
+	// Account list follows the same order as regular buy instruction
+	accounts := []*solana.AccountMeta{
+		{PublicKey: global, IsSigner: false, IsWritable: false},
+		{PublicKey: feeRecipient, IsSigner: false, IsWritable: true},
+		{PublicKey: mint, IsSigner: false, IsWritable: false},
+		{PublicKey: bondingCurve, IsSigner: false, IsWritable: true},
+		{PublicKey: associatedBondingCurve, IsSigner: false, IsWritable: true},
+		{PublicKey: userATA, IsSigner: false, IsWritable: true},
+		{PublicKey: userWallet, IsSigner: true, IsWritable: true},
+		{PublicKey: solana.SystemProgramID, IsSigner: false, IsWritable: false},
+		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
+		{PublicKey: solana.SysVarRentPubkey, IsSigner: false, IsWritable: false},
+		{PublicKey: eventAuthority, IsSigner: false, IsWritable: false},
+		{PublicKey: PumpFunProgramID, IsSigner: false, IsWritable: false},
+	}
+
+	return solana.NewInstruction(PumpFunExactSolProgramID, accounts, data)
 }
 
 // createSellInstruction creates a sell instruction for the Pump.fun protocol

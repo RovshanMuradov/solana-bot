@@ -64,11 +64,10 @@ func NewDEX(client *solbc.Client, w *wallet.Wallet, logger *zap.Logger, config *
 	return dex, nil
 }
 
-// ExecuteSnipe executes a buy operation on the Pump.fun protocol
-func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
-	d.logger.Info("Starting Pump.fun buy operation",
-		zap.Uint64("amount", amount),
-		zap.Uint64("max_sol_cost", maxSolCost),
+// ExecuteSnipe executes a buy operation on the Pump.fun protocol using exact-sol program
+func (d *DEX) ExecuteSnipe(ctx context.Context, amountSol float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
+	d.logger.Info("Starting Pump.fun exact-sol buy operation",
+		zap.Float64("amount_sol", amountSol),
 		zap.Float64("slippage_percent", slippagePercent),
 		zap.String("priority_fee_sol", priorityFeeSol),
 		zap.Uint32("compute_units", computeUnits))
@@ -76,6 +75,24 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64, slipp
 	// Create a context with timeout for the entire operation
 	opCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
+
+	// Convert SOL amount to lamports
+	solAmountLamports := uint64(amountSol * 1_000_000_000)
+	
+	// In exact-sol program, we specify exactly how much to spend
+	// For now we just use the original amount
+	adjustedSolLamports := solAmountLamports
+	
+	// If we ever want to adjust for slippage, we can uncomment this:
+	/*
+	if slippagePercent > 0 {
+		adjustedSolLamports = uint64(float64(solAmountLamports) * (1 + slippagePercent/100))
+	}
+	*/
+
+	d.logger.Info("Using exact SOL amount",
+		zap.Uint64("sol_amount_lamports", adjustedSolLamports),
+		zap.String("sol_amount", fmt.Sprintf("%.9f SOL", float64(adjustedSolLamports)/1_000_000_000)))
 
 	// Get latest blockhash
 	blockhash, err := d.client.GetRecentBlockhash(opCtx)
@@ -114,9 +131,8 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64, slipp
 	}
 	d.logger.Debug("Derived bonding curve ATA", zap.String("address", associatedBondingCurve.String()))
 
-	// Instruction #4: buy
-	buyIx := createBuyInstruction(
-		d.config.ContractAddress, // Program ID
+	// Create buy-exact-sol instruction
+	buyIx := createBuyExactSolInstruction(
 		d.config.Global,          // Global account
 		d.config.FeeRecipient,    // Fee recipient
 		d.config.Mint,            // Token mint
@@ -125,8 +141,7 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64, slipp
 		userATA,                  // User's associated token account
 		d.wallet.PublicKey,       // User's wallet
 		d.config.EventAuthority,  // Event authority
-		amount,                   // Amount of tokens to buy
-		maxSolCost,               // Maximum SOL cost
+		adjustedSolLamports,      // Exact SOL amount in lamports
 	)
 
 	// Assemble all instructions
@@ -189,10 +204,10 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64, slipp
 }
 
 // ExecuteSell executes a sell operation on the Pump.fun protocol
-func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64, priorityFeeSol string, computeUnits uint32) error {
+func (d *DEX) ExecuteSell(ctx context.Context, tokenAmount uint64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
 	d.logger.Info("Starting Pump.fun sell operation",
-		zap.Uint64("amount", amount),
-		zap.Uint64("min_sol_output", minSolOutput),
+		zap.Uint64("token_amount", tokenAmount),
+		zap.Float64("slippage_percent", slippagePercent),
 		zap.String("priority_fee_sol", priorityFeeSol),
 		zap.Uint32("compute_units", computeUnits))
 
@@ -237,6 +252,21 @@ func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64, prio
 	}
 	d.logger.Debug("Derived bonding curve ATA", zap.String("address", associatedBondingCurve.String()))
 
+	// Calculate minimum output based on slippage
+	// For sell operations we need to estimate the minimum acceptable output
+	// Since we don't know the actual token price anymore (as we removed price.go),
+	// we'll use a conservative estimate based on the token amount and slippage
+	
+	// Estimate a conservative minimum SOL output
+	// Note: In a real implementation, you might want to query the current price or use a predefined price
+	estimatedSolValueLamports := tokenAmount // A simple 1:1 ratio as a placeholder
+	minSolOutput := uint64(float64(estimatedSolValueLamports) * (1.0 - slippagePercent/100.0))
+	
+	d.logger.Info("Calculated sell parameters",
+		zap.Uint64("token_amount", tokenAmount),
+		zap.Uint64("estimated_sol_value_lamports", estimatedSolValueLamports),
+		zap.Uint64("min_sol_output_lamports", minSolOutput))
+	
 	// Instruction #4: sell
 	sellIx := createSellInstruction(
 		d.config.ContractAddress, // Program ID
@@ -248,8 +278,8 @@ func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64, prio
 		userATA,                  // User's associated token account
 		d.wallet.PublicKey,       // User's wallet
 		d.config.EventAuthority,  // Event authority
-		amount,                   // Amount of tokens to sell
-		minSolOutput,             // Minimum SOL output
+		tokenAmount,              // Amount of tokens to sell
+		minSolOutput,             // Minimum SOL output with slippage
 	)
 
 	// Assemble all instructions

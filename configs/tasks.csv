@@ -1,2 +1,2 @@
-task_name,module,wallet,operation,amount_sol,slippage_percent,priority_fee_sol,contract_address,compute_units
-buy_example,pump.fun,main,snipe,0.0001,0,0.000001,7YwXoU9GFsMpD93pL1Ak8aTz2EcHoQPBWMhGGNiTpump,200000
+task_name,module,wallet,operation,amount,slippage_percent,priority_fee_sol,contract_address,compute_units
+sell_my_tokens,pump.fun,main,sell,329,1.0,0.000002,7YwXoU9GFsMpD93pL1Ak8aTz2EcHoQPBWMhGGNiTpump,200000
