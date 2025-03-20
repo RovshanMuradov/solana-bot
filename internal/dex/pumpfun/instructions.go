@@ -17,12 +17,12 @@ var (
 // createSetComputeUnitLimitInstruction creates an instruction to set compute unit limit
 func createSetComputeUnitLimitInstruction(units uint32) solana.Instruction {
 	computeBudgetProgramID := solana.MustPublicKeyFromBase58("ComputeBudget111111111111111111111111111111")
-	
+
 	// Create instruction data: first byte is 0x02 (instruction index), followed by 4-byte little-endian uint32
 	data := make([]byte, 5)
 	data[0] = 0x02
 	binary.LittleEndian.PutUint32(data[1:], units)
-	
+
 	return solana.NewInstruction(
 		computeBudgetProgramID,
 		[]*solana.AccountMeta{}, // No accounts needed
@@ -33,12 +33,12 @@ func createSetComputeUnitLimitInstruction(units uint32) solana.Instruction {
 // createSetComputeUnitPriceInstruction creates an instruction to set compute unit price
 func createSetComputeUnitPriceInstruction(microLamports uint64) solana.Instruction {
 	computeBudgetProgramID := solana.MustPublicKeyFromBase58("ComputeBudget111111111111111111111111111111")
-	
+
 	// Create instruction data: first byte is 0x03 (instruction index), followed by 8-byte little-endian uint64
 	data := make([]byte, 9)
 	data[0] = 0x03
 	binary.LittleEndian.PutUint64(data[1:], microLamports)
-	
+
 	return solana.NewInstruction(
 		computeBudgetProgramID,
 		[]*solana.AccountMeta{}, // No accounts needed
@@ -49,10 +49,10 @@ func createSetComputeUnitPriceInstruction(microLamports uint64) solana.Instructi
 // createAssociatedTokenAccountIdempotentInstruction creates an instruction to create an associated token account
 func createAssociatedTokenAccountIdempotentInstruction(payer, wallet, mint solana.PublicKey) solana.Instruction {
 	associatedTokenProgramID := solana.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
-	
+
 	// Calculate the associated token account address
 	ata, _, _ := solana.FindAssociatedTokenAddress(wallet, mint)
-	
+
 	return solana.NewInstruction(
 		associatedTokenProgramID,
 		[]*solana.AccountMeta{
@@ -70,16 +70,16 @@ func createAssociatedTokenAccountIdempotentInstruction(payer, wallet, mint solan
 
 // createBuyInstruction creates a buy instruction for the Pump.fun protocol
 func createBuyInstruction(
-	programID, 
-	global, 
-	feeRecipient, 
-	mint, 
-	bondingCurve, 
-	associatedBondingCurve, 
-	userATA, 
-	userWallet, 
+	programID,
+	global,
+	feeRecipient,
+	mint,
+	bondingCurve,
+	associatedBondingCurve,
+	userATA,
+	userWallet,
 	eventAuthority solana.PublicKey,
-	amount, 
+	amount,
 	maxSolCost uint64,
 ) solana.Instruction {
 	// Create instruction data with precise byte layout:
@@ -87,13 +87,13 @@ func createBuyInstruction(
 	// 2. 8-byte little-endian encoded amount
 	// 3. 8-byte little-endian encoded maxSolCost
 	data := make([]byte, 24)
-	
+
 	// Copy discriminator (8 bytes)
 	copy(data[0:8], buyDiscriminator)
-	
+
 	// Add amount in little-endian bytes (8 bytes)
 	binary.LittleEndian.PutUint64(data[8:16], amount)
-	
+
 	// Add max SOL cost in little-endian bytes (8 bytes)
 	binary.LittleEndian.PutUint64(data[16:24], maxSolCost)
 
@@ -118,16 +118,16 @@ func createBuyInstruction(
 
 // createSellInstruction creates a sell instruction for the Pump.fun protocol
 func createSellInstruction(
-	programID, 
-	global, 
-	feeRecipient, 
-	mint, 
-	bondingCurve, 
-	associatedBondingCurve, 
-	userATA, 
-	userWallet, 
+	programID,
+	global,
+	feeRecipient,
+	mint,
+	bondingCurve,
+	associatedBondingCurve,
+	userATA,
+	userWallet,
 	eventAuthority solana.PublicKey,
-	amount, 
+	amount,
 	minSolOutput uint64,
 ) solana.Instruction {
 	// Create instruction data with precise byte layout:
@@ -135,13 +135,13 @@ func createSellInstruction(
 	// 2. 8-byte little-endian encoded amount
 	// 3. 8-byte little-endian encoded minSolOutput
 	data := make([]byte, 24)
-	
+
 	// Copy discriminator (8 bytes)
 	copy(data[0:8], sellDiscriminator)
-	
+
 	// Add amount in little-endian bytes (8 bytes)
 	binary.LittleEndian.PutUint64(data[8:16], amount)
-	
+
 	// Add min SOL output in little-endian bytes (8 bytes)
 	binary.LittleEndian.PutUint64(data[16:24], minSolOutput)
 

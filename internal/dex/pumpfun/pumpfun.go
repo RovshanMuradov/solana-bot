@@ -15,10 +15,10 @@ import (
 
 // DEX is the Pump.fun DEX implementation
 type DEX struct {
-	client   *solbc.Client
-	wallet   *wallet.Wallet
-	logger   *zap.Logger
-	config   *Config
+	client *solbc.Client
+	wallet *wallet.Wallet
+	logger *zap.Logger
+	config *Config
 }
 
 // NewDEX creates a new instance of the Pump.fun DEX
@@ -36,10 +36,10 @@ func NewDEX(client *solbc.Client, w *wallet.Wallet, logger *zap.Logger, config *
 
 	// Create DEX instance
 	dex := &DEX{
-		client:  client,
-		wallet:  w,
-		logger:  logger.Named("pumpfun"),
-		config:  config,
+		client: client,
+		wallet: w,
+		logger: logger.Named("pumpfun"),
+		config: config,
 	}
 
 	// Update fee recipient
@@ -108,17 +108,17 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error
 
 	// Instruction #4: buy
 	buyIx := createBuyInstruction(
-		d.config.ContractAddress,        // Program ID
-		d.config.Global,                 // Global account
-		d.config.FeeRecipient,           // Fee recipient
-		d.config.Mint,                   // Token mint
-		bondingCurve,                    // Bonding curve
-		associatedBondingCurve,          // Associated bonding curve ATA
-		userATA,                         // User's associated token account
-		d.wallet.PublicKey,              // User's wallet
-		d.config.EventAuthority,         // Event authority
-		amount,                          // Amount of tokens to buy
-		maxSolCost,                      // Maximum SOL cost
+		d.config.ContractAddress, // Program ID
+		d.config.Global,          // Global account
+		d.config.FeeRecipient,    // Fee recipient
+		d.config.Mint,            // Token mint
+		bondingCurve,             // Bonding curve
+		associatedBondingCurve,   // Associated bonding curve ATA
+		userATA,                  // User's associated token account
+		d.wallet.PublicKey,       // User's wallet
+		d.config.EventAuthority,  // Event authority
+		amount,                   // Amount of tokens to buy
+		maxSolCost,               // Maximum SOL cost
 	)
 
 	// Assemble all instructions
@@ -145,10 +145,10 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error
 		d.logger.Warn("Transaction simulation failed",
 			zap.Error(err),
 			zap.Any("sim_error", simResult != nil && simResult.Err != nil))
-		
+
 		// Continue anyway as simulation can sometimes fail for valid transactions
 	} else {
-		d.logger.Info("Transaction simulation successful", 
+		d.logger.Info("Transaction simulation successful",
 			zap.Uint64("compute_units", simResult.UnitsConsumed))
 	}
 
@@ -223,17 +223,17 @@ func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64) erro
 
 	// Instruction #4: sell
 	sellIx := createSellInstruction(
-		d.config.ContractAddress,        // Program ID
-		d.config.Global,                 // Global account
-		d.config.FeeRecipient,           // Fee recipient
-		d.config.Mint,                   // Token mint
-		bondingCurve,                    // Bonding curve
-		associatedBondingCurve,          // Associated bonding curve ATA
-		userATA,                         // User's associated token account
-		d.wallet.PublicKey,              // User's wallet
-		d.config.EventAuthority,         // Event authority
-		amount,                          // Amount of tokens to sell
-		minSolOutput,                    // Minimum SOL output
+		d.config.ContractAddress, // Program ID
+		d.config.Global,          // Global account
+		d.config.FeeRecipient,    // Fee recipient
+		d.config.Mint,            // Token mint
+		bondingCurve,             // Bonding curve
+		associatedBondingCurve,   // Associated bonding curve ATA
+		userATA,                  // User's associated token account
+		d.wallet.PublicKey,       // User's wallet
+		d.config.EventAuthority,  // Event authority
+		amount,                   // Amount of tokens to sell
+		minSolOutput,             // Minimum SOL output
 	)
 
 	// Assemble all instructions
@@ -260,10 +260,10 @@ func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64) erro
 		d.logger.Warn("Transaction simulation failed",
 			zap.Error(err),
 			zap.Any("sim_error", simResult != nil && simResult.Err != nil))
-		
+
 		// Continue anyway as simulation can sometimes fail for valid transactions
 	} else {
-		d.logger.Info("Transaction simulation successful", 
+		d.logger.Info("Transaction simulation successful",
 			zap.Uint64("compute_units", simResult.UnitsConsumed))
 	}
 

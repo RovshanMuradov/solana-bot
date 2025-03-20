@@ -12,7 +12,6 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
-	"github.com/rovshanmuradov/solana-bot/internal/config"
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
 	"github.com/rovshanmuradov/solana-bot/internal/storage"
 	"github.com/rovshanmuradov/solana-bot/internal/storage/postgres"
@@ -24,7 +23,7 @@ import (
 // Runner represents the main bot process controller
 type Runner struct {
 	logger           *zap.Logger
-	config           *config.Config
+	config           *task.Config
 	solClient        *solbc.Client
 	metricsCollector *metrics.Collector
 	db               storage.Storage // Changed from *postgres.Storage to storage.Storage
@@ -47,7 +46,7 @@ func (r *Runner) Initialize(configPath string) error {
 	r.logger.Info("Initializing bot runner")
 
 	// Load configuration
-	cfg, err := config.LoadConfig(configPath)
+	cfg, err := task.LoadConfig(configPath)
 	if err != nil {
 		return err
 	}

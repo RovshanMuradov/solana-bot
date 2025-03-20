@@ -50,7 +50,7 @@ func (c *Client) SendTransaction(ctx context.Context, tx *solana.Transaction) (s
 func (c *Client) GetAccountInfo(ctx context.Context, pubkey solana.PublicKey) (*rpc.GetAccountInfoResult, error) {
 	result, err := c.rpc.GetAccountInfo(ctx, pubkey)
 	if err != nil {
-		c.logger.Debug("GetAccountInfo error", 
+		c.logger.Debug("GetAccountInfo error",
 			zap.String("pubkey", pubkey.String()),
 			zap.Error(err))
 		return nil, err

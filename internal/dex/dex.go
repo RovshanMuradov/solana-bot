@@ -46,7 +46,7 @@ func (d *pumpfunDEXAdapter) Execute(ctx context.Context, task *Task) error {
 	// Проверяем, указан ли адрес токена
 	if task.TokenMint == "" {
 		err := fmt.Errorf("token mint address is required for Pump.fun")
-		d.metrics.RecordTransaction(ctx, "error", d.GetName(), time.Since(start), false)
+		d.metrics.RecordTransaction("error", d.GetName(), time.Since(start), false)
 		return err
 	}
 
@@ -58,21 +58,21 @@ func (d *pumpfunDEXAdapter) Execute(ctx context.Context, task *Task) error {
 		solClient, ok := d.metrics.GetSolanaClient()
 		if !ok {
 			err := fmt.Errorf("solana client not available")
-			d.metrics.RecordTransaction(ctx, "error", d.GetName(), time.Since(start), false)
+			d.metrics.RecordTransaction("error", d.GetName(), time.Since(start), false)
 			return err
 		}
 
 		// Получаем конфигурацию и настраиваем для указанного токена
 		config := pumpfun.GetDefaultConfig()
 		if err := config.SetupForToken(tokenMint, d.logger); err != nil {
-			d.metrics.RecordTransaction(ctx, "error", d.GetName(), time.Since(start), false)
+			d.metrics.RecordTransaction("error", d.GetName(), time.Since(start), false)
 			return fmt.Errorf("failed to setup token config: %w", err)
 		}
 
 		// Получаем кошелек пользователя
 		wallet, err := d.metrics.GetUserWallet()
 		if err != nil {
-			d.metrics.RecordTransaction(ctx, "error", d.GetName(), time.Since(start), false)
+			d.metrics.RecordTransaction("error", d.GetName(), time.Since(start), false)
 			return fmt.Errorf("failed to get user wallet: %w", err)
 		}
 
@@ -80,7 +80,7 @@ func (d *pumpfunDEXAdapter) Execute(ctx context.Context, task *Task) error {
 		var dexErr error
 		d.inner, dexErr = pumpfun.NewDEX(solClient, wallet, d.logger, config, config.MonitorInterval)
 		if dexErr != nil {
-			d.metrics.RecordTransaction(ctx, "error", d.GetName(), time.Since(start), false)
+			d.metrics.RecordTransaction("error", d.GetName(), time.Since(start), false)
 			return fmt.Errorf("failed to initialize Pump.fun DEX: %w", dexErr)
 		}
 	}
@@ -93,7 +93,7 @@ func (d *pumpfunDEXAdapter) Execute(ctx context.Context, task *Task) error {
 			zap.String("token_mint", tokenMint),
 			zap.Uint64("amount", task.Amount))
 		err := d.inner.ExecuteSnipe(ctx, task.Amount, task.MinSolOutput)
-		d.metrics.RecordTransaction(ctx, txType, d.GetName(), time.Since(start), err == nil)
+		d.metrics.RecordTransaction(txType, d.GetName(), time.Since(start), err == nil)
 		return err
 	case OperationSell:
 		txType = "sell"
@@ -101,11 +101,11 @@ func (d *pumpfunDEXAdapter) Execute(ctx context.Context, task *Task) error {
 			zap.String("token_mint", tokenMint),
 			zap.Uint64("amount", task.Amount))
 		err := d.inner.ExecuteSell(ctx, task.Amount, task.MinSolOutput)
-		d.metrics.RecordTransaction(ctx, txType, d.GetName(), time.Since(start), err == nil)
+		d.metrics.RecordTransaction(txType, d.GetName(), time.Since(start), err == nil)
 		return err
 	default:
 		err := fmt.Errorf("operation %s is not supported on Pump.fun", task.Operation)
-		d.metrics.RecordTransaction(ctx, "unsupported", d.GetName(), time.Since(start), false)
+		d.metrics.RecordTransaction("unsupported", d.GetName(), time.Since(start), false)
 		return err
 	}
 }
@@ -134,44 +134,44 @@ func (d *raydiumDEXAdapter) Execute(ctx context.Context, task *Task) error {
 		// Безопасное преобразование адреса токена
 		tokenMintKey, err := solana.PublicKeyFromBase58(tokenMint)
 		if err != nil {
-			d.metrics.RecordTransaction(ctx, "error", d.GetName(), time.Since(start), false)
+			d.metrics.RecordTransaction("error", d.GetName(), time.Since(start), false)
 			return fmt.Errorf("invalid token mint address: %w", err)
 		}
 
 		// Используем безопасные версии для константных значений
 		sourceMint, err := solana.PublicKeyFromBase58("SOURCE_MINT")
 		if err != nil {
-			d.metrics.RecordTransaction(ctx, "error", d.GetName(), time.Since(start), false)
+			d.metrics.RecordTransaction("error", d.GetName(), time.Since(start), false)
 			return fmt.Errorf("invalid source mint: %w", err)
 		}
 
 		ammAuthority, err := solana.PublicKeyFromBase58("AMM_AUTHORITY")
 		if err != nil {
-			d.metrics.RecordTransaction(ctx, "error", d.GetName(), time.Since(start), false)
+			d.metrics.RecordTransaction("error", d.GetName(), time.Since(start), false)
 			return fmt.Errorf("invalid amm authority: %w", err)
 		}
 
 		baseVault, err := solana.PublicKeyFromBase58("BASE_VAULT")
 		if err != nil {
-			d.metrics.RecordTransaction(ctx, "error", d.GetName(), time.Since(start), false)
+			d.metrics.RecordTransaction("error", d.GetName(), time.Since(start), false)
 			return fmt.Errorf("invalid base vault: %w", err)
 		}
 
 		quoteVault, err := solana.PublicKeyFromBase58("QUOTE_VAULT")
 		if err != nil {
-			d.metrics.RecordTransaction(ctx, "error", d.GetName(), time.Since(start), false)
+			d.metrics.RecordTransaction("error", d.GetName(), time.Since(start), false)
 			return fmt.Errorf("invalid quote vault: %w", err)
 		}
 
 		userSourceATA, err := solana.PublicKeyFromBase58("USER_SOURCE_ATA")
 		if err != nil {
-			d.metrics.RecordTransaction(ctx, "error", d.GetName(), time.Since(start), false)
+			d.metrics.RecordTransaction("error", d.GetName(), time.Since(start), false)
 			return fmt.Errorf("invalid user source ATA: %w", err)
 		}
 
 		userDestATA, err := solana.PublicKeyFromBase58("USER_DEST_ATA")
 		if err != nil {
-			d.metrics.RecordTransaction(ctx, "error", d.GetName(), time.Since(start), false)
+			d.metrics.RecordTransaction("error", d.GetName(), time.Since(start), false)
 			return fmt.Errorf("invalid user destination ATA: %w", err)
 		}
 
@@ -196,11 +196,11 @@ func (d *raydiumDEXAdapter) Execute(ctx context.Context, task *Task) error {
 			return err
 		}()
 		// В данном случае операция именуется "swap"
-		d.metrics.RecordTransaction(ctx, "swap", d.GetName(), time.Since(start), err == nil)
+		d.metrics.RecordTransaction("swap", d.GetName(), time.Since(start), err == nil)
 		return err
 	default:
 		err := fmt.Errorf("operation %s is not supported on Raydium", task.Operation)
-		d.metrics.RecordTransaction(ctx, "unsupported", d.GetName(), time.Since(start), false)
+		d.metrics.RecordTransaction("unsupported", d.GetName(), time.Since(start), false)
 		return err
 	}
 }

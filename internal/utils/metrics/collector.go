@@ -2,7 +2,6 @@
 package metrics
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -106,7 +105,7 @@ func (c *Collector) GetUserWallet() (*wallet.Wallet, error) {
 }
 
 // RecordTransaction records transaction metrics
-func (c *Collector) RecordTransaction(ctx context.Context, txType, dexName string, duration time.Duration, success bool) {
+func (c *Collector) RecordTransaction(txType, dexName string, duration time.Duration, success bool) {
 	// Get counter from metrics map
 	counter, ok := c.metrics.Load(TransactionCounterType)
 	if !ok {

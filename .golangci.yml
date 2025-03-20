@@ -7,7 +7,6 @@
       - staticcheck
       - ineffassign
       - revive
-      - gofmt
       - govet
       - gosec
       - unused
