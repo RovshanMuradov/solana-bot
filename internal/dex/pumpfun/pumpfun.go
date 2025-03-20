@@ -1,4 +1,6 @@
-// package pumpfun provides integration with the Pump.fun protocol on Solana
+// =============================
+// File: internal/dex/pumpfun/pumpfun.go
+// =============================
 package pumpfun
 
 import (
@@ -9,16 +11,18 @@ import (
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
+	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
 )
 
 // DEX is the Pump.fun DEX implementation
 type DEX struct {
-	client *solbc.Client
-	wallet *wallet.Wallet
-	logger *zap.Logger
-	config *Config
+	client          *solbc.Client
+	wallet          *wallet.Wallet
+	logger          *zap.Logger
+	config          *Config
+	priorityManager *types.PriorityManager
 }
 
 // NewDEX creates a new instance of the Pump.fun DEX
@@ -36,10 +40,11 @@ func NewDEX(client *solbc.Client, w *wallet.Wallet, logger *zap.Logger, config *
 
 	// Create DEX instance
 	dex := &DEX{
-		client: client,
-		wallet: w,
-		logger: logger.Named("pumpfun"),
-		config: config,
+		client:          client,
+		wallet:          w,
+		logger:          logger.Named("pumpfun"),
+		config:          config,
+		priorityManager: types.NewPriorityManager(logger.Named("priority")),
 	}
 
 	// Update fee recipient
@@ -60,10 +65,13 @@ func NewDEX(client *solbc.Client, w *wallet.Wallet, logger *zap.Logger, config *
 }
 
 // ExecuteSnipe executes a buy operation on the Pump.fun protocol
-func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error {
+func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
 	d.logger.Info("Starting Pump.fun buy operation",
 		zap.Uint64("amount", amount),
-		zap.Uint64("max_sol_cost", maxSolCost))
+		zap.Uint64("max_sol_cost", maxSolCost),
+		zap.Float64("slippage_percent", slippagePercent),
+		zap.String("priority_fee_sol", priorityFeeSol),
+		zap.Uint32("compute_units", computeUnits))
 
 	// Create a context with timeout for the entire operation
 	opCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
@@ -76,18 +84,18 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error
 	}
 	d.logger.Debug("Got blockhash", zap.String("blockhash", blockhash.String()))
 
-	// Create instruction #1: Set Compute Unit Limit (61,368 compute units)
-	instr1 := createSetComputeUnitLimitInstruction(61368)
+	// Create priority instructions (compute limit and price)
+	priorityInstructions, err := d.priorityManager.CreatePriorityInstructions(priorityFeeSol, computeUnits)
+	if err != nil {
+		return fmt.Errorf("failed to create priority instructions: %w", err)
+	}
 
-	// Instruction #2: Set Compute Unit Price (0.1 lamports per compute unit)
-	instr2 := createSetComputeUnitPriceInstruction(100)
-
-	// Instruction #3: Create Associated Token Account Idempotent
+	// Instruction: Create Associated Token Account Idempotent
 	userATA, _, err := solana.FindAssociatedTokenAddress(d.wallet.PublicKey, d.config.Mint)
 	if err != nil {
 		return fmt.Errorf("failed to derive associated token account: %w", err)
 	}
-	instr3 := createAssociatedTokenAccountIdempotentInstruction(d.wallet.PublicKey, d.wallet.PublicKey, d.config.Mint)
+	ataInstruction := createAssociatedTokenAccountIdempotentInstruction(d.wallet.PublicKey, d.wallet.PublicKey, d.config.Mint)
 
 	// Ensure bonding curve is derived correctly
 	bondingCurve, _, err := solana.FindProgramAddress(
@@ -122,7 +130,13 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error
 	)
 
 	// Assemble all instructions
-	instructions := []solana.Instruction{instr1, instr2, instr3, buyIx}
+	var instructions []solana.Instruction
+	
+	// Add priority instructions first
+	instructions = append(instructions, priorityInstructions...)
+	
+	// Add ATA and buy instructions
+	instructions = append(instructions, ataInstruction, buyIx)
 
 	// Create transaction
 	tx, err := solana.NewTransaction(
@@ -175,10 +189,12 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amount, maxSolCost uint64) error
 }
 
 // ExecuteSell executes a sell operation on the Pump.fun protocol
-func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64) error {
+func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64, priorityFeeSol string, computeUnits uint32) error {
 	d.logger.Info("Starting Pump.fun sell operation",
 		zap.Uint64("amount", amount),
-		zap.Uint64("min_sol_output", minSolOutput))
+		zap.Uint64("min_sol_output", minSolOutput),
+		zap.String("priority_fee_sol", priorityFeeSol),
+		zap.Uint32("compute_units", computeUnits))
 
 	// Create a context with timeout for the entire operation
 	opCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
@@ -191,18 +207,18 @@ func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64) erro
 	}
 	d.logger.Debug("Got blockhash", zap.String("blockhash", blockhash.String()))
 
-	// Create instruction #1: Set Compute Unit Limit (61,368 compute units)
-	instr1 := createSetComputeUnitLimitInstruction(61368)
+	// Create priority instructions (compute limit and price)
+	priorityInstructions, err := d.priorityManager.CreatePriorityInstructions(priorityFeeSol, computeUnits)
+	if err != nil {
+		return fmt.Errorf("failed to create priority instructions: %w", err)
+	}
 
-	// Instruction #2: Set Compute Unit Price (0.1 lamports per compute unit)
-	instr2 := createSetComputeUnitPriceInstruction(100)
-
-	// Instruction #3: Create Associated Token Account Idempotent
+	// Instruction: Create Associated Token Account Idempotent
 	userATA, _, err := solana.FindAssociatedTokenAddress(d.wallet.PublicKey, d.config.Mint)
 	if err != nil {
 		return fmt.Errorf("failed to derive associated token account: %w", err)
 	}
-	instr3 := createAssociatedTokenAccountIdempotentInstruction(d.wallet.PublicKey, d.wallet.PublicKey, d.config.Mint)
+	ataInstruction := createAssociatedTokenAccountIdempotentInstruction(d.wallet.PublicKey, d.wallet.PublicKey, d.config.Mint)
 
 	// Ensure bonding curve is derived correctly
 	bondingCurve, _, err := solana.FindProgramAddress(
@@ -237,7 +253,13 @@ func (d *DEX) ExecuteSell(ctx context.Context, amount, minSolOutput uint64) erro
 	)
 
 	// Assemble all instructions
-	instructions := []solana.Instruction{instr1, instr2, instr3, sellIx}
+	var instructions []solana.Instruction
+	
+	// Add priority instructions first
+	instructions = append(instructions, priorityInstructions...)
+	
+	// Add ATA and sell instructions
+	instructions = append(instructions, ataInstruction, sellIx)
 
 	// Create transaction
 	tx, err := solana.NewTransaction(

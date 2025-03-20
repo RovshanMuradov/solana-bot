@@ -1,4 +1,6 @@
-// package pumpfun provides integration with the Pump.fun protocol on Solana
+// =============================
+// File: internal/dex/pumpfun/types.go
+// =============================
 package pumpfun
 
 import (

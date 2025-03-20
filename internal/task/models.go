@@ -25,9 +25,10 @@ type Task struct {
 	Module              string
 	WalletName          string
 	Operation           string
-	AmountSol           float64
-	MinSolOutputSol     float64
-	PriorityFeeLamports uint64
+	AmountSol           float64  // Amount in SOL the user wants to spend (for buy) or sell
+	SlippagePercent     float64  // Slippage tolerance in percent (0-100)
+	PriorityFeeSol      string   // Priority fee in SOL (string format, e.g. "0.000001")
+	ComputeUnits        uint32   // Compute units for the transaction
 	ContractOrTokenMint string
 }
 
@@ -68,10 +69,12 @@ func LoadConfig(path string) (*Config, error) {
 // ToDEXTask converts Task to dex.Task format
 func (t *Task) ToDEXTask() *dex.Task {
 	return &dex.Task{
-		Operation:    dex.OperationType(t.Operation),
-		Amount:       uint64(t.AmountSol * LamportsPerSOL),
-		MinSolOutput: uint64(t.MinSolOutputSol * LamportsPerSOL),
-		TokenMint:    t.ContractOrTokenMint,
+		Operation:       dex.OperationType(t.Operation),
+		AmountSol:       t.AmountSol,
+		SlippagePercent: t.SlippagePercent,
+		TokenMint:       t.ContractOrTokenMint,
+		PriorityFee:     t.PriorityFeeSol,
+		ComputeUnits:    t.ComputeUnits,
 	}
 }
 
@@ -86,7 +89,7 @@ func NewManager(logger *zap.Logger) *Manager {
 }
 
 // LoadTasks reads tasks from CSV file
-// CSV format: task_name,module,wallet,operation,amount_sol,min_sol_output_sol,priority_fee_lamports,contract_address
+// CSV format: task_name,module,wallet,operation,amount_sol,slippage_percent,priority_fee_sol,contract_address,compute_units
 func (m *Manager) LoadTasks(path string) ([]Task, error) {
 	m.logger.Debug("Loading tasks", zap.String("path", path))
 
@@ -123,16 +126,34 @@ func (m *Manager) LoadTasks(path string) ([]Task, error) {
 			continue // Skip invalid rows instead of setting zeros
 		}
 
-		minSolOut, err := strconv.ParseFloat(row[5], 64)
+		slippagePercent, err := strconv.ParseFloat(row[5], 64)
 		if err != nil {
-			m.logger.Warn("Invalid min_sol_output_sol value", zap.String("value", row[5]), zap.Error(err))
+			m.logger.Warn("Invalid slippage_percent value", zap.String("value", row[5]), zap.Error(err))
 			continue
 		}
-
-		priority, err := strconv.ParseUint(row[6], 10, 64)
-		if err != nil {
-			m.logger.Warn("Invalid priority_fee_lamports value", zap.String("value", row[6]), zap.Error(err))
-			continue
+		
+		// Validate slippage is between 0 and 100
+		if slippagePercent < 0 || slippagePercent > 100 {
+			m.logger.Warn("Slippage percent out of range (0-100)", zap.Float64("slippage", slippagePercent))
+			// Default to 1% if out of range
+			slippagePercent = 1.0
+		}
+		
+		// Parse priority fee as string (in SOL)
+		priorityFeeSol := row[6]
+		if priorityFeeSol == "" {
+			priorityFeeSol = "default" // Use default if not specified
+		}
+		
+		// Parse compute units
+		var computeUnits uint32 = 0 // 0 means use default value
+		if len(row) > 8 && row[8] != "" {
+			computeUnitsUint64, err := strconv.ParseUint(row[8], 10, 32)
+			if err != nil {
+				m.logger.Warn("Invalid compute_units value", zap.String("value", row[8]), zap.Error(err))
+			} else {
+				computeUnits = uint32(computeUnitsUint64)
+			}
 		}
 
 		tasks = append(tasks, Task{
@@ -141,8 +162,9 @@ func (m *Manager) LoadTasks(path string) ([]Task, error) {
 			WalletName:          row[2],
 			Operation:           row[3],
 			AmountSol:           amountSol,
-			MinSolOutputSol:     minSolOut,
-			PriorityFeeLamports: priority,
+			SlippagePercent:     slippagePercent,
+			PriorityFeeSol:      priorityFeeSol,
+			ComputeUnits:        computeUnits,
 			ContractOrTokenMint: row[7],
 		})
 	}

@@ -89,20 +89,50 @@ func (d *pumpfunDEXAdapter) Execute(ctx context.Context, task *Task) error {
 	switch task.Operation {
 	case OperationSnipe:
 		txType = "snipe"
+		
+		// Convert SOL amount to lamports for maximum spend
+		maxSolCost := uint64(task.AmountSol * 1_000_000_000)
+		
+		// For now we'll use 0 as the amount of tokens, which means "buy as many tokens as possible"
+		// with the given SOL amount (maxSolCost)
+		tokenAmount := uint64(0)
+		
 		d.logger.Info("Executing snipe on Pump.fun",
 			zap.String("token_mint", tokenMint),
-			zap.Uint64("amount", task.Amount))
-		err := d.inner.ExecuteSnipe(ctx, task.Amount, task.MinSolOutput)
+			zap.Float64("amount_sol", task.AmountSol),
+			zap.Uint64("max_sol_cost_lamports", maxSolCost),
+			zap.Float64("slippage_percent", task.SlippagePercent),
+			zap.String("priority_fee", task.PriorityFee),
+			zap.Uint32("compute_units", task.ComputeUnits))
+			
+		err := d.inner.ExecuteSnipe(ctx, tokenAmount, maxSolCost, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
 		d.metrics.RecordTransaction(txType, d.GetName(), time.Since(start), err == nil)
 		return err
+		
 	case OperationSell:
 		txType = "sell"
+		
+		// Convert SOL amount to token amount for selling
+		// This is an estimate - in practice you would need to know the current token price
+		// to properly convert SOL value to token amount
+		tokenAmount := uint64(task.AmountSol * 1_000_000_000) // This needs improvement
+		
+		// Min SOL output based on slippage
+		minSolOutput := uint64(task.AmountSol * (1.0 - task.SlippagePercent/100.0) * 1_000_000_000)
+		
 		d.logger.Info("Executing sell on Pump.fun",
 			zap.String("token_mint", tokenMint),
-			zap.Uint64("amount", task.Amount))
-		err := d.inner.ExecuteSell(ctx, task.Amount, task.MinSolOutput)
+			zap.Float64("amount_sol", task.AmountSol),
+			zap.Uint64("token_amount", tokenAmount),
+			zap.Uint64("min_sol_output_lamports", minSolOutput),
+			zap.Float64("slippage_percent", task.SlippagePercent),
+			zap.String("priority_fee", task.PriorityFee),
+			zap.Uint32("compute_units", task.ComputeUnits))
+			
+		err := d.inner.ExecuteSell(ctx, tokenAmount, minSolOutput, task.PriorityFee, task.ComputeUnits)
 		d.metrics.RecordTransaction(txType, d.GetName(), time.Since(start), err == nil)
 		return err
+		
 	default:
 		err := fmt.Errorf("operation %s is not supported on Pump.fun", task.Operation)
 		d.metrics.RecordTransaction("unsupported", d.GetName(), time.Since(start), false)
@@ -175,6 +205,12 @@ func (d *raydiumDEXAdapter) Execute(ctx context.Context, task *Task) error {
 			return fmt.Errorf("invalid user destination ATA: %w", err)
 		}
 
+		// Convert SOL amount to lamports
+		amountInLamports := uint64(task.AmountSol * 1_000_000_000)
+		
+		// Calculate min output based on slippage
+		minOutLamports := uint64(task.AmountSol * (1 - task.SlippagePercent/100.0) * 1_000_000_000)
+
 		// Здесь для демонстрации используется один и тот же набор параметров
 		snipeParams := &raydium.SnipeParams{
 			TokenMint:           tokenMintKey, // Используем безопасно преобразованный ключ
@@ -186,9 +222,9 @@ func (d *raydiumDEXAdapter) Execute(ctx context.Context, task *Task) error {
 			PrivateKey:          nil,                // При необходимости — приватный ключ
 			UserSourceATA:       userSourceATA,
 			UserDestATA:         userDestATA,
-			AmountInLamports:    task.Amount,
-			MinOutLamports:      task.MinSolOutput,
-			PriorityFeeLamports: 0,
+			AmountInLamports:    amountInLamports,
+			MinOutLamports:      minOutLamports,
+			PriorityFeeLamports: 0, // Это нужно обновить используя task.PriorityFee
 		}
 
 		err = func() error {

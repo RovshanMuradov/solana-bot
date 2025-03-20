@@ -1,7 +1,7 @@
 {
     "license": "TEST-LICENSE-123456789",
     "rpc_list": [
-        "https://proximus.dev/rpc/solana"
+        "https://mainnet.helius-rpc.com/?api-key=29f79eeb-5eca-456a-a0b2-44d8857fee9d"
 
 ],
     "websocket_url": "wss://mainnet.helius-rpc.com/?api-key=29f79eeb-5eca-456a-a0b2-44d8857fee9d",

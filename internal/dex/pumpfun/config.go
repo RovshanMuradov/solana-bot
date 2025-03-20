@@ -1,4 +1,6 @@
-// package pumpfun provides integration with the Pump.fun protocol on Solana
+// =============================
+// File: internal/dex/pumpfun/config.go
+// =============================
 package pumpfun
 
 import (
@@ -27,7 +29,7 @@ type Config struct {
 
 	// Token specific addresses
 	Mint solana.PublicKey
-	
+
 	// Monitoring configuration
 	MonitorInterval string // Duration string for monitoring intervals
 }
