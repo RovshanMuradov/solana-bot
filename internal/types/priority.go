@@ -8,89 +8,115 @@ import (
 	"go.uber.org/zap"
 )
 
-type PriorityLevel string
+// PriorityManager handles transaction priority fee calculation and formatting
+type PriorityManager struct {
+	logger *zap.Logger
+}
 
+// Conversion constants
 const (
-	PriorityLow     PriorityLevel = "low"
-	PriorityMedium  PriorityLevel = "medium"
-	PriorityHigh    PriorityLevel = "high"
-	PriorityExtreme PriorityLevel = "extreme"
+	LamportsPerSol      = 1_000_000_000     // 1 SOL = 10^9 lamports
+	MicroLamportsPerSol = 1_000_000_000_000 // 1 SOL = 10^12 micro-lamports
+	DefaultPriorityFee  = 5_000             // Default priority fee in micro-lamports
+	DefaultComputeUnits = 200_000           // Default compute units
+	DefaultHeapSize     = 0                 // Default additional heap size
 )
 
-type PriorityConfig struct {
-	ComputeUnits uint32 // Number of compute units
-	PriorityFee  uint64 // Priority fee in micro-lamports
-	HeapSize     uint32 // Additional heap memory (optional)
-}
-
-type PriorityManager struct {
-	profiles map[PriorityLevel]*PriorityConfig
-	logger   *zap.Logger
-}
-
+// NewPriorityManager creates a new priority manager
 func NewPriorityManager(logger *zap.Logger) *PriorityManager {
 	return &PriorityManager{
-		profiles: map[PriorityLevel]*PriorityConfig{
-			PriorityLow: {
-				ComputeUnits: 200_000,
-				PriorityFee:  1_000, // 0.000001 SOL in micro-lamports
-			},
-			PriorityMedium: {
-				ComputeUnits: 400_000,
-				PriorityFee:  5_000, // 0.000005 SOL in micro-lamports
-			},
-			PriorityHigh: {
-				ComputeUnits: 800_000,
-				PriorityFee:  10_000, // 0.00001 SOL in micro-lamports
-			},
-			PriorityExtreme: {
-				ComputeUnits: 1_000_000,
-				PriorityFee:  50_000,    // 0.00005 SOL in micro-lamports
-				HeapSize:     32 * 1024, // 32KB
-			},
-		},
 		logger: logger,
 	}
 }
 
-func (pm *PriorityManager) CreatePriorityInstructions(level PriorityLevel) ([]solana.Instruction, error) {
-	config, ok := pm.profiles[level]
-	if !ok {
-		return nil, fmt.Errorf("unknown priority level: %s", level)
-	}
-
-	return pm.createInstructions(config)
+// SolToLamports converts SOL to lamports
+func (pm *PriorityManager) SolToLamports(sol float64) uint64 {
+	return uint64(sol * LamportsPerSol)
 }
 
-func (pm *PriorityManager) CreateCustomPriorityInstructions(priorityFee uint64, units uint32) ([]solana.Instruction, error) {
-	// Remove unnecessary check since priorityFee is unsigned
-	config := &PriorityConfig{
-		ComputeUnits: units,
-		PriorityFee:  priorityFee,
-	}
-
-	return pm.createInstructions(config)
+// LamportsToSol converts lamports to SOL
+func (pm *PriorityManager) LamportsToSol(lamports uint64) float64 {
+	return float64(lamports) / LamportsPerSol
 }
 
-func (pm *PriorityManager) createInstructions(config *PriorityConfig) ([]solana.Instruction, error) {
+// SolToMicroLamports converts SOL to micro-lamports
+func (pm *PriorityManager) SolToMicroLamports(sol float64) uint64 {
+	return uint64(sol * MicroLamportsPerSol)
+}
+
+// MicroLamportsToSol converts micro-lamports to SOL
+func (pm *PriorityManager) MicroLamportsToSol(microLamports uint64) float64 {
+	return float64(microLamports) / MicroLamportsPerSol
+}
+
+// FormatLamports formats lamports as SOL with proper decimal places
+func (pm *PriorityManager) FormatLamports(lamports uint64) string {
+	return fmt.Sprintf("%.9f SOL", pm.LamportsToSol(lamports))
+}
+
+// FormatMicroLamports formats micro-lamports as SOL with proper decimal places
+func (pm *PriorityManager) FormatMicroLamports(microLamports uint64) string {
+	return fmt.Sprintf("%.12f SOL", pm.MicroLamportsToSol(microLamports))
+}
+
+// CreatePriorityInstructions creates compute budget instructions with custom priority fee
+// If priorityFeeSol is "default", it uses the default fee value
+func (pm *PriorityManager) CreatePriorityInstructions(priorityFeeSol string, computeUnits uint32) ([]solana.Instruction, error) {
+	var priorityFee uint64
+
+	// Handle default value
+	if priorityFeeSol == "default" {
+		priorityFee = DefaultPriorityFee
+		pm.logger.Debug("Using default priority fee",
+			zap.Uint64("micro_lamports", priorityFee),
+			zap.String("sol", pm.FormatMicroLamports(priorityFee)))
+	} else {
+		// Parse SOL value from string and convert to micro-lamports
+		var solValue float64
+		_, err := fmt.Sscanf(priorityFeeSol, "%f", &solValue)
+		if err != nil {
+			return nil, fmt.Errorf("invalid priority fee format: %w", err)
+		}
+
+		priorityFee = pm.SolToMicroLamports(solValue)
+		pm.logger.Debug("Custom priority fee",
+			zap.Float64("sol_input", solValue),
+			zap.Uint64("micro_lamports", priorityFee))
+	}
+
+	// Use default compute units if not specified
+	if computeUnits == 0 {
+		computeUnits = DefaultComputeUnits
+	}
+
+	return pm.createInstructions(priorityFee, computeUnits, DefaultHeapSize)
+}
+
+// createInstructions creates compute budget instructions with the specified parameters
+func (pm *PriorityManager) createInstructions(priorityFee uint64, computeUnits uint32, heapSize uint32) ([]solana.Instruction, error) {
 	var instructions []solana.Instruction
 
 	// Set compute unit limit
-	if config.ComputeUnits > 0 {
-		inst := computebudget.NewSetComputeUnitLimitInstruction(config.ComputeUnits).Build()
+	if computeUnits > 0 {
+		inst := computebudget.NewSetComputeUnitLimitInstruction(computeUnits).Build()
 		instructions = append(instructions, inst)
+		pm.logger.Debug("Added compute unit limit instruction", zap.Uint32("units", computeUnits))
 	}
 
-	// Set compute unit price
-	if config.PriorityFee > 0 {
-		inst := computebudget.NewSetComputeUnitPriceInstruction(config.PriorityFee).Build()
+	// Set compute unit price (priority fee)
+	if priorityFee > 0 {
+		inst := computebudget.NewSetComputeUnitPriceInstruction(priorityFee).Build()
 		instructions = append(instructions, inst)
+		pm.logger.Debug("Added priority fee instruction",
+			zap.Uint64("micro_lamports", priorityFee),
+			zap.String("sol", pm.FormatMicroLamports(priorityFee)))
 	}
 
-	// Request heap frame
-	if config.HeapSize > 0 {
-		inst := computebudget.NewRequestHeapFrameInstruction(config.HeapSize).Build()
+	// Request heap frame (if needed)
+	if heapSize > 0 {
+		inst := computebudget.NewRequestHeapFrameInstruction(heapSize).Build()
 		instructions = append(instructions, inst)
+		pm.logger.Debug("Added heap frame instruction", zap.Uint32("size", heapSize))
 	}
 
 	return instructions, nil
