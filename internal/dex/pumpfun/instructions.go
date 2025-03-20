@@ -11,8 +11,6 @@ import (
 
 // Constants for the Pump.fun protocol
 var (
-	// Fixed discriminators for buy and sell functions
-	buyDiscriminator  = []byte{0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea}
 	sellDiscriminator = []byte{0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad}
 
 	// Program ID for exact-sol operations
