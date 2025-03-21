@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
@@ -25,11 +26,12 @@ type Task struct {
 	Module              string
 	WalletName          string
 	Operation           string
-	AmountSol           float64  // For buy: Amount in SOL to spend. For sell: Number of tokens to sell
-	SlippagePercent     float64  // Slippage tolerance in percent (0-100)
-	PriorityFeeSol      string   // Priority fee in SOL (string format, e.g. "0.000001")
-	ComputeUnits        uint32   // Compute units for the transaction
+	AmountSol           float64 // For buy: Amount in SOL to spend. For sell: Number of tokens to sell
+	SlippagePercent     float64 // Slippage tolerance in percent (0-100)
+	PriorityFeeSol      string  // Priority fee in SOL (string format, e.g. "0.000001")
+	ComputeUnits        uint32  // Compute units for the transaction
 	ContractOrTokenMint string
+	MonitorInterval     string // Interval for price monitoring (format: "5s", "1m", etc.)
 }
 
 // Config defines application configuration
@@ -68,6 +70,19 @@ func LoadConfig(path string) (*Config, error) {
 
 // ToDEXTask converts Task to dex.Task format
 func (t *Task) ToDEXTask() *dex.Task {
+	// Default monitor interval is 5 seconds if not specified
+	monitorInterval := "5s"
+	if t.MonitorInterval != "" {
+		monitorInterval = t.MonitorInterval
+	}
+
+	// Parse the interval duration
+	interval, err := time.ParseDuration(monitorInterval)
+	if err != nil {
+		// Fallback to default if parsing fails
+		interval = 5 * time.Second
+	}
+
 	return &dex.Task{
 		Operation:       dex.OperationType(t.Operation),
 		AmountSol:       t.AmountSol,
@@ -75,6 +90,7 @@ func (t *Task) ToDEXTask() *dex.Task {
 		TokenMint:       t.ContractOrTokenMint,
 		PriorityFee:     t.PriorityFeeSol,
 		ComputeUnits:    t.ComputeUnits,
+		MonitorInterval: interval,
 	}
 }
 
@@ -89,9 +105,10 @@ func NewManager(logger *zap.Logger) *Manager {
 }
 
 // LoadTasks reads tasks from CSV file
-// CSV format: task_name,module,wallet,operation,amount,slippage_percent,priority_fee_sol,contract_address,compute_units
+// CSV format: task_name,module,wallet,operation,amount,slippage_percent,priority_fee_sol,contract_address,compute_units,monitor_interval
 // For buy operations, amount = SOL to spend
 // For sell operations, amount = number of tokens to sell
+// monitor_interval is an optional field for the monitoring interval (e.g., "5s", "1m")
 func (m *Manager) LoadTasks(path string) ([]Task, error) {
 	m.logger.Debug("Loading tasks", zap.String("path", path))
 
@@ -133,20 +150,20 @@ func (m *Manager) LoadTasks(path string) ([]Task, error) {
 			m.logger.Warn("Invalid slippage_percent value", zap.String("value", row[5]), zap.Error(err))
 			continue
 		}
-		
+
 		// Validate slippage is between 0 and 100
 		if slippagePercent < 0 || slippagePercent > 100 {
 			m.logger.Warn("Slippage percent out of range (0-100)", zap.Float64("slippage", slippagePercent))
 			// Default to 1% if out of range
 			slippagePercent = 1.0
 		}
-		
+
 		// Parse priority fee as string (in SOL)
 		priorityFeeSol := row[6]
 		if priorityFeeSol == "" {
 			priorityFeeSol = "default" // Use default if not specified
 		}
-		
+
 		// Parse compute units (default is 0 which means use default value)
 		var computeUnits uint32
 		if len(row) > 8 && row[8] != "" {
@@ -156,6 +173,11 @@ func (m *Manager) LoadTasks(path string) ([]Task, error) {
 			} else {
 				computeUnits = uint32(computeUnitsUint64)
 			}
+		}
+		// Get monitor interval if available
+		monitorInterval := ""
+		if len(row) > 9 && row[9] != "" {
+			monitorInterval = row[9]
 		}
 
 		tasks = append(tasks, Task{
@@ -168,6 +190,7 @@ func (m *Manager) LoadTasks(path string) ([]Task, error) {
 			PriorityFeeSol:      priorityFeeSol,
 			ComputeUnits:        computeUnits,
 			ContractOrTokenMint: row[7],
+			MonitorInterval:     monitorInterval,
 		})
 	}
 

@@ -8,11 +8,13 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"go.uber.org/zap"
 
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
+	"github.com/rovshanmuradov/solana-bot/internal/monitor"
 	"github.com/rovshanmuradov/solana-bot/internal/storage"
 	"github.com/rovshanmuradov/solana-bot/internal/storage/postgres"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
@@ -151,15 +153,85 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		// Convert task to DEX format and execute
 		dexTask := t.ToDEXTask()
-		err = dexAdapter.Execute(shutdownCtx, dexTask)
-		if err != nil {
-			r.logger.Error("Error executing operation",
+
+		// Handle different operations
+		if dexTask.Operation == dex.OperationSnipeMonitor {
+			r.logger.Info("Executing snipe_monitor operation",
 				zap.String("task", t.TaskName),
-				zap.Error(err),
-			)
-		} else {
-			r.logger.Info("Operation completed",
+				zap.Duration("monitor_interval", dexTask.MonitorInterval))
+
+			// First, execute the snipe operation
+			snipeTask := *dexTask
+			snipeTask.Operation = dex.OperationSnipe
+
+			err = dexAdapter.Execute(shutdownCtx, &snipeTask)
+			if err != nil {
+				r.logger.Error("Error during snipe phase of snipe_monitor",
+					zap.String("task", t.TaskName),
+					zap.Error(err))
+				continue // Skip monitoring if snipe fails
+			}
+
+			r.logger.Info("Snipe phase completed, starting monitoring",
 				zap.String("task", t.TaskName))
+
+			// Get initial token price
+			ctx, cancel := context.WithTimeout(shutdownCtx, 10*time.Second)
+			initialPrice, err := dexAdapter.GetTokenPrice(ctx, dexTask.TokenMint)
+			cancel()
+
+			if err != nil {
+				r.logger.Error("Failed to get initial token price",
+					zap.String("task", t.TaskName),
+					zap.Error(err))
+				continue
+			}
+
+			// Create monitor session config
+			// Assuming the tokensReceived is the AmountSol for now (this should be updated to actual tokens received)
+			// In a real implementation, we would capture the actual tokens received from the snipe operation
+			tokenAmount := dexTask.AmountSol * 10 // This is just an example, should be actual token amount
+
+			monitorConfig := &monitor.SessionConfig{
+				TokenMint:       dexTask.TokenMint,
+				TokenAmount:     tokenAmount,       // This should be the actual received tokens
+				InitialAmount:   dexTask.AmountSol, // SOL spent
+				InitialPrice:    initialPrice,      // Initial price
+				MonitorInterval: dexTask.MonitorInterval,
+				DEX:             dexAdapter,
+				Logger:          r.logger.Named("monitor"),
+			}
+
+			// Create and start monitoring session
+			session := monitor.NewMonitoringSession(monitorConfig)
+			if err := session.Start(); err != nil {
+				r.logger.Error("Failed to start monitoring session",
+					zap.String("task", t.TaskName),
+					zap.Error(err))
+				continue
+			}
+
+			// Wait for session to complete (this blocks until user input or context cancellation)
+			if err := session.Wait(); err != nil {
+				r.logger.Error("Error during monitoring session",
+					zap.String("task", t.TaskName),
+					zap.Error(err))
+			} else {
+				r.logger.Info("Monitoring session completed successfully",
+					zap.String("task", t.TaskName))
+			}
+		} else {
+			// Normal execution for other operations
+			err = dexAdapter.Execute(shutdownCtx, dexTask)
+			if err != nil {
+				r.logger.Error("Error executing operation",
+					zap.String("task", t.TaskName),
+					zap.Error(err),
+				)
+			} else {
+				r.logger.Info("Operation completed",
+					zap.String("task", t.TaskName))
+			}
 		}
 	}
 

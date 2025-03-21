@@ -1,2 +1,2 @@
 task_name,module,wallet,operation,amount,slippage_percent,priority_fee_sol,contract_address,compute_units
-sell_my_tokens,pump.fun,main,sell,564784,10.0,0.000002,4pCybETPK2y12makEKwF8eA74bH4euRAqGqP2f46pump,200000
+buy_tokens,pump.fun,main,snipe_monitor,0.00001,1.0,0.000002,4pCybETPK2y12makEKwF8eA74bH4euRAqGqP2f46pump,200000

@@ -26,6 +26,8 @@ type DEX interface {
 	GetName() string
 	// Execute выполняет операцию, описанную в задаче.
 	Execute(ctx context.Context, task *Task) error
+	// GetTokenPrice возвращает текущую цену токена (новый метод)
+	GetTokenPrice(ctx context.Context, tokenMint string) (float64, error)
 }
 
 // pumpfunDEXAdapter – адаптер для Pump.fun, реализующий интерфейс DEX.
@@ -40,7 +42,6 @@ func (d *pumpfunDEXAdapter) GetName() string {
 }
 
 // Execute выполняет операцию, описанную в задаче.
-// Обновленная реализация метода Execute для pumpfunDEXAdapter
 func (d *pumpfunDEXAdapter) Execute(ctx context.Context, task *Task) error {
 	start := time.Now()
 	var txType string
@@ -122,6 +123,23 @@ func (d *pumpfunDEXAdapter) Execute(ctx context.Context, task *Task) error {
 			zap.Uint32("compute_units", task.ComputeUnits))
 
 		err := d.inner.ExecuteSell(ctx, tokenAmount, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
+		d.metrics.RecordTransaction(txType, d.GetName(), time.Since(start), err == nil)
+		return err
+
+	case OperationSnipeMonitor:
+		// This is handled at a higher level by combining Snipe and Monitor operations
+		// Here we just execute the snipe part
+		txType = "snipe_monitor"
+
+		d.logger.Info("Executing snipe (in snipe_monitor mode) on Pump.fun",
+			zap.String("token_mint", tokenMint),
+			zap.Float64("amount_sol", task.AmountSol),
+			zap.Float64("slippage_percent", task.SlippagePercent),
+			zap.String("priority_fee", task.PriorityFee),
+			zap.Uint32("compute_units", task.ComputeUnits),
+			zap.Duration("monitor_interval", task.MonitorInterval))
+
+		err := d.inner.ExecuteSnipe(ctx, task.AmountSol, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
 		d.metrics.RecordTransaction(txType, d.GetName(), time.Since(start), err == nil)
 		return err
 
@@ -279,4 +297,42 @@ func GetDEXByName(name string, client interface{}, w *wallet.Wallet, logger *zap
 	default:
 		return nil, fmt.Errorf("exchange %s is not supported", name)
 	}
+}
+
+// GetTokenPrice returns the current price of the token
+func (d *pumpfunDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
+	// Если DEX еще не инициализирован, создаем его с токеном из запроса
+	if d.inner == nil {
+		solClient, ok := d.metrics.GetSolanaClient()
+		if !ok {
+			return 0, fmt.Errorf("solana client not available")
+		}
+
+		// Получаем конфигурацию и настраиваем для указанного токена
+		config := pumpfun.GetDefaultConfig()
+		if err := config.SetupForToken(tokenMint, d.logger); err != nil {
+			return 0, fmt.Errorf("failed to setup token config: %w", err)
+		}
+
+		// Получаем кошелек пользователя
+		wallet, err := d.metrics.GetUserWallet()
+		if err != nil {
+			return 0, fmt.Errorf("failed to get user wallet: %w", err)
+		}
+
+		// Создаем DEX с конфигурацией для токена
+		var dexErr error
+		d.inner, dexErr = pumpfun.NewDEX(solClient, wallet, d.logger, config, "5s") // Default monitor interval
+		if dexErr != nil {
+			return 0, fmt.Errorf("failed to initialize Pump.fun DEX: %w", dexErr)
+		}
+	}
+
+	// Вызываем метод внутреннего DEX
+	return d.inner.GetTokenPrice(ctx, tokenMint)
+}
+
+// GetTokenPrice returns token price for Raydium DEX
+func (d *raydiumDEXAdapter) GetTokenPrice(_ context.Context, _ string) (float64, error) {
+	return 0, fmt.Errorf("price retrieval not implemented for Raydium DEX")
 }

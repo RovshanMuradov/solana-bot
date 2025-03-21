@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -396,4 +397,36 @@ func (d *DEX) FetchBondingCurveAccount(ctx context.Context, bondingCurve solana.
 		VirtualTokenReserves: virtualTokenReserves,
 		VirtualSolReserves:   virtualSolReserves,
 	}, nil
+}
+
+// GetTokenPrice возвращает текущую цену токена на основе bonding curve
+func (d *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
+	// Если это тот же токен, который уже настроен
+	if d.config.Mint.String() == tokenMint {
+		// Получить bonding curve
+		bondingCurve, _, err := solana.FindProgramAddress(
+			[][]byte{[]byte("bonding-curve"), d.config.Mint.Bytes()},
+			d.config.ContractAddress,
+		)
+		if err != nil {
+			return 0, fmt.Errorf("failed to derive bonding curve: %w", err)
+		}
+
+		// Получить данные bonding curve
+		bondingCurveData, err := d.FetchBondingCurveAccount(ctx, bondingCurve)
+		if err != nil {
+			return 0, fmt.Errorf("failed to fetch bonding curve data: %w", err)
+		}
+
+		// Расчет цены как соотношение SOL/токен (используется формула Pump.fun)
+		// Для 1 токена цена будет:
+		price := float64(bondingCurveData.VirtualSolReserves) / float64(bondingCurveData.VirtualTokenReserves)
+
+		// Форматировать до 9 знаков после запятой (как SOL)
+		price = math.Floor(price*1e9) / 1e9
+
+		return price, nil
+	}
+
+	return 0, fmt.Errorf("token %s not configured in this DEX instance", tokenMint)
 }
