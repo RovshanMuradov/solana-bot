@@ -11,7 +11,7 @@ type OperationType string
 const (
 	OperationSnipe OperationType = "snipe"
 	OperationSell  OperationType = "sell"
-	// OperationSwap         OperationType = "swap"
+	OperationSwap  OperationType = "swap"
 )
 
 // Task represents an operation request for DEX.
