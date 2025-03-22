@@ -9,10 +9,9 @@ import "time"
 type OperationType string
 
 const (
-	OperationSnipe        OperationType = "snipe"
-	OperationSell         OperationType = "sell"
-	OperationSwap         OperationType = "swap"
-	OperationSnipeMonitor OperationType = "snipe_monitor"
+	OperationSnipe OperationType = "snipe"
+	OperationSell  OperationType = "sell"
+	// OperationSwap         OperationType = "swap"
 )
 
 // Task represents an operation request for DEX.

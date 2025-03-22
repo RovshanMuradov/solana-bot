@@ -154,25 +154,22 @@ func (r *Runner) Run(ctx context.Context) error {
 		// Convert task to DEX format and execute
 		dexTask := t.ToDEXTask()
 
-		// Handle different operations
-		if dexTask.Operation == dex.OperationSnipeMonitor {
-			r.logger.Info("Executing snipe_monitor operation",
+		// Execute operation
+		if dexTask.Operation == dex.OperationSnipe {
+			r.logger.Info("Executing snipe operation with monitoring",
 				zap.String("task", t.TaskName),
 				zap.Duration("monitor_interval", dexTask.MonitorInterval))
 
-			// First, execute the snipe operation
-			snipeTask := *dexTask
-			snipeTask.Operation = dex.OperationSnipe
-
-			err = dexAdapter.Execute(shutdownCtx, &snipeTask)
+			// Execute the snipe operation
+			err = dexAdapter.Execute(shutdownCtx, dexTask)
 			if err != nil {
-				r.logger.Error("Error during snipe phase of snipe_monitor",
+				r.logger.Error("Error during snipe operation",
 					zap.String("task", t.TaskName),
 					zap.Error(err))
 				continue // Skip monitoring if snipe fails
 			}
 
-			r.logger.Info("Snipe phase completed, starting monitoring",
+			r.logger.Info("Snipe completed, starting monitoring",
 				zap.String("task", t.TaskName))
 
 			// Get initial token price
@@ -192,12 +189,16 @@ func (r *Runner) Run(ctx context.Context) error {
 			// In a real implementation, we would capture the actual tokens received from the snipe operation
 			tokenAmount := dexTask.AmountSol * 10 // This is just an example, should be actual token amount
 
+			// Convert priceDelay from milliseconds to time.Duration
+			// price_delay is in milliseconds where 100-1000 = 1 second
+			monitorInterval := time.Duration(r.config.PriceDelay) * time.Millisecond
+			
 			monitorConfig := &monitor.SessionConfig{
 				TokenMint:       dexTask.TokenMint,
 				TokenAmount:     tokenAmount,       // This should be the actual received tokens
 				InitialAmount:   dexTask.AmountSol, // SOL spent
 				InitialPrice:    initialPrice,      // Initial price
-				MonitorInterval: dexTask.MonitorInterval,
+				MonitorInterval: monitorInterval,   // Use price_delay from config.json
 				DEX:             dexAdapter,
 				Logger:          r.logger.Named("monitor"),
 			}
@@ -221,7 +222,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					zap.String("task", t.TaskName))
 			}
 		} else {
-			// Normal execution for other operations
+			// Normal execution for sell operations
 			err = dexAdapter.Execute(shutdownCtx, dexTask)
 			if err != nil {
 				r.logger.Error("Error executing operation",

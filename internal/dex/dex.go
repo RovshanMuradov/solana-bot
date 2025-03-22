@@ -126,22 +126,6 @@ func (d *pumpfunDEXAdapter) Execute(ctx context.Context, task *Task) error {
 		d.metrics.RecordTransaction(txType, d.GetName(), time.Since(start), err == nil)
 		return err
 
-	case OperationSnipeMonitor:
-		// This is handled at a higher level by combining Snipe and Monitor operations
-		// Here we just execute the snipe part
-		txType = "snipe_monitor"
-
-		d.logger.Info("Executing snipe (in snipe_monitor mode) on Pump.fun",
-			zap.String("token_mint", tokenMint),
-			zap.Float64("amount_sol", task.AmountSol),
-			zap.Float64("slippage_percent", task.SlippagePercent),
-			zap.String("priority_fee", task.PriorityFee),
-			zap.Uint32("compute_units", task.ComputeUnits),
-			zap.Duration("monitor_interval", task.MonitorInterval))
-
-		err := d.inner.ExecuteSnipe(ctx, task.AmountSol, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
-		d.metrics.RecordTransaction(txType, d.GetName(), time.Since(start), err == nil)
-		return err
 
 	default:
 		err := fmt.Errorf("operation %s is not supported on Pump.fun", task.Operation)
@@ -168,8 +152,8 @@ func (d *raydiumDEXAdapter) Execute(ctx context.Context, task *Task) error {
 	tokenMint := task.TokenMint
 
 	switch task.Operation {
-	case OperationSwap, OperationSnipe:
-		d.logger.Info("Executing swap/snipe on Raydium")
+	case OperationSnipe:
+		d.logger.Info("Executing snipe on Raydium")
 
 		// Безопасное преобразование адреса токена
 		tokenMintKey, err := solana.PublicKeyFromBase58(tokenMint)
