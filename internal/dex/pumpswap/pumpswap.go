@@ -1,3 +1,6 @@
+// =============================
+// File: internal/dex/pumpswap/pumpswap.go
+// =============================
 package pumpswap
 
 import (
@@ -86,7 +89,7 @@ func (dex *DEX) ExecuteSwap(
 		ctx,
 		dex.config.BaseMint,
 		dex.config.QuoteMint,
-		5, // max retries
+		5,             // max retries
 		time.Second*2, // retry delay
 	)
 	if err != nil {
@@ -197,12 +200,12 @@ func (dex *DEX) ExecuteSwap(
 			pool.PoolQuoteTokenAccount,
 			protocolFeeRecipient,
 			protocolFeeRecipientATA,
-			TokenProgramID,  // Base token program (SOL)
-			TokenProgramID,  // Quote token program
+			TokenProgramID, // Base token program (SOL)
+			TokenProgramID, // Quote token program
 			dex.config.EventAuthority,
 			dex.config.ProgramID,
-			amount,          // baseAmountOut (amount of SOL to spend)
-			minOutAmount,    // maxQuoteAmountIn (min tokens to receive with slippage)
+			amount,       // baseAmountOut (amount of SOL to spend)
+			minOutAmount, // maxQuoteAmountIn (min tokens to receive with slippage)
 		)
 
 		instructions = append(instructions, buyInstruction)
@@ -224,12 +227,12 @@ func (dex *DEX) ExecuteSwap(
 			pool.PoolQuoteTokenAccount,
 			protocolFeeRecipient,
 			protocolFeeRecipientATA,
-			TokenProgramID,  // Base token program (SOL)
-			TokenProgramID,  // Quote token program
+			TokenProgramID, // Base token program (SOL)
+			TokenProgramID, // Quote token program
 			dex.config.EventAuthority,
 			dex.config.ProgramID,
-			amount,          // baseAmountIn (amount of tokens to sell)
-			minOutAmount,    // minQuoteAmountOut (min SOL to receive with slippage)
+			amount,       // baseAmountIn (amount of tokens to sell)
+			minOutAmount, // minQuoteAmountOut (min SOL to receive with slippage)
 		)
 
 		instructions = append(instructions, sellInstruction)
@@ -320,7 +323,7 @@ func (dex *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, e
 		ctx,
 		dex.config.BaseMint,
 		dex.config.QuoteMint,
-		3, // max retries
+		3,             // max retries
 		time.Second*1, // retry delay
 	)
 	if err != nil {
@@ -355,7 +358,7 @@ func (dex *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, e
 		// Perform calculation: price = (base_reserves / quote_reserves) * (10^quote_decimals / 10^base_decimals)
 		ratio := new(big.Float).Quo(baseReservesFloat, quoteReservesFloat)
 		decimalAdjustment := float64(quoteAdjustment) / float64(baseAdjustment)
-		
+
 		adjustedRatio := new(big.Float).Mul(ratio, big.NewFloat(decimalAdjustment))
 		price, _ = adjustedRatio.Float64()
 	}

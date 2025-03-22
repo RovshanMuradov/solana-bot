@@ -1,3 +1,6 @@
+// =============================
+// File: internal/dex/pumpswap/types.go
+// =============================
 package pumpswap
 
 import (

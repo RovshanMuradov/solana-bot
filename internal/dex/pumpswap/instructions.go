@@ -1,3 +1,6 @@
+// =============================
+// File: internal/dex/pumpswap/instructions.go
+// =============================
 package pumpswap
 
 import (
@@ -38,10 +41,10 @@ func createBuyInstruction(
 	copy(data[0:8], buyDiscriminator)
 
 	// Add baseAmountOut parameter (u64 - 8 bytes)
-	binary.BigEndian.PutUint64(data[8:16], baseAmountOut)
+	binary.LittleEndian.PutUint64(data[8:16], baseAmountOut)
 
 	// Add maxQuoteAmountIn parameter (u64 - 8 bytes)
-	binary.BigEndian.PutUint64(data[16:24], maxQuoteAmountIn)
+	binary.LittleEndian.PutUint64(data[16:24], maxQuoteAmountIn)
 
 	// Create accounts list in the required order from IDL
 	accountMetas := []*solana.AccountMeta{
@@ -86,7 +89,7 @@ func createSellInstruction(
 	programID solana.PublicKey,
 	baseAmountIn uint64,
 	minQuoteAmountOut uint64,
-) *solana.GenericInstruction {
+) solana.Instruction {
 	// Create data buffer with discriminator and parameters
 	data := make([]byte, 8+8+8) // 8 bytes discriminator + 8 bytes baseAmountIn + 8 bytes minQuoteAmountOut
 
@@ -94,10 +97,10 @@ func createSellInstruction(
 	copy(data[0:8], sellDiscriminator)
 
 	// Add baseAmountIn parameter (u64 - 8 bytes)
-	binary.BigEndian.PutUint64(data[8:16], baseAmountIn)
+	binary.LittleEndian.PutUint64(data[8:16], baseAmountIn)
 
 	// Add minQuoteAmountOut parameter (u64 - 8 bytes)
-	binary.BigEndian.PutUint64(data[16:24], minQuoteAmountOut)
+	binary.LittleEndian.PutUint64(data[16:24], minQuoteAmountOut)
 
 	// Create accounts list in the required order from IDL
 	accountMetas := []*solana.AccountMeta{
@@ -207,29 +210,3 @@ func createComputeBudgetRequestUnitsInstruction(units uint32) solana.Instruction
 		data,
 	)
 }
-
-// createWrapSolInstruction creates an instruction to wrap SOL into wSOL
-// func createWrapSolInstruction(
-//	owner solana.PublicKey,
-//	tokenAccount solana.PublicKey,
-//	amount uint64,
-// ) *system.Transfer {
-//	return system.NewTransferInstruction(
-//		amount,
-//		owner,
-//		tokenAccount,
-//	).Build()
-//}
-//
-// createUnwrapSolInstruction creates an instruction to unwrap wSOL back to SOL
-// func createUnwrapSolInstruction(
-//	owner solana.PublicKey,
-//	tokenAccount solana.PublicKey,
-// ) *token.CloseAccount {
-//	return token.NewCloseAccountInstruction(
-//		tokenAccount,
-//		owner,
-//		owner,
-//		[]solana.PublicKey{owner},
-//	).Build()
-//}

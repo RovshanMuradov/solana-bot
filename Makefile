@@ -40,3 +40,10 @@ build-app:
 # Полная пересборка проекта
 rebuild: docker-down clean-volumes build-app postgres migrate-up
 	@echo "=== Rebuild completed successfully ==="
+
+# В Makefile измените команду запуска
+run:
+	docker-compose run --rm app /bot
+
+# ИЛИ если вы запускаете напрямую, используйте
+# docker-compose run --rm app /bot

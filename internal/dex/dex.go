@@ -289,7 +289,7 @@ func (d *pumpswapDEXAdapter) Execute(ctx context.Context, task *Task) error {
 		err := d.inner.ExecuteSnipe(ctx, task.AmountSol, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
 		d.metrics.RecordTransaction(txType, d.GetName(), time.Since(start), err == nil)
 		return err
-		
+
 	case OperationSwap:
 		txType = "swap"
 
@@ -302,7 +302,7 @@ func (d *pumpswapDEXAdapter) Execute(ctx context.Context, task *Task) error {
 
 		// Convert SOL amount to lamports for swap
 		amountLamports := uint64(task.AmountSol * 1e9)
-		
+
 		// Execute swap (buy) operation - assuming user has WSOL and wants to buy the token
 		err := d.inner.ExecuteSwap(ctx, true, amountLamports, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
 		d.metrics.RecordTransaction(txType, d.GetName(), time.Since(start), err == nil)

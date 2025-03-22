@@ -1,3 +1,7 @@
+// =============================
+// File: internal/dex/pumpswap/pool.go
+// =============================
+
 package pumpswap
 
 import (
