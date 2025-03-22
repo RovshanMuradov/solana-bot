@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"sync"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
@@ -21,18 +22,253 @@ import (
 // Minimum LP supply constant
 const MinimumLiquidity uint64 = 1000
 
+// PoolCache хранит найденные пулы для быстрого доступа
+type PoolCache struct {
+	mutex sync.RWMutex
+	pools map[string]*PoolInfo // ключ: baseMint:quoteMint
+}
+
+// NewPoolCache создает новый кэш пулов
+func NewPoolCache() *PoolCache {
+	return &PoolCache{
+		pools: make(map[string]*PoolInfo),
+	}
+}
+
+// Get получает пул из кэша
+func (pc *PoolCache) Get(baseMint, quoteMint solana.PublicKey) (*PoolInfo, bool) {
+	pc.mutex.RLock()
+	defer pc.mutex.RUnlock()
+
+	key := makePoolCacheKey(baseMint, quoteMint)
+	pool, exists := pc.pools[key]
+	return pool, exists
+}
+
+// Set добавляет пул в кэш
+func (pc *PoolCache) Set(baseMint, quoteMint solana.PublicKey, pool *PoolInfo) {
+	pc.mutex.Lock()
+	defer pc.mutex.Unlock()
+
+	key := makePoolCacheKey(baseMint, quoteMint)
+	pc.pools[key] = pool
+}
+
+// makePoolCacheKey создает ключ для кэша пулов
+func makePoolCacheKey(baseMint, quoteMint solana.PublicKey) string {
+	return fmt.Sprintf("%s:%s", baseMint.String(), quoteMint.String())
+}
+
 // PoolManager handles operations with PumpSwap pools
 type PoolManager struct {
 	client *solbc.Client
 	logger *zap.Logger
+	cache  *PoolCache
 }
 
 // NewPoolManager creates a new pool manager
 func NewPoolManager(client *solbc.Client, logger *zap.Logger) *PoolManager {
 	return &PoolManager{
 		client: client,
-		logger: logger,
+		logger: logger.Named("pool_manager"),
+		cache:  NewPoolCache(),
 	}
+}
+
+// GetPoolByProgramAccounts более эффективный метод поиска пула через программные аккаунты
+func (pm *PoolManager) GetPoolByProgramAccounts(
+	ctx context.Context,
+	baseMint, quoteMint solana.PublicKey,
+) (*PoolInfo, error) {
+	// Используем определение возможных PDA и GetMultipleAccounts
+	// для поиска пула вместо прямого вызова GetProgramAccounts
+
+	// Формируем список возможных адресов пулов
+	possiblePoolAddresses := []solana.PublicKey{}
+
+	// Создаем временную конфигурацию для получения адреса пула
+	cfg := &Config{
+		ProgramID: PumpSwapProgramID,
+		BaseMint:  baseMint,
+		QuoteMint: quoteMint,
+	}
+
+	// Перебираем возможные индексы и создателей пулов
+	possibleCreators := []solana.PublicKey{
+		PumpSwapProgramID, // Самый вероятный создатель - сама программа
+		solana.MustPublicKeyFromBase58("8LWu7QM2dGR1G8nKDHthckea57bkCzXyBTAKPJUBDHo8"), // Admin из IDL
+	}
+
+	// Проверяем сначала наиболее вероятные индексы (0-9)
+	for index := uint16(0); index < 10; index++ {
+		for _, creator := range possibleCreators {
+			// Получаем адрес пула для этой комбинации
+			poolAddr, _, err := cfg.DerivePoolAddress(index, creator)
+			if err != nil {
+				continue
+			}
+			possiblePoolAddresses = append(possiblePoolAddresses, poolAddr)
+		}
+	}
+
+	// Получаем информацию о нескольких аккаунтах за один запрос
+	accountsResult, err := pm.client.GetMultipleAccounts(ctx, possiblePoolAddresses)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get multiple accounts: %w", err)
+	}
+
+	// Проверяем, есть ли результаты
+	if accountsResult == nil || accountsResult.Value == nil || len(accountsResult.Value) == 0 {
+		return nil, fmt.Errorf("no pool accounts found for the specified mints")
+	}
+
+	// Обрабатываем полученные аккаунты
+	for i, account := range accountsResult.Value {
+		if account == nil {
+			continue // Аккаунт не существует
+		}
+
+		// Проверяем, что аккаунт принадлежит PumpSwap программе
+		if !account.Owner.Equals(PumpSwapProgramID) {
+			continue
+		}
+
+		// Проверяем дискриминатор (первые 8 байт)
+		accountData := account.Data.GetBinary()
+		if len(accountData) < 8 {
+			continue
+		}
+
+		// Сравниваем дискриминаторы
+		discriminator := accountData[:8]
+		match := true
+		for j := 0; j < 8 && j < len(PoolDiscriminator); j++ {
+			if discriminator[j] != PoolDiscriminator[j] {
+				match = false
+				break
+			}
+		}
+
+		if !match {
+			continue
+		}
+
+		// Пытаемся распарсить данные пула
+		pool, err := ParsePool(accountData)
+		if err != nil {
+			pm.logger.Debug("Failed to parse pool data",
+				zap.String("pool_address", possiblePoolAddresses[i].String()),
+				zap.Error(err))
+			continue
+		}
+
+		// Проверяем, соответствует ли пул искомой паре токенов
+		// Учитываем возможность обратного порядка токенов
+		if (pool.BaseMint.Equals(baseMint) && pool.QuoteMint.Equals(quoteMint)) ||
+			(pool.BaseMint.Equals(quoteMint) && pool.QuoteMint.Equals(baseMint)) {
+			// Нашли подходящий пул
+			poolInfo, err := pm.FetchPoolInfo(ctx, possiblePoolAddresses[i])
+			if err != nil {
+				pm.logger.Error("Failed to fetch pool info",
+					zap.String("pool_address", possiblePoolAddresses[i].String()),
+					zap.Error(err))
+				continue
+			}
+
+			// Сохраняем в кэш
+			if pm.cache != nil {
+				pm.cache.Set(baseMint, quoteMint, poolInfo)
+			}
+
+			pm.logger.Info("Found PumpSwap pool via program accounts",
+				zap.String("pool_address", possiblePoolAddresses[i].String()),
+				zap.String("base_mint", pool.BaseMint.String()),
+				zap.String("quote_mint", pool.QuoteMint.String()))
+
+			return poolInfo, nil
+		}
+	}
+
+	// Если не нашли в первых 10 индексах, проверим следующие (10-99)
+	// Только если контекст ещё не истёк
+	if ctx.Err() == nil {
+		// Формируем список дополнительных возможных адресов
+		additionalAddresses := []solana.PublicKey{}
+
+		for index := uint16(10); index < 100; index++ {
+			for _, creator := range possibleCreators {
+				poolAddr, _, err := cfg.DerivePoolAddress(index, creator)
+				if err != nil {
+					continue
+				}
+				additionalAddresses = append(additionalAddresses, poolAddr)
+			}
+		}
+
+		// Получаем информацию о дополнительных аккаунтах
+		if len(additionalAddresses) > 0 {
+			additionalResult, err := pm.client.GetMultipleAccounts(ctx, additionalAddresses)
+			if err == nil && additionalResult != nil && additionalResult.Value != nil {
+				for i, account := range additionalResult.Value {
+					if account == nil {
+						continue
+					}
+
+					if !account.Owner.Equals(PumpSwapProgramID) {
+						continue
+					}
+
+					accountData := account.Data.GetBinary()
+					if len(accountData) < 8 {
+						continue
+					}
+
+					// Сравниваем дискриминаторы
+					discriminator := accountData[:8]
+					match := true
+					for j := 0; j < 8 && j < len(PoolDiscriminator); j++ {
+						if discriminator[j] != PoolDiscriminator[j] {
+							match = false
+							break
+						}
+					}
+
+					if !match {
+						continue
+					}
+
+					pool, err := ParsePool(accountData)
+					if err != nil {
+						continue
+					}
+
+					if (pool.BaseMint.Equals(baseMint) && pool.QuoteMint.Equals(quoteMint)) ||
+						(pool.BaseMint.Equals(quoteMint) && pool.QuoteMint.Equals(baseMint)) {
+
+						poolInfo, err := pm.FetchPoolInfo(ctx, additionalAddresses[i])
+						if err != nil {
+							continue
+						}
+
+						// Сохраняем в кэш
+						if pm.cache != nil {
+							pm.cache.Set(baseMint, quoteMint, poolInfo)
+						}
+
+						pm.logger.Info("Found PumpSwap pool in extended search",
+							zap.String("pool_address", additionalAddresses[i].String()),
+							zap.String("base_mint", pool.BaseMint.String()),
+							zap.String("quote_mint", pool.QuoteMint.String()))
+
+						return poolInfo, nil
+					}
+				}
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("no matching pool found for base mint %s and quote mint %s",
+		baseMint.String(), quoteMint.String())
 }
 
 // FindPool finds a pool for the given token pair using deterministic discovery
@@ -40,72 +276,156 @@ func (pm *PoolManager) FindPool(
 	ctx context.Context,
 	baseMint, quoteMint solana.PublicKey,
 ) (*PoolInfo, error) {
-	// Create temporary config for pool address derivation
+	// Сначала проверяем кэш
+	if pool, found := pm.cache.Get(baseMint, quoteMint); found {
+		pm.logger.Debug("Found pool in cache",
+			zap.String("base_mint", baseMint.String()),
+			zap.String("quote_mint", quoteMint.String()))
+		return pool, nil
+	}
+
+	// Попробуем найти через GetProgramAccounts (более эффективный метод)
+	pool, err := pm.GetPoolByProgramAccounts(ctx, baseMint, quoteMint)
+	if err == nil {
+		return pool, nil
+	}
+
+	// Резервный метод - детерминистический поиск
+	pm.logger.Debug("Falling back to deterministic pool discovery",
+		zap.String("base_mint", baseMint.String()),
+		zap.String("quote_mint", quoteMint.String()))
+
+	// Создаем временную конфигурацию для получения адреса пула
 	cfg := &Config{
 		ProgramID: PumpSwapProgramID,
 		BaseMint:  baseMint,
 		QuoteMint: quoteMint,
 	}
 
-	// Try different indices starting from 0
-	for index := uint16(0); index < 100; index++ {
-		// For each index, try with different potential creators
-		// First try with the program itself as creator (common pattern)
-		possibleCreators := []solana.PublicKey{
-			PumpSwapProgramID, // Try program ID as first possible creator
+	// Расширенный список возможных создателей
+	possibleCreators := []solana.PublicKey{
+		PumpSwapProgramID, // Самый вероятный создатель - сама программа
+		// Можно добавить других известных создателей пулов:
+		solana.MustPublicKeyFromBase58("8LWu7QM2dGR1G8nKDHthckea57bkCzXyBTAKPJUBDHo8"), // Admin из IDL
+	}
+
+	// Создаем каналы для параллельного поиска
+	type poolResult struct {
+		pool *PoolInfo
+		err  error
+	}
+
+	resultCh := make(chan poolResult, 1)
+
+	// Функция для параллельного поиска пулов
+	checkPool := func(index uint16, creator solana.PublicKey) {
+		// Получаем адрес пула
+		poolAddr, _, err := cfg.DerivePoolAddress(index, creator)
+		if err != nil {
+			return // Просто пропускаем
 		}
 
-		// Try each possible creator
-		for _, creator := range possibleCreators {
-			// Derive pool address for this index and creator
-			poolAddr, _, err := cfg.DerivePoolAddress(index, creator)
-			if err != nil {
-				continue
-			}
+		// Проверяем существование аккаунта
+		accountInfo, err := pm.client.GetAccountInfo(ctx, poolAddr)
+		// Игнорируем "not found" ошибки, это ожидаемо при поиске
+		if err != nil || accountInfo == nil || accountInfo.Value == nil {
+			return
+		}
 
-			// Check if the pool account exists
-			accountInfo, err := pm.client.GetAccountInfo(ctx, poolAddr)
-			if err != nil || accountInfo == nil || accountInfo.Value == nil {
-				// Skip if account doesn't exist or error
-				continue
-			}
+		// Проверяем, владелец - программа PumpSwap
+		if !accountInfo.Value.Owner.Equals(PumpSwapProgramID) {
+			return
+		}
 
-			// Check if the account is owned by the PumpSwap program
-			if !accountInfo.Value.Owner.Equals(PumpSwapProgramID) {
-				continue
-			}
-
-			// Try to parse the account data as a Pool
-			poolData := accountInfo.Value.Data.GetBinary()
-			pool, err := ParsePool(poolData)
-			if err != nil {
-				pm.logger.Debug("Failed to parse pool data",
-					zap.String("pool_address", poolAddr.String()),
-					zap.Error(err))
-				continue
-			}
-
-			// Verify that this pool is for the expected mint pair
-			if !pool.BaseMint.Equals(baseMint) || !pool.QuoteMint.Equals(quoteMint) {
-				continue
-			}
-
-			// Found a valid pool, fetch more pool info
-			poolInfo, err := pm.FetchPoolInfo(ctx, poolAddr)
-			if err != nil {
-				pm.logger.Error("Failed to fetch pool info",
-					zap.String("pool_address", poolAddr.String()),
-					zap.Error(err))
-				continue
-			}
-
-			pm.logger.Info("Found PumpSwap pool",
+		// Пробуем распарсить данные пула
+		poolData := accountInfo.Value.Data.GetBinary()
+		pool, err := ParsePool(poolData)
+		if err != nil {
+			pm.logger.Debug("Failed to parse pool data",
 				zap.String("pool_address", poolAddr.String()),
-				zap.String("base_mint", pool.BaseMint.String()),
-				zap.String("quote_mint", pool.QuoteMint.String()))
-
-			return poolInfo, nil
+				zap.Error(err))
+			return
 		}
+
+		// Проверяем пару токенов
+		if !pool.BaseMint.Equals(baseMint) || !pool.QuoteMint.Equals(quoteMint) {
+			return
+		}
+
+		// Нашли подходящий пул, получаем полную информацию
+		poolInfo, err := pm.FetchPoolInfo(ctx, poolAddr)
+		if err != nil {
+			pm.logger.Error("Failed to fetch pool info",
+				zap.String("pool_address", poolAddr.String()),
+				zap.Error(err))
+			return
+		}
+
+		// Отправляем результат в канал
+		select {
+		case resultCh <- poolResult{pool: poolInfo, err: nil}:
+			// Успешно отправили
+		case <-ctx.Done():
+			// Контекст завершен
+		}
+	}
+
+	// Запускаем воркеры с ограничением concurrency
+	var wg sync.WaitGroup
+	semaphore := make(chan struct{}, 10) // Макс 10 параллельных запросов
+
+	// Проверяем первые 10 индексов для всех создателей (наиболее вероятно найти пул там)
+	for index := uint16(0); index < 10 && ctx.Err() == nil; index++ {
+		for _, creator := range possibleCreators {
+			select {
+			case <-ctx.Done():
+				break
+			case semaphore <- struct{}{}:
+				wg.Add(1)
+				go func(idx uint16, cr solana.PublicKey) {
+					defer wg.Done()
+					defer func() { <-semaphore }()
+					checkPool(idx, cr)
+				}(index, creator)
+			}
+		}
+	}
+
+	// Если не нашли в первых 10, проверяем остальные
+	if ctx.Err() == nil {
+		for index := uint16(10); index < 100 && ctx.Err() == nil; index++ {
+			for _, creator := range possibleCreators {
+				select {
+				case <-ctx.Done():
+					break
+				case semaphore <- struct{}{}:
+					wg.Add(1)
+					go func(idx uint16, cr solana.PublicKey) {
+						defer wg.Done()
+						defer func() { <-semaphore }()
+						checkPool(idx, cr)
+					}(index, creator)
+				}
+			}
+		}
+	}
+
+	// Закрываем канал результатов после завершения всех воркеров
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	// Получаем первый успешный результат
+	select {
+	case result := <-resultCh:
+		if result.err == nil && result.pool != nil {
+			// Сохраняем в кэш
+			pm.cache.Set(baseMint, quoteMint, result.pool)
+			return result.pool, nil
+		}
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 
 	return nil, fmt.Errorf("no pool found for base mint %s and quote mint %s",
@@ -320,8 +640,13 @@ func (pm *PoolManager) FindPoolWithRetry(
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Создаем контекст с таймаутом для каждой попытки
+		searchCtx, cancel := context.WithTimeout(ctx, time.Second*5)
+
 		// Try to find the pool
-		poolInfo, err := pm.FindPool(ctx, baseMint, quoteMint)
+		poolInfo, err := pm.FindPool(searchCtx, baseMint, quoteMint)
+		cancel() // Отменяем поисковый контекст
+
 		if err == nil {
 			return poolInfo, nil
 		}

@@ -3,7 +3,9 @@ package solbc
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
@@ -16,6 +18,19 @@ import (
 type Client struct {
 	rpc    *rpc.Client
 	logger *zap.Logger
+}
+
+// Определение ошибок
+var (
+	ErrAccountNotFound = errors.New("account not found")
+)
+
+// IsAccountNotFoundError проверяет, является ли ошибка "not found"
+func IsAccountNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "not found")
 }
 
 // NewClient создаёт новый клиент, принимая RPC URL и логгер через dependency injection.
@@ -56,6 +71,87 @@ func (c *Client) GetAccountInfo(ctx context.Context, pubkey solana.PublicKey) (*
 		return nil, err
 	}
 	return result, nil
+}
+
+// GetMultipleAccounts получает информацию о нескольких аккаунтах за один запрос
+func (c *Client) GetMultipleAccounts(
+	ctx context.Context,
+	pubkeys []solana.PublicKey,
+) (*rpc.GetMultipleAccountsResult, error) {
+	if len(pubkeys) == 0 {
+		return &rpc.GetMultipleAccountsResult{}, nil
+	}
+
+	// Создаем опции запроса
+	opts := rpc.GetMultipleAccountsOpts{
+		Commitment: rpc.CommitmentConfirmed,
+		Encoding:   solana.EncodingBase64,
+	}
+
+	// Выполняем запрос
+	res, err := c.rpc.GetMultipleAccountsWithOpts(
+		ctx,
+		pubkeys, // Передаем непосредственно []solana.PublicKey
+		&opts,
+	)
+
+	if err != nil {
+		c.logger.Debug("GetMultipleAccounts error",
+			zap.Error(err))
+		return nil, err
+	}
+
+	return res, nil
+}
+
+// GetProgramAccounts получает все аккаунты программы с фильтрами
+func (c *Client) GetProgramAccounts(
+	ctx context.Context,
+	programID solana.PublicKey,
+	discriminator []byte,
+) (*rpc.GetProgramAccountsResult, error) {
+	// Создаем опции запроса с фильтрами
+	opts := rpc.GetProgramAccountsOpts{
+		Commitment: rpc.CommitmentConfirmed,
+		Encoding:   solana.EncodingBase64,
+	}
+
+	// Добавляем фильтр по дискриминатору, если он предоставлен
+	if len(discriminator) > 0 {
+		// Используем DataSlice для фильтрации по первым байтам (дискриминатору)
+		offset := uint64(0)
+		length := uint64(len(discriminator))
+		opts.DataSlice = &rpc.DataSlice{
+			Offset: &offset,
+			Length: &length,
+		}
+
+		// Используем Filters для мемкомпа
+		opts.Filters = append(opts.Filters,
+			rpc.RPCFilter{
+				Memcmp: &rpc.RPCFilterMemcmp{
+					Offset: 0,
+					Bytes:  discriminator,
+				},
+			},
+		)
+	}
+
+	// Выполняем запрос через RPC клиент
+	accounts, err := c.rpc.GetProgramAccountsWithOpts(
+		ctx,
+		programID,
+		&opts,
+	)
+
+	if err != nil {
+		c.logger.Debug("GetProgramAccounts error",
+			zap.String("program_id", programID.String()),
+			zap.Error(err))
+		return nil, err
+	}
+
+	return &accounts, nil
 }
 
 // GetSignatureStatuses получает статусы транзакций.
