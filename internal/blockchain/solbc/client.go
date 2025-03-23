@@ -154,6 +154,22 @@ func (c *Client) GetProgramAccounts(
 	return &accounts, nil
 }
 
+// GetProgramAccountsWithOpts получает все аккаунты программы с опциями фильтрации
+func (c *Client) GetProgramAccountsWithOpts(
+	ctx context.Context,
+	programID solana.PublicKey,
+	opts *rpc.GetProgramAccountsOpts,
+) (rpc.GetProgramAccountsResult, error) {
+	accounts, err := c.rpc.GetProgramAccountsWithOpts(ctx, programID, opts)
+	if err != nil {
+		c.logger.Debug("GetProgramAccountsWithOpts error",
+			zap.String("program_id", programID.String()),
+			zap.Error(err))
+		return nil, err
+	}
+	return accounts, nil
+}
+
 // GetSignatureStatuses получает статусы транзакций.
 func (c *Client) GetSignatureStatuses(ctx context.Context, signatures ...solana.Signature) (*rpc.GetSignatureStatusesResult, error) {
 	result, err := c.rpc.GetSignatureStatuses(ctx, false, signatures...)

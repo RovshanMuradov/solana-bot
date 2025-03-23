@@ -96,27 +96,52 @@ func (dex *DEX) ExecuteSwap(
 		return fmt.Errorf("failed to find pool: %w", err)
 	}
 
+	// Добавим подробное логирование найденного пула
+	dex.logger.Debug("Found pool details",
+		zap.String("pool_address", pool.Address.String()),
+		zap.String("config_base_mint", dex.config.BaseMint.String()),
+		zap.String("config_quote_mint", dex.config.QuoteMint.String()),
+		zap.String("pool_base_mint", pool.BaseMint.String()),
+		zap.String("pool_quote_mint", pool.QuoteMint.String()))
+
 	// Update config with found pool address
 	dex.config.PoolAddress = pool.Address
 	dex.config.LPMint = pool.LPMint
 
-	// Get the user's token accounts
-	userSolATA, err := dex.wallet.GetATA(dex.config.BaseMint)
-	if err != nil {
-		return fmt.Errorf("failed to get user SOL ATA: %w", err)
+	// Проверяем, совпадает ли порядок монет в пуле с ожидаемым в конфигурации
+	poolMintOrderReversed := !pool.BaseMint.Equals(dex.config.BaseMint)
+
+	// Логируем результат проверки
+	dex.logger.Debug("Pool mint order check",
+		zap.Bool("pool_mint_order_reversed", poolMintOrderReversed),
+		zap.Bool("original_is_buy", isBuy))
+
+	// Адаптируем операцию buy/sell к фактическому порядку монет
+	actualIsBuy := isBuy
+	if poolMintOrderReversed {
+		actualIsBuy = !isBuy
+		dex.logger.Debug("Reversing buy/sell operation due to pool mint order",
+			zap.Bool("actual_is_buy", actualIsBuy))
 	}
 
-	userTokenATA, err := dex.wallet.GetATA(dex.config.QuoteMint)
+	// Get the user's token accounts для фактического порядка монет
+	userBaseMintATA, err := dex.wallet.GetATA(pool.BaseMint)
 	if err != nil {
-		return fmt.Errorf("failed to get user token ATA: %w", err)
+		return fmt.Errorf("failed to get user base mint ATA: %w", err)
+	}
+
+	userQuoteMintATA, err := dex.wallet.GetATA(pool.QuoteMint)
+	if err != nil {
+		return fmt.Errorf("failed to get user quote mint ATA: %w", err)
 	}
 
 	// Get protocol fee recipient from the first one in the global config
-	// TODO: fetch this from the global config account
 	protocolFeeRecipient := solana.PublicKeyFromBytes(make([]byte, 32))
+
+	// Получаем ATA протокольной комиссии используя quote mint из пула
 	protocolFeeRecipientATA, _, err := solana.FindAssociatedTokenAddress(
 		protocolFeeRecipient,
-		dex.config.QuoteMint,
+		pool.QuoteMint, // Используем quote mint из пула
 	)
 	if err != nil {
 		return fmt.Errorf("failed to derive protocol fee recipient ATA: %w", err)
@@ -141,10 +166,10 @@ func (dex *DEX) ExecuteSwap(
 	// Use the first protocol fee recipient (if available)
 	if len(globalConfig.ProtocolFeeRecipients) > 0 {
 		protocolFeeRecipient = globalConfig.ProtocolFeeRecipients[0]
-		// Re-derive ATA with the correct protocol fee recipient
+		// Re-derive ATA with the correct protocol fee recipient using pool's quote mint
 		protocolFeeRecipientATA, _, err = solana.FindAssociatedTokenAddress(
 			protocolFeeRecipient,
-			dex.config.QuoteMint,
+			pool.QuoteMint, // Используем quote mint из пула
 		)
 		if err != nil {
 			return fmt.Errorf("failed to derive protocol fee recipient ATA: %w", err)
@@ -182,57 +207,57 @@ func (dex *DEX) ExecuteSwap(
 	// Calculate expected output
 	var minOutAmount uint64
 
-	if isBuy {
-		// Buying token with SOL
+	if actualIsBuy {
+		// Buying token with SOL (учитывая фактический порядок монет в пуле)
 		outputAmount, _ := dex.poolManager.CalculateSwapQuote(pool, amount, true)
 		minOutAmount = uint64(float64(outputAmount) * (1.0 - slippagePercent/100.0))
 
-		// Create the buy instruction
+		// Create the buy instruction with pool's mint order
 		buyInstruction := createBuyInstruction(
 			pool.Address,
 			dex.wallet.PublicKey,
 			dex.config.GlobalConfig,
-			dex.config.BaseMint,
-			dex.config.QuoteMint,
-			userSolATA,
-			userTokenATA,
+			pool.BaseMint,    // Используем базовую монету из пула
+			pool.QuoteMint,   // Используем квотируемую монету из пула
+			userBaseMintATA,  // ATA для базовой монеты пула
+			userQuoteMintATA, // ATA для квотируемой монеты пула
 			pool.PoolBaseTokenAccount,
 			pool.PoolQuoteTokenAccount,
 			protocolFeeRecipient,
 			protocolFeeRecipientATA,
-			TokenProgramID, // Base token program (SOL)
+			TokenProgramID, // Base token program
 			TokenProgramID, // Quote token program
 			dex.config.EventAuthority,
 			dex.config.ProgramID,
-			amount,       // baseAmountOut (amount of SOL to spend)
-			minOutAmount, // maxQuoteAmountIn (min tokens to receive with slippage)
+			amount,       // baseAmountOut
+			minOutAmount, // maxQuoteAmountIn
 		)
 
 		instructions = append(instructions, buyInstruction)
 	} else {
-		// Selling token for SOL
+		// Selling token for SOL (учитывая фактический порядок монет в пуле)
 		outputAmount, _ := dex.poolManager.CalculateSwapQuote(pool, amount, false)
 		minOutAmount = uint64(float64(outputAmount) * (1.0 - slippagePercent/100.0))
 
-		// Create the sell instruction
+		// Create the sell instruction with pool's mint order
 		sellInstruction := createSellInstruction(
 			pool.Address,
 			dex.wallet.PublicKey,
 			dex.config.GlobalConfig,
-			dex.config.BaseMint,
-			dex.config.QuoteMint,
-			userSolATA,
-			userTokenATA,
+			pool.BaseMint,    // Используем базовую монету из пула
+			pool.QuoteMint,   // Используем квотируемую монету из пула
+			userBaseMintATA,  // ATA для базовой монеты пула
+			userQuoteMintATA, // ATA для квотируемой монеты пула
 			pool.PoolBaseTokenAccount,
 			pool.PoolQuoteTokenAccount,
 			protocolFeeRecipient,
 			protocolFeeRecipientATA,
-			TokenProgramID, // Base token program (SOL)
+			TokenProgramID, // Base token program
 			TokenProgramID, // Quote token program
 			dex.config.EventAuthority,
 			dex.config.ProgramID,
-			amount,       // baseAmountIn (amount of tokens to sell)
-			minOutAmount, // minQuoteAmountOut (min SOL to receive with slippage)
+			amount,       // baseAmountIn
+			minOutAmount, // minQuoteAmountOut
 		)
 
 		instructions = append(instructions, sellInstruction)
@@ -262,6 +287,7 @@ func (dex *DEX) ExecuteSwap(
 	dex.logger.Info("Swap transaction sent",
 		zap.String("signature", signature.String()),
 		zap.Bool("is_buy", isBuy),
+		zap.Bool("actual_is_buy", actualIsBuy),
 		zap.Uint64("amount", amount),
 		zap.Float64("slippage_percent", slippagePercent))
 
