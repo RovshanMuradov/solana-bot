@@ -276,19 +276,6 @@ func (d *pumpswapDEXAdapter) Execute(ctx context.Context, task *Task) error {
 
 	// Execute operation based on task type
 	switch task.Operation {
-	case OperationSnipe:
-		txType = "snipe"
-
-		d.logger.Info("Executing snipe on Pump.Swap",
-			zap.String("token_mint", tokenMint),
-			zap.Float64("amount_sol", task.AmountSol),
-			zap.Float64("slippage_percent", task.SlippagePercent),
-			zap.String("priority_fee", task.PriorityFee),
-			zap.Uint32("compute_units", task.ComputeUnits))
-
-		err := d.inner.ExecuteSnipe(ctx, task.AmountSol, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
-		d.metrics.RecordTransaction(txType, d.GetName(), time.Since(start), err == nil)
-		return err
 
 	case OperationSwap:
 		txType = "swap"

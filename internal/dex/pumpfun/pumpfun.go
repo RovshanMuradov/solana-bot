@@ -115,7 +115,7 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amountSol float64, slippagePerce
 	if err != nil {
 		return fmt.Errorf("failed to derive associated token account: %w", err)
 	}
-	ataInstruction := createAssociatedTokenAccountIdempotentInstruction(d.wallet.PublicKey, d.wallet.PublicKey, d.config.Mint)
+	ataInstruction := d.wallet.CreateAssociatedTokenAccountIdempotentInstruction(d.wallet.PublicKey, d.wallet.PublicKey, d.config.Mint)
 
 	// Ensure bonding curve is derived correctly
 	bondingCurve, _, err := solana.FindProgramAddress(
@@ -207,7 +207,6 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amountSol float64, slippagePerce
 }
 
 // ExecuteSell executes a sell operation on the Pump.fun protocol
-
 func (d *DEX) ExecuteSell(ctx context.Context, tokenAmount uint64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
 	d.logger.Info("Starting Pump.fun sell operation",
 		zap.Uint64("token_amount", tokenAmount),
@@ -237,7 +236,7 @@ func (d *DEX) ExecuteSell(ctx context.Context, tokenAmount uint64, slippagePerce
 	if err != nil {
 		return fmt.Errorf("failed to derive associated token account: %w", err)
 	}
-	ataInstruction := createAssociatedTokenAccountIdempotentInstruction(d.wallet.PublicKey, d.wallet.PublicKey, d.config.Mint)
+	ataInstruction := d.wallet.CreateAssociatedTokenAccountIdempotentInstruction(d.wallet.PublicKey, d.wallet.PublicKey, d.config.Mint)
 
 	// Ensure bonding curve is derived correctly
 	bondingCurve, _, err := solana.FindProgramAddress(

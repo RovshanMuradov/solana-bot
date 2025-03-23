@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/programs/compute-budget"
 	"github.com/gagliardetto/solana-go/rpc"
 	"go.uber.org/zap"
 
@@ -75,6 +76,175 @@ func NewDEX(
 	return dex, nil
 }
 
+// findAndValidatePool находит и проверяет пул для обмена
+func (dex *DEX) findAndValidatePool(ctx context.Context) (*PoolInfo, bool, error) {
+	// Поиск пула
+	pool, err := dex.poolManager.FindPoolWithRetry(
+		ctx,
+		dex.config.BaseMint,
+		dex.config.QuoteMint,
+		5,             // max retries
+		time.Second*2, // retry delay
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to find pool: %w", err)
+	}
+
+	// Обновляем конфигурацию
+	dex.config.PoolAddress = pool.Address
+	dex.config.LPMint = pool.LPMint
+
+	// Логируем детали найденного пула
+	dex.logger.Debug("Found pool details",
+		zap.String("pool_address", pool.Address.String()),
+		zap.String("base_mint", pool.BaseMint.String()),
+		zap.String("quote_mint", pool.QuoteMint.String()))
+
+	// Проверяем, совпадает ли порядок монет в пуле с ожидаемым
+	poolMintOrderReversed := !pool.BaseMint.Equals(dex.config.BaseMint)
+
+	return pool, poolMintOrderReversed, nil
+}
+
+// prepareTokenAccounts подготавливает все необходимые токеновые аккаунты
+func (dex *DEX) prepareTokenAccounts(ctx context.Context, pool *PoolInfo) (
+	userBaseATA, userQuoteATA, protocolFeeRecipientATA solana.PublicKey,
+	protocolFeeRecipient solana.PublicKey,
+	createBaseATAIx, createQuoteATAIx solana.Instruction,
+	err error) {
+
+	// Получаем адреса ATA пользователя
+	userBaseATA, _, err = solana.FindAssociatedTokenAddress(dex.wallet.PublicKey, pool.BaseMint)
+	if err != nil {
+		return solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, nil, nil,
+			fmt.Errorf("failed to derive user base mint ATA: %w", err)
+	}
+
+	userQuoteATA, _, err = solana.FindAssociatedTokenAddress(dex.wallet.PublicKey, pool.QuoteMint)
+	if err != nil {
+		return solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, nil, nil,
+			fmt.Errorf("failed to derive user quote mint ATA: %w", err)
+	}
+
+	// Создаем инструкции для идемпотентного создания ATA
+	createBaseATAIx = dex.wallet.CreateAssociatedTokenAccountIdempotentInstruction(
+		dex.wallet.PublicKey, dex.wallet.PublicKey, pool.BaseMint)
+
+	createQuoteATAIx = dex.wallet.CreateAssociatedTokenAccountIdempotentInstruction(
+		dex.wallet.PublicKey, dex.wallet.PublicKey, pool.QuoteMint)
+
+	// Получаем информацию о глобальной конфигурации
+	globalConfigAddr, _, err := dex.config.DeriveGlobalConfigAddress()
+	if err != nil {
+		return solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, nil, nil,
+			fmt.Errorf("failed to derive global config address: %w", err)
+	}
+
+	globalConfigInfo, err := dex.client.GetAccountInfo(ctx, globalConfigAddr)
+	if err != nil || globalConfigInfo == nil || globalConfigInfo.Value == nil {
+		return solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, nil, nil,
+			fmt.Errorf("failed to get global config: %w", err)
+	}
+
+	globalConfig, err := ParseGlobalConfig(globalConfigInfo.Value.Data.GetBinary())
+	if err != nil {
+		return solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, nil, nil,
+			fmt.Errorf("failed to parse global config: %w", err)
+	}
+
+	// Получаем получателя комиссии и его ATA
+	protocolFeeRecipient = solana.PublicKeyFromBytes(make([]byte, 32))
+	if len(globalConfig.ProtocolFeeRecipients) > 0 {
+		protocolFeeRecipient = globalConfig.ProtocolFeeRecipients[0]
+	}
+
+	protocolFeeRecipientATA, _, err = solana.FindAssociatedTokenAddress(
+		protocolFeeRecipient,
+		pool.QuoteMint,
+	)
+	if err != nil {
+		return solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, nil, nil,
+			fmt.Errorf("failed to derive protocol fee recipient ATA: %w", err)
+	}
+
+	return userBaseATA, userQuoteATA, protocolFeeRecipientATA, protocolFeeRecipient, createBaseATAIx, createQuoteATAIx, nil
+}
+
+// preparePriorityInstructions подготавливает инструкции для установки вычислительных единиц и приоритета
+func (dex *DEX) preparePriorityInstructions(computeUnits uint32, priorityFeeSol string) ([]solana.Instruction, error) {
+	var instructions []solana.Instruction
+
+	// Добавляем инструкции для установки вычислительных единиц
+	if computeUnits > 0 {
+		instructions = append(instructions,
+			computebudget.NewSetComputeUnitLimitInstruction(computeUnits).Build())
+	}
+
+	// Устанавливаем приоритет, если указан
+	if priorityFeeSol != "" {
+		priorityFeeFloat, err := strconv.ParseFloat(priorityFeeSol, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid priority fee format: %w", err)
+		}
+
+		// Convert SOL to micro-lamports (1 lamport = 10^-9 SOL, 1 micro-lamport = 10^-6 lamport)
+		priorityFeeMicroLamports := uint64(priorityFeeFloat * 1e9 * 1e6)
+		if priorityFeeMicroLamports > 0 {
+			instructions = append(instructions,
+				computebudget.NewSetComputeUnitPriceInstruction(priorityFeeMicroLamports).Build())
+		}
+	}
+
+	return instructions, nil
+}
+
+// calculateSwapAmounts рассчитывает минимальный ожидаемый вывод с учетом слиппажа
+func (dex *DEX) calculateSwapAmounts(pool *PoolInfo, amount uint64, isBuy bool, slippagePercent float64) uint64 {
+	// Рассчитываем ожидаемый и минимальный вывод с учетом слиппажа
+	outputAmount, _ := dex.poolManager.CalculateSwapQuote(pool, amount, isBuy)
+	minOutAmount := uint64(float64(outputAmount) * (1.0 - slippagePercent/100.0))
+
+	return minOutAmount
+}
+
+// buildAndSubmitTransaction создает, подписывает и отправляет транзакцию, ожидая подтверждения
+func (dex *DEX) buildAndSubmitTransaction(ctx context.Context, instructions []solana.Instruction) (solana.Signature, error) {
+	// Получаем последний блокхэш
+	recentBlockhash, err := dex.client.GetRecentBlockhash(ctx)
+	if err != nil {
+		return solana.Signature{}, fmt.Errorf("failed to get recent blockhash: %w", err)
+	}
+
+	// Создаем транзакцию
+	tx, err := solana.NewTransaction(
+		instructions,
+		recentBlockhash,
+		solana.TransactionPayer(dex.wallet.PublicKey),
+	)
+	if err != nil {
+		return solana.Signature{}, fmt.Errorf("failed to create transaction: %w", err)
+	}
+
+	// Подписываем транзакцию
+	if err := dex.wallet.SignTransaction(tx); err != nil {
+		return solana.Signature{}, fmt.Errorf("failed to sign transaction: %w", err)
+	}
+
+	// Отправляем транзакцию
+	signature, err := dex.client.SendTransaction(ctx, tx)
+	if err != nil {
+		return solana.Signature{}, fmt.Errorf("failed to send transaction: %w", err)
+	}
+
+	// Ожидаем подтверждения
+	err = dex.client.WaitForTransactionConfirmation(ctx, signature, rpc.CommitmentConfirmed)
+	if err != nil {
+		return signature, fmt.Errorf("transaction failed: %w", err)
+	}
+
+	return signature, nil
+}
+
 // ExecuteSwap executes a swap operation
 func (dex *DEX) ExecuteSwap(
 	ctx context.Context,
@@ -84,39 +254,13 @@ func (dex *DEX) ExecuteSwap(
 	priorityFeeSol string,
 	computeUnits uint32,
 ) error {
-	// Find the pool for the token pair
-	pool, err := dex.poolManager.FindPoolWithRetry(
-		ctx,
-		dex.config.BaseMint,
-		dex.config.QuoteMint,
-		5,             // max retries
-		time.Second*2, // retry delay
-	)
+	// 1. Поиск и валидация пула
+	pool, poolMintOrderReversed, err := dex.findAndValidatePool(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to find pool: %w", err)
+		return err
 	}
 
-	// Добавим подробное логирование найденного пула
-	dex.logger.Debug("Found pool details",
-		zap.String("pool_address", pool.Address.String()),
-		zap.String("config_base_mint", dex.config.BaseMint.String()),
-		zap.String("config_quote_mint", dex.config.QuoteMint.String()),
-		zap.String("pool_base_mint", pool.BaseMint.String()),
-		zap.String("pool_quote_mint", pool.QuoteMint.String()))
-
-	// Update config with found pool address
-	dex.config.PoolAddress = pool.Address
-	dex.config.LPMint = pool.LPMint
-
-	// Проверяем, совпадает ли порядок монет в пуле с ожидаемым в конфигурации
-	poolMintOrderReversed := !pool.BaseMint.Equals(dex.config.BaseMint)
-
-	// Логируем результат проверки
-	dex.logger.Debug("Pool mint order check",
-		zap.Bool("pool_mint_order_reversed", poolMintOrderReversed),
-		zap.Bool("original_is_buy", isBuy))
-
-	// Адаптируем операцию buy/sell к фактическому порядку монет
+	// Определяем фактическое направление обмена с учетом порядка токенов в пуле
 	actualIsBuy := isBuy
 	if poolMintOrderReversed {
 		actualIsBuy = !isBuy
@@ -124,198 +268,87 @@ func (dex *DEX) ExecuteSwap(
 			zap.Bool("actual_is_buy", actualIsBuy))
 	}
 
-	// Get the user's token accounts для фактического порядка монет
-	userBaseMintATA, err := dex.wallet.GetATA(pool.BaseMint)
+	// 2. Подготовка токеновых аккаунтов и ATA инструкций
+	userBaseATA, userQuoteATA, protocolFeeRecipientATA, protocolFeeRecipient,
+		createBaseATAIx, createQuoteATAIx, err := dex.prepareTokenAccounts(ctx, pool)
 	if err != nil {
-		return fmt.Errorf("failed to get user base mint ATA: %w", err)
+		return err
 	}
 
-	userQuoteMintATA, err := dex.wallet.GetATA(pool.QuoteMint)
+	// 3. Подготовка инструкций приоритета
+	priorityInstructions, err := dex.preparePriorityInstructions(computeUnits, priorityFeeSol)
 	if err != nil {
-		return fmt.Errorf("failed to get user quote mint ATA: %w", err)
+		return err
 	}
 
-	// Get protocol fee recipient from the first one in the global config
-	protocolFeeRecipient := solana.PublicKeyFromBytes(make([]byte, 32))
-
-	// Получаем ATA протокольной комиссии используя quote mint из пула
-	protocolFeeRecipientATA, _, err := solana.FindAssociatedTokenAddress(
-		protocolFeeRecipient,
-		pool.QuoteMint, // Используем quote mint из пула
-	)
-	if err != nil {
-		return fmt.Errorf("failed to derive protocol fee recipient ATA: %w", err)
-	}
-
-	// Fetch Global Config to get the current protocol fee recipient
-	globalConfigAddr, _, err := dex.config.DeriveGlobalConfigAddress()
-	if err != nil {
-		return fmt.Errorf("failed to derive global config address: %w", err)
-	}
-
-	globalConfigInfo, err := dex.client.GetAccountInfo(ctx, globalConfigAddr)
-	if err != nil || globalConfigInfo == nil || globalConfigInfo.Value == nil {
-		return fmt.Errorf("failed to get global config: %w", err)
-	}
-
-	globalConfig, err := ParseGlobalConfig(globalConfigInfo.Value.Data.GetBinary())
-	if err != nil {
-		return fmt.Errorf("failed to parse global config: %w", err)
-	}
-
-	// Use the first protocol fee recipient (if available)
-	if len(globalConfig.ProtocolFeeRecipients) > 0 {
-		protocolFeeRecipient = globalConfig.ProtocolFeeRecipients[0]
-		// Re-derive ATA with the correct protocol fee recipient using pool's quote mint
-		protocolFeeRecipientATA, _, err = solana.FindAssociatedTokenAddress(
-			protocolFeeRecipient,
-			pool.QuoteMint, // Используем quote mint из пула
-		)
-		if err != nil {
-			return fmt.Errorf("failed to derive protocol fee recipient ATA: %w", err)
-		}
-	}
-
-	// Get the recent blockhash
-	recentBlockhash, err := dex.client.GetRecentBlockhash(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get recent blockhash: %w", err)
-	}
-
-	// Create a list of instructions
+	// Собираем все инструкции
 	var instructions []solana.Instruction
+	instructions = append(instructions, priorityInstructions...)
+	instructions = append(instructions, createBaseATAIx, createQuoteATAIx)
 
-	// Add compute budget instructions if needed
-	if computeUnits > 0 {
-		instructions = append(instructions, createComputeBudgetRequestUnitsInstruction(computeUnits))
-	}
+	// 4. Расчет минимального вывода с учетом слиппажа и создание инструкции свопа
+	minOutAmount := dex.calculateSwapAmounts(pool, amount, actualIsBuy, slippagePercent)
 
-	// Parse priority fee if provided
-	if priorityFeeSol != "" {
-		priorityFeeFloat, err := strconv.ParseFloat(priorityFeeSol, 64)
-		if err != nil {
-			return fmt.Errorf("invalid priority fee format: %w", err)
-		}
-
-		// Convert SOL to micro-lamports (1 lamport = 10^-9 SOL, 1 micro-lamport = 10^-6 lamport)
-		priorityFeeMicroLamports := uint64(priorityFeeFloat * 1e9 * 1e6)
-		if priorityFeeMicroLamports > 0 {
-			instructions = append(instructions, createComputeBudgetRequestUnitsFeeInstruction(0, priorityFeeMicroLamports))
-		}
-	}
-
-	// Calculate expected output
-	var minOutAmount uint64
-
+	// Создаем инструкцию свопа в зависимости от направления
+	var swapInstruction solana.Instruction
 	if actualIsBuy {
-		// Buying token with SOL (учитывая фактический порядок монет в пуле)
-		outputAmount, _ := dex.poolManager.CalculateSwapQuote(pool, amount, true)
-		minOutAmount = uint64(float64(outputAmount) * (1.0 - slippagePercent/100.0))
-
-		// Create the buy instruction with pool's mint order
-		buyInstruction := createBuyInstruction(
+		swapInstruction = createBuyInstruction(
 			pool.Address,
 			dex.wallet.PublicKey,
 			dex.config.GlobalConfig,
-			pool.BaseMint,    // Используем базовую монету из пула
-			pool.QuoteMint,   // Используем квотируемую монету из пула
-			userBaseMintATA,  // ATA для базовой монеты пула
-			userQuoteMintATA, // ATA для квотируемой монеты пула
+			pool.BaseMint,
+			pool.QuoteMint,
+			userBaseATA,
+			userQuoteATA,
 			pool.PoolBaseTokenAccount,
 			pool.PoolQuoteTokenAccount,
 			protocolFeeRecipient,
 			protocolFeeRecipientATA,
-			TokenProgramID, // Base token program
-			TokenProgramID, // Quote token program
+			TokenProgramID,
+			TokenProgramID,
 			dex.config.EventAuthority,
 			dex.config.ProgramID,
-			amount,       // baseAmountOut
-			minOutAmount, // maxQuoteAmountIn
+			amount,
+			minOutAmount,
 		)
-
-		instructions = append(instructions, buyInstruction)
 	} else {
-		// Selling token for SOL (учитывая фактический порядок монет в пуле)
-		outputAmount, _ := dex.poolManager.CalculateSwapQuote(pool, amount, false)
-		minOutAmount = uint64(float64(outputAmount) * (1.0 - slippagePercent/100.0))
-
-		// Create the sell instruction with pool's mint order
-		sellInstruction := createSellInstruction(
+		swapInstruction = createSellInstruction(
 			pool.Address,
 			dex.wallet.PublicKey,
 			dex.config.GlobalConfig,
-			pool.BaseMint,    // Используем базовую монету из пула
-			pool.QuoteMint,   // Используем квотируемую монету из пула
-			userBaseMintATA,  // ATA для базовой монеты пула
-			userQuoteMintATA, // ATA для квотируемой монеты пула
+			pool.BaseMint,
+			pool.QuoteMint,
+			userBaseATA,
+			userQuoteATA,
 			pool.PoolBaseTokenAccount,
 			pool.PoolQuoteTokenAccount,
 			protocolFeeRecipient,
 			protocolFeeRecipientATA,
-			TokenProgramID, // Base token program
-			TokenProgramID, // Quote token program
+			TokenProgramID,
+			TokenProgramID,
 			dex.config.EventAuthority,
 			dex.config.ProgramID,
-			amount,       // baseAmountIn
-			minOutAmount, // minQuoteAmountOut
+			amount,
+			minOutAmount,
 		)
-
-		instructions = append(instructions, sellInstruction)
 	}
 
-	// Create transaction with all instructions
-	tx, err := solana.NewTransaction(
-		instructions,
-		recentBlockhash,
-		solana.TransactionPayer(dex.wallet.PublicKey),
-	)
+	instructions = append(instructions, swapInstruction)
+
+	// 5. Отправка транзакции и ожидание подтверждения
+	signature, err := dex.buildAndSubmitTransaction(ctx, instructions)
 	if err != nil {
-		return fmt.Errorf("failed to create transaction: %w", err)
+		return err
 	}
 
-	// Sign transaction
-	if err := dex.wallet.SignTransaction(tx); err != nil {
-		return fmt.Errorf("failed to sign transaction: %w", err)
-	}
-
-	// Send transaction
-	signature, err := dex.client.SendTransaction(ctx, tx)
-	if err != nil {
-		return fmt.Errorf("failed to send transaction: %w", err)
-	}
-
-	dex.logger.Info("Swap transaction sent",
+	dex.logger.Info("Swap transaction confirmed",
 		zap.String("signature", signature.String()),
 		zap.Bool("is_buy", isBuy),
 		zap.Bool("actual_is_buy", actualIsBuy),
 		zap.Uint64("amount", amount),
 		zap.Float64("slippage_percent", slippagePercent))
 
-	// Wait for confirmation
-	err = dex.client.WaitForTransactionConfirmation(ctx, signature, rpc.CommitmentConfirmed)
-	if err != nil {
-		return fmt.Errorf("transaction failed: %w", err)
-	}
-
-	dex.logger.Info("Swap transaction confirmed",
-		zap.String("signature", signature.String()))
-
 	return nil
-}
-
-// ExecuteSnipe implements the snipe operation for PumpSwap
-func (dex *DEX) ExecuteSnipe(
-	ctx context.Context,
-	amountSol float64,
-	slippagePercent float64,
-	priorityFeeSol string,
-	computeUnits uint32,
-) error {
-	// Convert SOL amount to lamports
-	amountLamports := uint64(amountSol * 1e9)
-
-	// Execute buy operation
-	return dex.ExecuteSwap(ctx, true, amountLamports, slippagePercent, priorityFeeSol, computeUnits)
 }
 
 // ExecuteSell implements the sell operation for PumpSwap

@@ -18,28 +18,6 @@ var (
 	AssociatedTokenProgramID = solana.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
 )
 
-// createAssociatedTokenAccountIdempotentInstruction creates an instruction to create an associated token account
-func createAssociatedTokenAccountIdempotentInstruction(payer, wallet, mint solana.PublicKey) solana.Instruction {
-	associatedTokenProgramID := solana.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
-
-	// Calculate the associated token account address
-	ata, _, _ := solana.FindAssociatedTokenAddress(wallet, mint)
-
-	return solana.NewInstruction(
-		associatedTokenProgramID,
-		[]*solana.AccountMeta{
-			{PublicKey: payer, IsWritable: true, IsSigner: true},
-			{PublicKey: ata, IsWritable: true, IsSigner: false},
-			{PublicKey: wallet, IsWritable: false, IsSigner: false},
-			{PublicKey: mint, IsWritable: false, IsSigner: false},
-			{PublicKey: solana.SystemProgramID, IsWritable: false, IsSigner: false},
-			{PublicKey: solana.TokenProgramID, IsWritable: false, IsSigner: false},
-			{PublicKey: solana.SysVarRentPubkey, IsWritable: false, IsSigner: false},
-		},
-		[]byte{1}, // Instruction code 1 for create idempotent
-	)
-}
-
 // createBuyInstruction creates a buy instruction for the Pump.fun protocol
 /*func createBuyInstruction(
 	programID,
