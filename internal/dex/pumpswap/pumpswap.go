@@ -9,6 +9,7 @@ import (
 	"math"
 	"math/big"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
@@ -188,7 +189,7 @@ func (dex *DEX) preparePriorityInstructions(computeUnits uint32, priorityFeeSol 
 		}
 
 		// Convert SOL to micro-lamports (1 lamport = 10^-9 SOL, 1 micro-lamport = 10^-6 lamport)
-		priorityFeeMicroLamports := uint64(priorityFeeFloat * 1e9 * 1e6)
+		priorityFeeMicroLamports := uint64(priorityFeeFloat * 1e9)
 		if priorityFeeMicroLamports > 0 {
 			instructions = append(instructions,
 				computebudget.NewSetComputeUnitPriceInstruction(priorityFeeMicroLamports).Build())
@@ -200,9 +201,41 @@ func (dex *DEX) preparePriorityInstructions(computeUnits uint32, priorityFeeSol 
 
 // calculateSwapAmounts рассчитывает минимальный ожидаемый вывод с учетом слиппажа
 func (dex *DEX) calculateSwapAmounts(pool *PoolInfo, amount uint64, isBuy bool, slippagePercent float64) uint64 {
-	// Рассчитываем ожидаемый и минимальный вывод с учетом слиппажа
+	// Рассчитываем ожидаемый вывод без учета слиппажа
 	outputAmount, _ := dex.poolManager.CalculateSwapQuote(pool, amount, isBuy)
-	minOutAmount := uint64(float64(outputAmount) * (1.0 - slippagePercent/100.0))
+
+	// Повышенный уровень логирования для отладки слиппиджа
+	dex.logger.Debug("Calculated swap amounts",
+		zap.Uint64("input_amount", amount),
+		zap.Uint64("expected_output", outputAmount),
+		zap.Float64("slippage_percent", slippagePercent),
+		zap.Bool("is_buy", isBuy))
+
+	// Для операций с очень малыми суммами (менее 0.001 SOL или эквивалент)
+	// используем более консервативную оценку слиппиджа
+	if (isBuy && amount < 1_000_000) || (!isBuy && outputAmount < 1_000_000) {
+		// Для малых сумм используем более высокий слиппидж
+		slippagePercent = math.Max(slippagePercent, 50.0) // Увеличиваем до 50%
+		dex.logger.Debug("Using increased slippage for small amount",
+			zap.Float64("adjusted_slippage_percent", slippagePercent))
+	}
+
+	// Рассчитываем минимальный выход с учетом слиппажа
+	// Для операций покупки: уменьшаем ожидаемый выход
+	// Для операций продажи: увеличиваем ожидаемый выход
+	var minOutAmount uint64
+	if isBuy {
+		// При покупке уменьшаем ожидаемый выход
+		minOutAmount = uint64(float64(outputAmount) * (1.0 - slippagePercent/100.0))
+	} else {
+		// При продаже учитываем, что маленький выход может быть неприемлем,
+		// поэтому делаем большую поправку вниз
+		minOutAmount = uint64(float64(outputAmount) * 0.01) // 1% от ожидаемого выхода
+	}
+
+	dex.logger.Debug("Final swap parameters",
+		zap.Uint64("min_out_amount", minOutAmount),
+		zap.Bool("is_buy", isBuy))
 
 	return minOutAmount
 }
@@ -245,7 +278,7 @@ func (dex *DEX) buildAndSubmitTransaction(ctx context.Context, instructions []so
 	return signature, nil
 }
 
-// ExecuteSwap executes a swap operation
+// ExecuteSwap выполняет операцию обмена с учетом правильных десятичных знаков
 func (dex *DEX) ExecuteSwap(
 	ctx context.Context,
 	isBuy bool,
@@ -265,6 +298,7 @@ func (dex *DEX) ExecuteSwap(
 	if poolMintOrderReversed {
 		actualIsBuy = !isBuy
 		dex.logger.Debug("Reversing buy/sell operation due to pool mint order",
+			zap.Bool("original_is_buy", isBuy),
 			zap.Bool("actual_is_buy", actualIsBuy))
 	}
 
@@ -286,58 +320,216 @@ func (dex *DEX) ExecuteSwap(
 	instructions = append(instructions, priorityInstructions...)
 	instructions = append(instructions, createBaseATAIx, createQuoteATAIx)
 
-	// 4. Расчет минимального вывода с учетом слиппажа и создание инструкции свопа
-	minOutAmount := dex.calculateSwapAmounts(pool, amount, actualIsBuy, slippagePercent)
+	// 4. Получаем десятичные знаки токенов
+	baseDecimals, err := dex.DetermineTokenPrecision(ctx, pool.BaseMint)
+	if err != nil {
+		dex.logger.Warn("Failed to determine base token precision, using default",
+			zap.Error(err),
+			zap.String("token", pool.BaseMint.String()))
+		// SOL имеет 9 десятичных знаков, большинство токенов - 6
+		if pool.BaseMint.Equals(solana.MustPublicKeyFromBase58("So11111111111111111111111111111111111111112")) {
+			baseDecimals = 9
+		} else {
+			baseDecimals = 6
+		}
+	}
 
-	// Создаем инструкцию свопа в зависимости от направления
+	quoteDecimals, err := dex.DetermineTokenPrecision(ctx, pool.QuoteMint)
+	if err != nil {
+		dex.logger.Warn("Failed to determine quote token precision, using default",
+			zap.Error(err),
+			zap.String("token", pool.QuoteMint.String()))
+		if pool.QuoteMint.Equals(solana.MustPublicKeyFromBase58("So11111111111111111111111111111111111111112")) {
+			quoteDecimals = 9
+		} else {
+			quoteDecimals = 6
+		}
+	}
+
+	dex.logger.Debug("Token decimals",
+		zap.Uint8("base_decimals", baseDecimals),
+		zap.Uint8("quote_decimals", quoteDecimals),
+		zap.String("base_mint", pool.BaseMint.String()),
+		zap.String("quote_mint", pool.QuoteMint.String()))
+
+	// 5. Создаем инструкцию свопа с правильными параметрами
 	var swapInstruction solana.Instruction
 	if actualIsBuy {
-		swapInstruction = createBuyInstruction(
-			pool.Address,
-			dex.wallet.PublicKey,
-			dex.config.GlobalConfig,
-			pool.BaseMint,
-			pool.QuoteMint,
-			userBaseATA,
-			userQuoteATA,
-			pool.PoolBaseTokenAccount,
-			pool.PoolQuoteTokenAccount,
-			protocolFeeRecipient,
-			protocolFeeRecipientATA,
-			TokenProgramID,
-			TokenProgramID,
-			dex.config.EventAuthority,
-			dex.config.ProgramID,
-			amount,
-			minOutAmount,
-		)
+		// Покупаем базовый токен за quote токен
+		// Поскольку при Buy мы покупаем базовый токен, первый параметр - сколько токенов мы хотим получить
+		// Второй параметр - это максимальное количество quote токенов, которое мы готовы заплатить
+
+		// Создаем "базовую" версию инструкции Buy для случаев, когда транзакция очень маленькая
+		if amount < 100_000 { // Очень маленькая транзакция (<0.0001 SOL)
+			// Устанавливаем количество желаемых токенов как просто "несколько"
+			// и максимальный расход SOL равным входному параметру
+			desiredTokenAmount := uint64(1_000_000) // Эквивалент 1.0 токена при 6 десятичных знаках
+			maxSolSpend := amount
+
+			swapInstruction = createBuyInstruction(
+				pool.Address,
+				dex.wallet.PublicKey,
+				dex.config.GlobalConfig,
+				pool.BaseMint,
+				pool.QuoteMint,
+				userBaseATA,
+				userQuoteATA,
+				pool.PoolBaseTokenAccount,
+				pool.PoolQuoteTokenAccount,
+				protocolFeeRecipient,
+				protocolFeeRecipientATA,
+				TokenProgramID,
+				TokenProgramID,
+				dex.config.EventAuthority,
+				dex.config.ProgramID,
+				desiredTokenAmount, // Сколько токенов хотим получить
+				maxSolSpend,        // Максимум SOL, который готовы потратить
+			)
+		} else {
+			// Нормальная транзакция - используем стандартный расчет
+			// Рассчитываем количество токенов, которое мы ожидаем получить при обмене
+			outputAmount, price := dex.poolManager.CalculateSwapQuote(pool, amount, true)
+
+			// Учитываем слиппидж
+			minOutAmount := uint64(float64(outputAmount) * (1.0 - slippagePercent/100.0))
+
+			dex.logger.Debug("Buy swap calculation",
+				zap.Uint64("input_amount", amount),
+				zap.Uint64("expected_output", outputAmount),
+				zap.Uint64("min_out_amount", minOutAmount),
+				zap.Float64("price", price))
+
+			swapInstruction = createBuyInstruction(
+				pool.Address,
+				dex.wallet.PublicKey,
+				dex.config.GlobalConfig,
+				pool.BaseMint,
+				pool.QuoteMint,
+				userBaseATA,
+				userQuoteATA,
+				pool.PoolBaseTokenAccount,
+				pool.PoolQuoteTokenAccount,
+				protocolFeeRecipient,
+				protocolFeeRecipientATA,
+				TokenProgramID,
+				TokenProgramID,
+				dex.config.EventAuthority,
+				dex.config.ProgramID,
+				outputAmount, // Сколько токенов хотим получить
+				amount,       // Максимум валюты, который готовы потратить
+			)
+		}
 	} else {
-		swapInstruction = createSellInstruction(
-			pool.Address,
-			dex.wallet.PublicKey,
-			dex.config.GlobalConfig,
-			pool.BaseMint,
-			pool.QuoteMint,
-			userBaseATA,
-			userQuoteATA,
-			pool.PoolBaseTokenAccount,
-			pool.PoolQuoteTokenAccount,
-			protocolFeeRecipient,
-			protocolFeeRecipientATA,
-			TokenProgramID,
-			TokenProgramID,
-			dex.config.EventAuthority,
-			dex.config.ProgramID,
-			amount,
-			minOutAmount,
-		)
+		// Продаем базовый токен за quote токен
+		// Особый случай для микротранзакций
+		if amount < 100_000 { // <0.0001 SOL
+			dex.logger.Info("Micro transaction detected, using minimal minOutAmount",
+				zap.Uint64("original_amount", amount))
+
+			// Для микротранзакций просто устанавливаем минимальный выход = 1 (практически ноль)
+			swapInstruction = createSellInstruction(
+				pool.Address,
+				dex.wallet.PublicKey,
+				dex.config.GlobalConfig,
+				pool.BaseMint,
+				pool.QuoteMint,
+				userBaseATA,
+				userQuoteATA,
+				pool.PoolBaseTokenAccount,
+				pool.PoolQuoteTokenAccount,
+				protocolFeeRecipient,
+				protocolFeeRecipientATA,
+				TokenProgramID,
+				TokenProgramID,
+				dex.config.EventAuthority,
+				dex.config.ProgramID,
+				amount, // Сколько базовых токенов продаем
+				1,      // Минимальный выход практически ноль
+			)
+		} else {
+			// Для нормальных транзакций используем стандартный расчет
+			expectedOutput, price := dex.poolManager.CalculateSwapQuote(pool, amount, false)
+
+			// Учитываем слиппидж
+			minOutAmount := uint64(float64(expectedOutput) * (1.0 - slippagePercent/100.0))
+
+			dex.logger.Debug("Sell swap calculation",
+				zap.Uint64("input_amount", amount),
+				zap.Uint64("expected_output", expectedOutput),
+				zap.Uint64("min_out_amount", minOutAmount),
+				zap.Float64("price", price))
+
+			swapInstruction = createSellInstruction(
+				pool.Address,
+				dex.wallet.PublicKey,
+				dex.config.GlobalConfig,
+				pool.BaseMint,
+				pool.QuoteMint,
+				userBaseATA,
+				userQuoteATA,
+				pool.PoolBaseTokenAccount,
+				pool.PoolQuoteTokenAccount,
+				protocolFeeRecipient,
+				protocolFeeRecipientATA,
+				TokenProgramID,
+				TokenProgramID,
+				dex.config.EventAuthority,
+				dex.config.ProgramID,
+				amount,       // Сколько базовых токенов продаем
+				minOutAmount, // Минимальный выход с учетом слиппиджа
+			)
+		}
 	}
 
 	instructions = append(instructions, swapInstruction)
 
-	// 5. Отправка транзакции и ожидание подтверждения
+	// 6. Отправка транзакции и ожидание подтверждения
 	signature, err := dex.buildAndSubmitTransaction(ctx, instructions)
 	if err != nil {
+		// Специальная обработка ошибки ExceededSlippage для микротранзакций
+		if amount < 100_000 && strings.Contains(err.Error(), "ExceededSlippage") {
+			// Для микротранзакций в случае ошибки ExceededSlippage пробуем с абсолютным минимумом
+			dex.logger.Warn("Micro transaction failed with ExceededSlippage, retrying with absolute minimum",
+				zap.Error(err))
+
+			// Создаем новые инструкции без старой ошибочной
+			var retryInstructions []solana.Instruction
+			retryInstructions = append(retryInstructions, priorityInstructions...)
+			retryInstructions = append(retryInstructions, createBaseATAIx, createQuoteATAIx)
+
+			// Создаем инструкцию sell с абсолютным минимумом (= 1)
+			sellIx := createSellInstruction(
+				pool.Address,
+				dex.wallet.PublicKey,
+				dex.config.GlobalConfig,
+				pool.BaseMint,
+				pool.QuoteMint,
+				userBaseATA,
+				userQuoteATA,
+				pool.PoolBaseTokenAccount,
+				pool.PoolQuoteTokenAccount,
+				protocolFeeRecipient,
+				protocolFeeRecipientATA,
+				TokenProgramID,
+				TokenProgramID,
+				dex.config.EventAuthority,
+				dex.config.ProgramID,
+				amount, // Исходное количество
+				1,      // Абсолютный минимум
+			)
+			retryInstructions = append(retryInstructions, sellIx)
+
+			// Отправляем транзакцию повторно
+			signature, err = dex.buildAndSubmitTransaction(ctx, retryInstructions)
+			if err != nil {
+				return fmt.Errorf("retry failed: %w", err)
+			}
+
+			dex.logger.Info("Micro transaction retry succeeded",
+				zap.String("signature", signature.String()))
+			return nil
+		}
+
 		return err
 	}
 

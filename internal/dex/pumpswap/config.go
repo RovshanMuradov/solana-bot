@@ -1,5 +1,5 @@
 // =============================
-// File: internal/dex/pumpswap/config.go
+// File: internal/dex/pumpswap/config.go (исправление)
 // =============================
 package pumpswap
 
@@ -15,14 +15,11 @@ var (
 	// PumpSwapProgramID is the address of the PumpSwap program
 	PumpSwapProgramID = solana.MustPublicKeyFromBase58("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA")
 
-	// EventAuthority is the address of the event authority
-	EventAuthority = solana.MustPublicKeyFromBase58("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")
+	// SystemProgramID is the Solana system program ID
+	SystemProgramID = solana.MustPublicKeyFromBase58("11111111111111111111111111111111")
 
 	// TokenProgramID is the Solana token program ID
 	TokenProgramID = solana.MustPublicKeyFromBase58("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
-
-	// SystemProgramID is the Solana system program ID
-	SystemProgramID = solana.MustPublicKeyFromBase58("11111111111111111111111111111111")
 
 	// AssociatedTokenProgramID is the Solana associated token program ID
 	AssociatedTokenProgramID = solana.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
@@ -49,9 +46,20 @@ type Config struct {
 
 // GetDefaultConfig returns a default configuration for PumpSwap
 func GetDefaultConfig() *Config {
+	// Вычисляем EventAuthority как PDA с правильными сидами
+	eventAuthority, _, err := solana.FindProgramAddress(
+		[][]byte{[]byte("__event_authority")},
+		PumpSwapProgramID,
+	)
+	if err != nil {
+		// Если не удается вычислить PDA, выводим ошибку и используем нулевой ключ
+		fmt.Printf("Failed to derive event authority: %v\n", err)
+		eventAuthority = solana.PublicKey{}
+	}
+
 	return &Config{
 		ProgramID:       PumpSwapProgramID,
-		EventAuthority:  EventAuthority,
+		EventAuthority:  eventAuthority,
 		MonitorInterval: "5s",
 	}
 }
@@ -79,11 +87,23 @@ func (cfg *Config) SetupForToken(quoteTokenMint string, logger *zap.Logger) erro
 	}
 	cfg.GlobalConfig = globalConfigAddr
 
+	// Если EventAuthority пустой, попробуем вычислить его снова
+	if cfg.EventAuthority.IsZero() {
+		cfg.EventAuthority, _, err = solana.FindProgramAddress(
+			[][]byte{[]byte("__event_authority")},
+			cfg.ProgramID,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to derive event authority: %w", err)
+		}
+	}
+
 	logger.Info("PumpSwap configuration prepared",
 		zap.String("program_id", cfg.ProgramID.String()),
 		zap.String("global_config", cfg.GlobalConfig.String()),
 		zap.String("base_mint", cfg.BaseMint.String()),
-		zap.String("quote_mint", cfg.QuoteMint.String()))
+		zap.String("quote_mint", cfg.QuoteMint.String()),
+		zap.String("event_authority", cfg.EventAuthority.String()))
 
 	return nil
 }
