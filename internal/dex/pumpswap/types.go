@@ -10,25 +10,21 @@ import (
 	"github.com/gagliardetto/solana-go"
 )
 
-// Account discriminators extracted from the IDL
+// Дискриминаторы аккаунтов, извлечённые из IDL.
 var (
-	// GlobalConfigDiscriminator is the discriminator for GlobalConfig accounts
 	GlobalConfigDiscriminator = []byte{149, 8, 156, 202, 160, 252, 176, 217}
-
-	// PoolDiscriminator is the discriminator for Pool accounts
-	PoolDiscriminator = []byte{241, 154, 109, 4, 17, 177, 109, 188}
+	PoolDiscriminator         = []byte{241, 154, 109, 4, 17, 177, 109, 188}
 )
 
-// GlobalConfig represents the global configuration for PumpSwap
+// GlobalConfig представляет глобальную конфигурацию PumpSwap.
 type GlobalConfig struct {
-	Admin                  solana.PublicKey    // The admin public key
-	LPFeeBasisPoints       uint64              // LP fee in basis points (0.01%)
-	ProtocolFeeBasisPoints uint64              // Protocol fee in basis points (0.01%)
-	DisableFlags           uint8               // Flags to disable certain functionality
-	ProtocolFeeRecipients  [8]solana.PublicKey // Addresses of protocol fee recipients
+	Admin                  solana.PublicKey    // Админский публичный ключ
+	LPFeeBasisPoints       uint64              // Комиссия LP в базисных пунктах (0.01%)
+	ProtocolFeeBasisPoints uint64              // Комиссия протокола в базисных пунктах (0.01%)
+	DisableFlags           uint8               // Флаги для отключения определённых функций
+	ProtocolFeeRecipients  [8]solana.PublicKey // Адреса получателей комиссии протокола
 }
 
-// DisableFlags bits in GlobalConfig
 const (
 	DisableCreatePool = 1 << iota
 	DisableDeposit
@@ -37,76 +33,85 @@ const (
 	DisableSell
 )
 
-// Pool represents a liquidity pool in PumpSwap
+// Pool представляет пул ликвидности в PumpSwap.
 type Pool struct {
 	PoolBump              uint8            // PDA bump
-	Index                 uint16           // Pool index
-	Creator               solana.PublicKey // Creator of the pool
-	BaseMint              solana.PublicKey // Base token mint (usually SOL)
-	QuoteMint             solana.PublicKey // Quote token mint
-	LPMint                solana.PublicKey // LP token mint
-	PoolBaseTokenAccount  solana.PublicKey // Pool's base token account
-	PoolQuoteTokenAccount solana.PublicKey // Pool's quote token account
-	LPSupply              uint64           // True circulating supply of LP tokens
+	Index                 uint16           // Индекс пула
+	Creator               solana.PublicKey // Создатель пула
+	BaseMint              solana.PublicKey // Базовый токен (обычно SOL)
+	QuoteMint             solana.PublicKey // Квотный токен
+	LPMint                solana.PublicKey // Токен пула ликвидности
+	PoolBaseTokenAccount  solana.PublicKey // Аккаунт базового токена пула
+	PoolQuoteTokenAccount solana.PublicKey // Аккаунт квотного токена пула
+	LPSupply              uint64           // Циркулирующее количество LP токенов
 }
 
-// PoolInfo contains information about the state of a liquidity pool
+// PoolInfo содержит информацию о состоянии пула ликвидности.
 type PoolInfo struct {
-	Address               solana.PublicKey // Pool address
-	BaseMint              solana.PublicKey // Base token mint
-	QuoteMint             solana.PublicKey // Quote token mint
-	BaseReserves          uint64           // Amount of base tokens in the pool
-	QuoteReserves         uint64           // Amount of quote tokens in the pool
-	LPSupply              uint64           // LP token supply
-	FeesBasisPoints       uint64           // LP fee in basis points
-	ProtocolFeeBPS        uint64           // Protocol fee in basis points
-	LPMint                solana.PublicKey // LP token mint
-	PoolBaseTokenAccount  solana.PublicKey // Pool's base token account
-	PoolQuoteTokenAccount solana.PublicKey // Pool's quote token account
+	Address               solana.PublicKey // Адрес пула
+	BaseMint              solana.PublicKey // Базовый токен
+	QuoteMint             solana.PublicKey // Квотный токен
+	BaseReserves          uint64           // Количество базовых токенов в пуле
+	QuoteReserves         uint64           // Количество квотных токенов в пуле
+	LPSupply              uint64           // Количество LP токенов
+	FeesBasisPoints       uint64           // Комиссия LP в базисных пунктах
+	ProtocolFeeBPS        uint64           // Комиссия протокола в базисных пунктах
+	LPMint                solana.PublicKey // Токен пула ликвидности
+	PoolBaseTokenAccount  solana.PublicKey // Аккаунт базового токена пула
+	PoolQuoteTokenAccount solana.PublicKey // Аккаунт квотного токена пула
 }
 
-// ParseGlobalConfig parses account data into GlobalConfig structure
+// SwapTokens возвращает новый объект PoolInfo, где базовый и квотный токены поменяны местами.
+func (p *PoolInfo) SwapTokens() *PoolInfo {
+	return &PoolInfo{
+		Address:               p.Address,
+		BaseMint:              p.QuoteMint,
+		QuoteMint:             p.BaseMint,
+		BaseReserves:          p.QuoteReserves,
+		QuoteReserves:         p.BaseReserves,
+		LPSupply:              p.LPSupply,
+		FeesBasisPoints:       p.FeesBasisPoints,
+		ProtocolFeeBPS:        p.ProtocolFeeBPS,
+		LPMint:                p.LPMint,
+		PoolBaseTokenAccount:  p.PoolQuoteTokenAccount,
+		PoolQuoteTokenAccount: p.PoolBaseTokenAccount,
+	}
+}
+
+// ParseGlobalConfig парсит данные аккаунта в структуру GlobalConfig.
 func ParseGlobalConfig(data []byte) (*GlobalConfig, error) {
 	if len(data) < 8 {
 		return nil, fmt.Errorf("data too short for GlobalConfig")
 	}
 
-	// Verify discriminator
 	for i := 0; i < 8; i++ {
 		if data[i] != GlobalConfigDiscriminator[i] {
 			return nil, fmt.Errorf("invalid discriminator for GlobalConfig")
 		}
 	}
 
-	// Adjust the position for the data after discriminator
 	pos := 8
 
-	// Ensure enough data is available
 	if len(data) < pos+32+8+8+1+(32*8) {
 		return nil, fmt.Errorf("data too short for GlobalConfig content")
 	}
 
 	config := &GlobalConfig{}
 
-	// Parse the Admin field (pubkey - 32 bytes)
 	adminBytes := make([]byte, 32)
 	copy(adminBytes, data[pos:pos+32])
 	config.Admin = solana.PublicKeyFromBytes(adminBytes)
 	pos += 32
 
-	// Parse the LP fee basis points (u64 - 8 bytes)
 	config.LPFeeBasisPoints = binary.LittleEndian.Uint64(data[pos : pos+8])
 	pos += 8
 
-	// Parse the protocol fee basis points (u64 - 8 bytes)
 	config.ProtocolFeeBasisPoints = binary.LittleEndian.Uint64(data[pos : pos+8])
 	pos += 8
 
-	// Parse disable flags (u8 - 1 byte)
 	config.DisableFlags = data[pos]
 	pos++
 
-	// Parse protocol fee recipients (array of 8 pubkeys - 32*8 bytes)
 	for i := 0; i < 8; i++ {
 		recipientBytes := make([]byte, 32)
 		copy(recipientBytes, data[pos:pos+32])
@@ -117,74 +122,62 @@ func ParseGlobalConfig(data []byte) (*GlobalConfig, error) {
 	return config, nil
 }
 
-// ParsePool parses account data into Pool structure
+// ParsePool парсит данные аккаунта в структуру Pool.
 func ParsePool(data []byte) (*Pool, error) {
 	if len(data) < 8 {
 		return nil, fmt.Errorf("data too short for Pool")
 	}
 
-	// Verify discriminator
 	for i := 0; i < 8; i++ {
 		if data[i] != PoolDiscriminator[i] {
 			return nil, fmt.Errorf("invalid discriminator for Pool")
 		}
 	}
 
-	// Adjust the position for the data after discriminator
 	pos := 8
 
-	// Ensure enough data is available
 	if len(data) < pos+1+2+32+32+32+32+32+32+8 {
 		return nil, fmt.Errorf("data too short for Pool content")
 	}
 
 	pool := &Pool{}
 
-	// Parse pool bump (u8 - 1 byte)
 	pool.PoolBump = data[pos]
 	pos++
 
-	// Parse index (u16 - 2 bytes)
 	pool.Index = uint16(data[pos]) | (uint16(data[pos+1]) << 8)
 	pos += 2
 
-	// Parse creator public key (pubkey - 32 bytes)
 	creatorBytes := make([]byte, 32)
 	copy(creatorBytes, data[pos:pos+32])
 	pool.Creator = solana.PublicKeyFromBytes(creatorBytes)
 	pos += 32
 
-	// Parse base mint (pubkey - 32 bytes)
 	baseMintBytes := make([]byte, 32)
 	copy(baseMintBytes, data[pos:pos+32])
 	pool.BaseMint = solana.PublicKeyFromBytes(baseMintBytes)
 	pos += 32
 
-	// Parse quote mint (pubkey - 32 bytes)
 	quoteMintBytes := make([]byte, 32)
 	copy(quoteMintBytes, data[pos:pos+32])
 	pool.QuoteMint = solana.PublicKeyFromBytes(quoteMintBytes)
 	pos += 32
 
-	// Parse LP mint (pubkey - 32 bytes)
 	lpMintBytes := make([]byte, 32)
 	copy(lpMintBytes, data[pos:pos+32])
 	pool.LPMint = solana.PublicKeyFromBytes(lpMintBytes)
 	pos += 32
 
-	// Parse pool base token account (pubkey - 32 bytes)
 	poolBaseTokenAccountBytes := make([]byte, 32)
 	copy(poolBaseTokenAccountBytes, data[pos:pos+32])
 	pool.PoolBaseTokenAccount = solana.PublicKeyFromBytes(poolBaseTokenAccountBytes)
 	pos += 32
 
-	// Parse pool quote token account (pubkey - 32 bytes)
 	poolQuoteTokenAccountBytes := make([]byte, 32)
 	copy(poolQuoteTokenAccountBytes, data[pos:pos+32])
 	pool.PoolQuoteTokenAccount = solana.PublicKeyFromBytes(poolQuoteTokenAccountBytes)
 	pos += 32
 
-	// Parse LP supply (u64 - 8 bytes)
 	pool.LPSupply = binary.LittleEndian.Uint64(data[pos : pos+8])
 
 	return pool, nil

@@ -10,49 +10,39 @@ import (
 	"go.uber.org/zap"
 )
 
-// Program identifiers and constants
 var (
-	// PumpSwapProgramID is the address of the PumpSwap program
+	// PumpSwapProgramID – адрес программы PumpSwap.
 	PumpSwapProgramID = solana.MustPublicKeyFromBase58("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA")
-
-	// SystemProgramID is the Solana system program ID
+	// SystemProgramID – ID системной программы Solana.
 	SystemProgramID = solana.MustPublicKeyFromBase58("11111111111111111111111111111111")
-
-	// TokenProgramID is the Solana token program ID
+	// TokenProgramID – ID программы токенов Solana.
 	TokenProgramID = solana.MustPublicKeyFromBase58("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
-
-	// AssociatedTokenProgramID is the Solana associated token program ID
+	// AssociatedTokenProgramID – ID ассоциированной токенной программы.
 	AssociatedTokenProgramID = solana.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
 )
 
-// Config holds the configuration for PumpSwap DEX interactions
+// Config хранит конфигурацию для взаимодействия с PumpSwap.
 type Config struct {
-	// Program addresses
 	ProgramID      solana.PublicKey
 	GlobalConfig   solana.PublicKey
 	EventAuthority solana.PublicKey
 
-	// Token configuration
-	BaseMint  solana.PublicKey // SOL or stable coin
-	QuoteMint solana.PublicKey // Token migrated from bonding curve
+	BaseMint  solana.PublicKey // SOL или стабильная монета
+	QuoteMint solana.PublicKey // Токен, приобретаемый по bonding curve
 
-	// Pool parameters
-	PoolAddress solana.PublicKey // Address of the discovered pool
-	LPMint      solana.PublicKey // Liquidity pool token mint
+	PoolAddress solana.PublicKey // Обнаруженный адрес пула
+	LPMint      solana.PublicKey // Токен пула ликвидности
 
-	// Monitoring parameters
 	MonitorInterval string
 }
 
-// GetDefaultConfig returns a default configuration for PumpSwap
+// GetDefaultConfig возвращает конфигурацию по умолчанию для PumpSwap.
 func GetDefaultConfig() *Config {
-	// Вычисляем EventAuthority как PDA с правильными сидами
 	eventAuthority, _, err := solana.FindProgramAddress(
 		[][]byte{[]byte("__event_authority")},
 		PumpSwapProgramID,
 	)
 	if err != nil {
-		// Если не удается вычислить PDA, выводим ошибку и используем нулевой ключ
 		fmt.Printf("Failed to derive event authority: %v\n", err)
 		eventAuthority = solana.PublicKey{}
 	}
@@ -64,9 +54,8 @@ func GetDefaultConfig() *Config {
 	}
 }
 
-// SetupForToken configures the PumpSwap instance for a specific token
+// SetupForToken настраивает экземпляр PumpSwap для определённого токена.
 func (cfg *Config) SetupForToken(quoteTokenMint string, logger *zap.Logger) error {
-	// Validate token mint address
 	if quoteTokenMint == "" {
 		return fmt.Errorf("token mint address is required")
 	}
@@ -77,17 +66,14 @@ func (cfg *Config) SetupForToken(quoteTokenMint string, logger *zap.Logger) erro
 		return fmt.Errorf("invalid token mint address: %w", err)
 	}
 
-	// Set SOL as the base mint
 	cfg.BaseMint = solana.MustPublicKeyFromBase58("So11111111111111111111111111111111111111112")
 
-	// Derive the global config address
 	globalConfigAddr, _, err := cfg.DeriveGlobalConfigAddress()
 	if err != nil {
 		return fmt.Errorf("failed to derive global config address: %w", err)
 	}
 	cfg.GlobalConfig = globalConfigAddr
 
-	// Если EventAuthority пустой, попробуем вычислить его снова
 	if cfg.EventAuthority.IsZero() {
 		cfg.EventAuthority, _, err = solana.FindProgramAddress(
 			[][]byte{[]byte("__event_authority")},
@@ -108,7 +94,7 @@ func (cfg *Config) SetupForToken(quoteTokenMint string, logger *zap.Logger) erro
 	return nil
 }
 
-// DeriveGlobalConfigAddress derives the PDA for the global config account
+// DeriveGlobalConfigAddress вычисляет PDA для глобального аккаунта конфигурации.
 func (cfg *Config) DeriveGlobalConfigAddress() (solana.PublicKey, uint8, error) {
 	return solana.FindProgramAddress(
 		[][]byte{[]byte("global_config")},
@@ -116,7 +102,7 @@ func (cfg *Config) DeriveGlobalConfigAddress() (solana.PublicKey, uint8, error) 
 	)
 }
 
-// DerivePoolAddress derives the PDA for a pool with specific parameters
+// DerivePoolAddress вычисляет PDA для пула с заданными параметрами.
 func (cfg *Config) DerivePoolAddress(index uint16, creator solana.PublicKey) (solana.PublicKey, uint8, error) {
 	indexBytes := make([]byte, 2)
 	indexBytes[0] = byte(index)

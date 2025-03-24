@@ -1,6 +1,3 @@
-// =============================
-// File: internal/dex/pumpswap/pumpswap.go
-// =============================
 package pumpswap
 
 import (
@@ -18,333 +15,222 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
-	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 )
 
-// DEX implements the PumpSwap DEX interface
+// DEX реализует операции для PumpSwap.
 type DEX struct {
-	client          *solbc.Client
-	wallet          *wallet.Wallet
-	logger          *zap.Logger
-	config          *Config
-	poolManager     *PoolManager
-	priorityManager *types.PriorityManager
+	client      *solbc.Client
+	wallet      *wallet.Wallet
+	logger      *zap.Logger
+	config      *Config
+	poolManager *PoolManager
 }
 
-// NewDEX creates a new PumpSwap DEX instance
-func NewDEX(
-	client *solbc.Client,
-	w *wallet.Wallet,
-	logger *zap.Logger,
-	config *Config,
-	monitorInterval string,
-) (*DEX, error) {
-	// Validate client and wallet
-	if client == nil {
-		return nil, fmt.Errorf("client cannot be nil")
+// NewDEX создаёт новый экземпляр DEX для PumpSwap.
+func NewDEX(client *solbc.Client, w *wallet.Wallet, logger *zap.Logger, config *Config, monitorInterval string) (*DEX, error) {
+	if client == nil || w == nil || logger == nil || config == nil {
+		return nil, fmt.Errorf("client, wallet, logger и config не могут быть nil")
 	}
-	if w == nil {
-		return nil, fmt.Errorf("wallet cannot be nil")
-	}
-	if logger == nil {
-		return nil, fmt.Errorf("logger cannot be nil")
-	}
-	if config == nil {
-		return nil, fmt.Errorf("config cannot be nil")
-	}
-
-	// Set monitor interval if provided
 	if monitorInterval != "" {
 		config.MonitorInterval = monitorInterval
 	}
-
-	// Create pool manager
-	poolManager := NewPoolManager(client, logger)
-
-	// Create priority manager
-	priorityManager := types.NewPriorityManager(logger)
-
-	dex := &DEX{
-		client:          client,
-		wallet:          w,
-		logger:          logger,
-		config:          config,
-		poolManager:     poolManager,
-		priorityManager: priorityManager,
-	}
-
-	return dex, nil
+	return &DEX{
+		client:      client,
+		wallet:      w,
+		logger:      logger,
+		config:      config,
+		poolManager: NewPoolManager(client, logger),
+	}, nil
 }
 
-// findAndValidatePool находит и проверяет пул для обмена
+// effectiveMints возвращает эффективные значения базового и квотного минтов для свапа.
+// Для операции swap WSOL→токен мы хотим, чтобы базовый токен был именно токеном (покупаемым),
+// а квотный – WSOL. Если в конфигурации указано обратное (base = WSOL, quote = токен),
+// то мы инвертируем их.
+func (dex *DEX) effectiveMints() (baseMint, quoteMint solana.PublicKey) {
+	wsol := solana.MustPublicKeyFromBase58("So11111111111111111111111111111111111111112")
+	// Если конфигурация указана как base = WSOL, а quote = токен,
+	// то для свапа effectiveBaseMint = токен, effectiveQuoteMint = WSOL.
+	if dex.config.BaseMint.Equals(wsol) && !dex.config.QuoteMint.Equals(wsol) {
+		return dex.config.QuoteMint, dex.config.BaseMint
+	}
+	return dex.config.BaseMint, dex.config.QuoteMint
+}
+
+// findAndValidatePool ищет пул для эффективной пары (baseMint, quoteMint) и проверяет, что
+// найденный пул соответствует ожидаемым значениям (base mint должен совпадать).
 func (dex *DEX) findAndValidatePool(ctx context.Context) (*PoolInfo, bool, error) {
-	// Поиск пула
-	pool, err := dex.poolManager.FindPoolWithRetry(
-		ctx,
-		dex.config.BaseMint,
-		dex.config.QuoteMint,
-		5,             // max retries
-		time.Second*2, // retry delay
-	)
+	// Получаем эффективные значения минтов для свапа.
+	effBase, effQuote := dex.effectiveMints()
+
+	// Ищем пул с заданной парой с повторами.
+	pool, err := dex.poolManager.FindPoolWithRetry(ctx, effBase, effQuote, 5, 2*time.Second)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to find pool: %w", err)
 	}
 
-	// Обновляем конфигурацию
+	// Обновляем конфигурацию (адрес пула и LP-токена).
 	dex.config.PoolAddress = pool.Address
 	dex.config.LPMint = pool.LPMint
 
-	// Логируем детали найденного пула
 	dex.logger.Debug("Found pool details",
 		zap.String("pool_address", pool.Address.String()),
 		zap.String("base_mint", pool.BaseMint.String()),
 		zap.String("quote_mint", pool.QuoteMint.String()))
 
-	// Проверяем, совпадает ли порядок монет в пуле с ожидаемым
-	poolMintOrderReversed := !pool.BaseMint.Equals(dex.config.BaseMint)
+	// Если пул найден в обратном порядке, вернём флаг poolMintReversed = true.
+	poolMintReversed := false
+	if !pool.BaseMint.Equals(effBase) {
+		poolMintReversed = true
+	}
 
-	return pool, poolMintOrderReversed, nil
+	return pool, poolMintReversed, nil
 }
 
-// prepareTokenAccounts подготавливает все необходимые токеновые аккаунты
+// prepareTokenAccounts подготавливает ATA пользователя и инструкции для их создания.
 func (dex *DEX) prepareTokenAccounts(ctx context.Context, pool *PoolInfo) (
-	userBaseATA, userQuoteATA, protocolFeeRecipientATA solana.PublicKey,
-	protocolFeeRecipient solana.PublicKey,
+	userBaseATA, userQuoteATA, protocolFeeRecipientATA, protocolFeeRecipient solana.PublicKey,
 	createBaseATAIx, createQuoteATAIx solana.Instruction,
-	err error) {
-
-	// Получаем адреса ATA пользователя
+	err error,
+) {
 	userBaseATA, _, err = solana.FindAssociatedTokenAddress(dex.wallet.PublicKey, pool.BaseMint)
 	if err != nil {
-		return solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, nil, nil,
-			fmt.Errorf("failed to derive user base mint ATA: %w", err)
+		return
 	}
-
 	userQuoteATA, _, err = solana.FindAssociatedTokenAddress(dex.wallet.PublicKey, pool.QuoteMint)
 	if err != nil {
-		return solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, nil, nil,
-			fmt.Errorf("failed to derive user quote mint ATA: %w", err)
+		return
 	}
 
-	// Создаем инструкции для идемпотентного создания ATA
 	createBaseATAIx = dex.wallet.CreateAssociatedTokenAccountIdempotentInstruction(
 		dex.wallet.PublicKey, dex.wallet.PublicKey, pool.BaseMint)
-
 	createQuoteATAIx = dex.wallet.CreateAssociatedTokenAccountIdempotentInstruction(
 		dex.wallet.PublicKey, dex.wallet.PublicKey, pool.QuoteMint)
 
-	// Получаем информацию о глобальной конфигурации
 	globalConfigAddr, _, err := dex.config.DeriveGlobalConfigAddress()
 	if err != nil {
-		return solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, nil, nil,
-			fmt.Errorf("failed to derive global config address: %w", err)
+		return
 	}
-
 	globalConfigInfo, err := dex.client.GetAccountInfo(ctx, globalConfigAddr)
 	if err != nil || globalConfigInfo == nil || globalConfigInfo.Value == nil {
-		return solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, nil, nil,
-			fmt.Errorf("failed to get global config: %w", err)
+		err = fmt.Errorf("failed to get global config")
+		return
 	}
-
 	globalConfig, err := ParseGlobalConfig(globalConfigInfo.Value.Data.GetBinary())
 	if err != nil {
-		return solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, nil, nil,
-			fmt.Errorf("failed to parse global config: %w", err)
+		return
 	}
 
-	// Получаем получателя комиссии и его ATA
 	protocolFeeRecipient = solana.PublicKeyFromBytes(make([]byte, 32))
 	if len(globalConfig.ProtocolFeeRecipients) > 0 {
 		protocolFeeRecipient = globalConfig.ProtocolFeeRecipients[0]
 	}
-
 	protocolFeeRecipientATA, _, err = solana.FindAssociatedTokenAddress(
 		protocolFeeRecipient,
 		pool.QuoteMint,
 	)
-	if err != nil {
-		return solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, solana.PublicKey{}, nil, nil,
-			fmt.Errorf("failed to derive protocol fee recipient ATA: %w", err)
-	}
-
-	return userBaseATA, userQuoteATA, protocolFeeRecipientATA, protocolFeeRecipient, createBaseATAIx, createQuoteATAIx, nil
+	return
 }
 
-// preparePriorityInstructions подготавливает инструкции для установки вычислительных единиц и приоритета
+// preparePriorityInstructions подготавливает инструкции для установки лимита и цены вычислительных единиц.
 func (dex *DEX) preparePriorityInstructions(computeUnits uint32, priorityFeeSol string) ([]solana.Instruction, error) {
 	var instructions []solana.Instruction
-
-	// Добавляем инструкции для установки вычислительных единиц
 	if computeUnits > 0 {
 		instructions = append(instructions,
 			computebudget.NewSetComputeUnitLimitInstruction(computeUnits).Build())
 	}
-
-	// Устанавливаем приоритет, если указан
 	if priorityFeeSol != "" {
-		priorityFeeFloat, err := strconv.ParseFloat(priorityFeeSol, 64)
+		fee, err := strconv.ParseFloat(priorityFeeSol, 64)
 		if err != nil {
-			return nil, fmt.Errorf("invalid priority fee format: %w", err)
+			return nil, fmt.Errorf("invalid priority fee: %w", err)
 		}
-
-		// Convert SOL to micro-lamports (1 lamport = 10^-9 SOL, 1 micro-lamport = 10^-6 lamport)
-		priorityFeeMicroLamports := uint64(priorityFeeFloat * 1e9)
-		if priorityFeeMicroLamports > 0 {
+		// Перевод SOL в лампорты (1 SOL = 1e9 лампортов)
+		feeLamports := uint64(fee * 1e9)
+		if feeLamports > 0 {
 			instructions = append(instructions,
-				computebudget.NewSetComputeUnitPriceInstruction(priorityFeeMicroLamports).Build())
+				computebudget.NewSetComputeUnitPriceInstruction(feeLamports).Build())
 		}
 	}
-
 	return instructions, nil
 }
 
-// calculateSwapAmounts рассчитывает минимальный ожидаемый вывод с учетом слиппажа
-func (dex *DEX) calculateSwapAmounts(pool *PoolInfo, amount uint64, isBuy bool, slippagePercent float64) uint64 {
-	// Рассчитываем ожидаемый вывод без учета слиппажа
-	outputAmount, _ := dex.poolManager.CalculateSwapQuote(pool, amount, isBuy)
-
-	// Повышенный уровень логирования для отладки слиппиджа
-	dex.logger.Debug("Calculated swap amounts",
-		zap.Uint64("input_amount", amount),
-		zap.Uint64("expected_output", outputAmount),
-		zap.Float64("slippage_percent", slippagePercent),
-		zap.Bool("is_buy", isBuy))
-
-	// Для операций с очень малыми суммами (менее 0.001 SOL или эквивалент)
-	// используем более консервативную оценку слиппиджа
-	if (isBuy && amount < 1_000_000) || (!isBuy && outputAmount < 1_000_000) {
-		// Для малых сумм используем более высокий слиппидж
-		slippagePercent = math.Max(slippagePercent, 50.0) // Увеличиваем до 50%
-		dex.logger.Debug("Using increased slippage for small amount",
-			zap.Float64("adjusted_slippage_percent", slippagePercent))
-	}
-
-	// Рассчитываем минимальный выход с учетом слиппажа
-	// Для операций покупки: уменьшаем ожидаемый выход
-	// Для операций продажи: увеличиваем ожидаемый выход
-	var minOutAmount uint64
-	if isBuy {
-		// При покупке уменьшаем ожидаемый выход
-		minOutAmount = uint64(float64(outputAmount) * (1.0 - slippagePercent/100.0))
-	} else {
-		// При продаже учитываем, что маленький выход может быть неприемлем,
-		// поэтому делаем большую поправку вниз
-		minOutAmount = uint64(float64(outputAmount) * 0.01) // 1% от ожидаемого выхода
-	}
-
-	dex.logger.Debug("Final swap parameters",
-		zap.Uint64("min_out_amount", minOutAmount),
-		zap.Bool("is_buy", isBuy))
-
-	return minOutAmount
-}
-
-// buildAndSubmitTransaction создает, подписывает и отправляет транзакцию, ожидая подтверждения
+// buildAndSubmitTransaction строит, подписывает и отправляет транзакцию.
 func (dex *DEX) buildAndSubmitTransaction(ctx context.Context, instructions []solana.Instruction) (solana.Signature, error) {
-	// Получаем последний блокхэш
-	recentBlockhash, err := dex.client.GetRecentBlockhash(ctx)
-	if err != nil {
-		return solana.Signature{}, fmt.Errorf("failed to get recent blockhash: %w", err)
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		blockhash, err := dex.client.GetRecentBlockhash(ctx)
+		if err != nil {
+			lastErr = err
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		tx, err := solana.NewTransaction(instructions, blockhash, solana.TransactionPayer(dex.wallet.PublicKey))
+		if err != nil {
+			return solana.Signature{}, fmt.Errorf("failed to create transaction: %w", err)
+		}
+		if err = dex.wallet.SignTransaction(tx); err != nil {
+			return solana.Signature{}, fmt.Errorf("failed to sign transaction: %w", err)
+		}
+		sig, err := dex.client.SendTransaction(ctx, tx)
+		if err != nil {
+			if strings.Contains(err.Error(), "BlockhashNotFound") {
+				time.Sleep(500 * time.Millisecond)
+				lastErr = err
+				continue
+			}
+			return solana.Signature{}, err
+		}
+		if err = dex.client.WaitForTransactionConfirmation(ctx, sig, rpc.CommitmentConfirmed); err != nil {
+			return sig, fmt.Errorf("transaction failed: %w", err)
+		}
+		return sig, nil
 	}
-
-	// Создаем транзакцию
-	tx, err := solana.NewTransaction(
-		instructions,
-		recentBlockhash,
-		solana.TransactionPayer(dex.wallet.PublicKey),
-	)
-	if err != nil {
-		return solana.Signature{}, fmt.Errorf("failed to create transaction: %w", err)
-	}
-
-	// Подписываем транзакцию
-	if err := dex.wallet.SignTransaction(tx); err != nil {
-		return solana.Signature{}, fmt.Errorf("failed to sign transaction: %w", err)
-	}
-
-	// Отправляем транзакцию
-	signature, err := dex.client.SendTransaction(ctx, tx)
-	if err != nil {
-		return solana.Signature{}, fmt.Errorf("failed to send transaction: %w", err)
-	}
-
-	// Ожидаем подтверждения
-	err = dex.client.WaitForTransactionConfirmation(ctx, signature, rpc.CommitmentConfirmed)
-	if err != nil {
-		return signature, fmt.Errorf("transaction failed: %w", err)
-	}
-
-	return signature, nil
+	return solana.Signature{}, fmt.Errorf("all attempts failed: %w", lastErr)
 }
 
-// ExecuteSwap выполняет операцию обмена с учетом правильных десятичных знаков
-func (dex *DEX) ExecuteSwap(
-	ctx context.Context,
-	isBuy bool,
-	amount uint64,
-	slippagePercent float64,
-	priorityFeeSol string,
-	computeUnits uint32,
-) error {
-	// 1. Поиск и валидация пула
-	pool, poolMintOrderReversed, err := dex.findAndValidatePool(ctx)
+// getTokenDecimals получает количество десятичных знаков для токена.
+func (dex *DEX) getTokenDecimals(ctx context.Context, mint solana.PublicKey, defaultDec uint8) uint8 {
+	dec, err := dex.DetermineTokenPrecision(ctx, mint)
+	if err != nil {
+		dex.logger.Warn("Using default decimals", zap.Error(err), zap.String("mint", mint.String()))
+		return defaultDec
+	}
+	return dec
+}
+
+// ExecuteSwap выполняет операцию обмена.
+// Для покупки (isBuy==true) выполняется инструкция buy, для продажи – sell.
+// Параметр amount (в лампортах для WSOL или в базовых единицах токена) и slippagePercent используются для расчёта ожидаемого выхода.
+func (dex *DEX) ExecuteSwap(ctx context.Context, isBuy bool, amount uint64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
+	pool, poolReversed, err := dex.findAndValidatePool(ctx)
 	if err != nil {
 		return err
 	}
 
-	// Определяем фактическое направление обмена с учетом порядка токенов в пуле
-	actualIsBuy := isBuy
-	if poolMintOrderReversed {
-		actualIsBuy = !isBuy
-		dex.logger.Debug("Reversing buy/sell operation due to pool mint order",
-			zap.Bool("original_is_buy", isBuy),
-			zap.Bool("actual_is_buy", actualIsBuy))
+	// Если пул найден в обратном порядке, логируем это – для дальнейшей отладки.
+	if poolReversed {
+		dex.logger.Debug("Pool mint order is reversed relative to effective configuration")
+		// Здесь можно было бы инвертировать операцию, но в данной логике мы уже нормализовали мины через effectiveMints().
 	}
 
-	// 2. Подготовка токеновых аккаунтов и ATA инструкций
-	userBaseATA, userQuoteATA, protocolFeeRecipientATA, protocolFeeRecipient,
-		createBaseATAIx, createQuoteATAIx, err := dex.prepareTokenAccounts(ctx, pool)
+	userBaseATA, userQuoteATA, protocolFeeRecipientATA, protocolFeeRecipient, createBaseIx, createQuoteIx, err := dex.prepareTokenAccounts(ctx, pool)
 	if err != nil {
 		return err
 	}
 
-	// 3. Подготовка инструкций приоритета
 	priorityInstructions, err := dex.preparePriorityInstructions(computeUnits, priorityFeeSol)
 	if err != nil {
 		return err
 	}
 
-	// Собираем все инструкции
 	var instructions []solana.Instruction
 	instructions = append(instructions, priorityInstructions...)
-	instructions = append(instructions, createBaseATAIx, createQuoteATAIx)
+	instructions = append(instructions, createBaseIx, createQuoteIx)
 
-	// 4. Получаем десятичные знаки токенов
-	baseDecimals, err := dex.DetermineTokenPrecision(ctx, pool.BaseMint)
-	if err != nil {
-		dex.logger.Warn("Failed to determine base token precision, using default",
-			zap.Error(err),
-			zap.String("token", pool.BaseMint.String()))
-		// SOL имеет 9 десятичных знаков, большинство токенов - 6
-		if pool.BaseMint.Equals(solana.MustPublicKeyFromBase58("So11111111111111111111111111111111111111112")) {
-			baseDecimals = 9
-		} else {
-			baseDecimals = 6
-		}
-	}
-
-	quoteDecimals, err := dex.DetermineTokenPrecision(ctx, pool.QuoteMint)
-	if err != nil {
-		dex.logger.Warn("Failed to determine quote token precision, using default",
-			zap.Error(err),
-			zap.String("token", pool.QuoteMint.String()))
-		if pool.QuoteMint.Equals(solana.MustPublicKeyFromBase58("So11111111111111111111111111111111111111112")) {
-			quoteDecimals = 9
-		} else {
-			quoteDecimals = 6
-		}
-	}
+	// Получаем точность токенов.
+	baseDecimals := dex.getTokenDecimals(ctx, pool.BaseMint, 6)   // Точность для токена (покупаемого)
+	quoteDecimals := dex.getTokenDecimals(ctx, pool.QuoteMint, 9) // Для WSOL обычно 9
 
 	dex.logger.Debug("Token decimals",
 		zap.Uint8("base_decimals", baseDecimals),
@@ -352,291 +238,126 @@ func (dex *DEX) ExecuteSwap(
 		zap.String("base_mint", pool.BaseMint.String()),
 		zap.String("quote_mint", pool.QuoteMint.String()))
 
-	// 5. Создаем инструкцию свопа с правильными параметрами
-	var swapInstruction solana.Instruction
-	if actualIsBuy {
-		// Покупаем базовый токен за quote токен
-		// Поскольку при Buy мы покупаем базовый токен, первый параметр - сколько токенов мы хотим получить
-		// Второй параметр - это максимальное количество quote токенов, которое мы готовы заплатить
-
-		// Создаем "базовую" версию инструкции Buy для случаев, когда транзакция очень маленькая
-		if amount < 100_000 { // Очень маленькая транзакция (<0.0001 SOL)
-			// Устанавливаем количество желаемых токенов как просто "несколько"
-			// и максимальный расход SOL равным входному параметру
-			desiredTokenAmount := uint64(1_000_000) // Эквивалент 1.0 токена при 6 десятичных знаках
-			maxSolSpend := amount
-
-			swapInstruction = createBuyInstruction(
-				pool.Address,
-				dex.wallet.PublicKey,
-				dex.config.GlobalConfig,
-				pool.BaseMint,
-				pool.QuoteMint,
-				userBaseATA,
-				userQuoteATA,
-				pool.PoolBaseTokenAccount,
-				pool.PoolQuoteTokenAccount,
-				protocolFeeRecipient,
-				protocolFeeRecipientATA,
-				TokenProgramID,
-				TokenProgramID,
-				dex.config.EventAuthority,
-				dex.config.ProgramID,
-				desiredTokenAmount, // Сколько токенов хотим получить
-				maxSolSpend,        // Максимум SOL, который готовы потратить
-			)
-		} else {
-			// Нормальная транзакция - используем стандартный расчет
-			// Рассчитываем количество токенов, которое мы ожидаем получить при обмене
-			outputAmount, price := dex.poolManager.CalculateSwapQuote(pool, amount, true)
-
-			// Учитываем слиппидж
-			minOutAmount := uint64(float64(outputAmount) * (1.0 - slippagePercent/100.0))
-
-			dex.logger.Debug("Buy swap calculation",
-				zap.Uint64("input_amount", amount),
-				zap.Uint64("expected_output", outputAmount),
-				zap.Uint64("min_out_amount", minOutAmount),
-				zap.Float64("price", price))
-
-			swapInstruction = createBuyInstruction(
-				pool.Address,
-				dex.wallet.PublicKey,
-				dex.config.GlobalConfig,
-				pool.BaseMint,
-				pool.QuoteMint,
-				userBaseATA,
-				userQuoteATA,
-				pool.PoolBaseTokenAccount,
-				pool.PoolQuoteTokenAccount,
-				protocolFeeRecipient,
-				protocolFeeRecipientATA,
-				TokenProgramID,
-				TokenProgramID,
-				dex.config.EventAuthority,
-				dex.config.ProgramID,
-				outputAmount, // Сколько токенов хотим получить
-				amount,       // Максимум валюты, который готовы потратить
-			)
-		}
+	var swapIx solana.Instruction
+	if isBuy {
+		// При покупке мы хотим получить определённое количество токена (baseAmountOut),
+		// и готовы заплатить максимум amount (WSOL).
+		outputAmount, price := dex.poolManager.CalculateSwapQuote(pool, amount, true)
+		minOut := uint64(float64(outputAmount) * (1.0 - slippagePercent/100.0))
+		dex.logger.Debug("Buy swap calculation",
+			zap.Uint64("input_amount", amount),
+			zap.Uint64("expected_output", outputAmount),
+			zap.Uint64("min_out_amount", minOut),
+			zap.Float64("price", price))
+		swapIx = createBuyInstruction(
+			pool.Address,
+			dex.wallet.PublicKey,
+			dex.config.GlobalConfig,
+			pool.BaseMint,  // Токен, который покупаем
+			pool.QuoteMint, // WSOL
+			userBaseATA,
+			userQuoteATA,
+			pool.PoolBaseTokenAccount,
+			pool.PoolQuoteTokenAccount,
+			protocolFeeRecipient,
+			protocolFeeRecipientATA,
+			TokenProgramID,
+			TokenProgramID,
+			dex.config.EventAuthority,
+			dex.config.ProgramID,
+			outputAmount,
+			amount,
+		)
 	} else {
-		// Продаем базовый токен за quote токен
-		// Особый случай для микротранзакций
-		if amount < 100_000 { // <0.0001 SOL
-			dex.logger.Info("Micro transaction detected, using minimal minOutAmount",
-				zap.Uint64("original_amount", amount))
-
-			// Для микротранзакций просто устанавливаем минимальный выход = 1 (практически ноль)
-			swapInstruction = createSellInstruction(
-				pool.Address,
-				dex.wallet.PublicKey,
-				dex.config.GlobalConfig,
-				pool.BaseMint,
-				pool.QuoteMint,
-				userBaseATA,
-				userQuoteATA,
-				pool.PoolBaseTokenAccount,
-				pool.PoolQuoteTokenAccount,
-				protocolFeeRecipient,
-				protocolFeeRecipientATA,
-				TokenProgramID,
-				TokenProgramID,
-				dex.config.EventAuthority,
-				dex.config.ProgramID,
-				amount, // Сколько базовых токенов продаем
-				1,      // Минимальный выход практически ноль
-			)
-		} else {
-			// Для нормальных транзакций используем стандартный расчет
-			expectedOutput, price := dex.poolManager.CalculateSwapQuote(pool, amount, false)
-
-			// Учитываем слиппидж
-			minOutAmount := uint64(float64(expectedOutput) * (1.0 - slippagePercent/100.0))
-
-			dex.logger.Debug("Sell swap calculation",
-				zap.Uint64("input_amount", amount),
-				zap.Uint64("expected_output", expectedOutput),
-				zap.Uint64("min_out_amount", minOutAmount),
-				zap.Float64("price", price))
-
-			swapInstruction = createSellInstruction(
-				pool.Address,
-				dex.wallet.PublicKey,
-				dex.config.GlobalConfig,
-				pool.BaseMint,
-				pool.QuoteMint,
-				userBaseATA,
-				userQuoteATA,
-				pool.PoolBaseTokenAccount,
-				pool.PoolQuoteTokenAccount,
-				protocolFeeRecipient,
-				protocolFeeRecipientATA,
-				TokenProgramID,
-				TokenProgramID,
-				dex.config.EventAuthority,
-				dex.config.ProgramID,
-				amount,       // Сколько базовых токенов продаем
-				minOutAmount, // Минимальный выход с учетом слиппиджа
-			)
-		}
+		// Продажа: продаём токен (base) за WSOL.
+		expectedOutput, price := dex.poolManager.CalculateSwapQuote(pool, amount, false)
+		minOut := uint64(float64(expectedOutput) * (1.0 - slippagePercent/100.0))
+		dex.logger.Debug("Sell swap calculation",
+			zap.Uint64("input_amount", amount),
+			zap.Uint64("expected_output", expectedOutput),
+			zap.Uint64("min_out_amount", minOut),
+			zap.Float64("price", price))
+		swapIx = createSellInstruction(
+			pool.Address,
+			dex.wallet.PublicKey,
+			dex.config.GlobalConfig,
+			pool.BaseMint,
+			pool.QuoteMint,
+			userBaseATA,
+			userQuoteATA,
+			pool.PoolBaseTokenAccount,
+			pool.PoolQuoteTokenAccount,
+			protocolFeeRecipient,
+			protocolFeeRecipientATA,
+			TokenProgramID,
+			TokenProgramID,
+			dex.config.EventAuthority,
+			dex.config.ProgramID,
+			amount,
+			minOut,
+		)
 	}
 
-	instructions = append(instructions, swapInstruction)
-
-	// 6. Отправка транзакции и ожидание подтверждения
-	signature, err := dex.buildAndSubmitTransaction(ctx, instructions)
+	instructions = append(instructions, swapIx)
+	sig, err := dex.buildAndSubmitTransaction(ctx, instructions)
 	if err != nil {
-		// Специальная обработка ошибки ExceededSlippage для микротранзакций
-		if amount < 100_000 && strings.Contains(err.Error(), "ExceededSlippage") {
-			// Для микротранзакций в случае ошибки ExceededSlippage пробуем с абсолютным минимумом
-			dex.logger.Warn("Micro transaction failed with ExceededSlippage, retrying with absolute minimum",
-				zap.Error(err))
-
-			// Создаем новые инструкции без старой ошибочной
-			var retryInstructions []solana.Instruction
-			retryInstructions = append(retryInstructions, priorityInstructions...)
-			retryInstructions = append(retryInstructions, createBaseATAIx, createQuoteATAIx)
-
-			// Создаем инструкцию sell с абсолютным минимумом (= 1)
-			sellIx := createSellInstruction(
-				pool.Address,
-				dex.wallet.PublicKey,
-				dex.config.GlobalConfig,
-				pool.BaseMint,
-				pool.QuoteMint,
-				userBaseATA,
-				userQuoteATA,
-				pool.PoolBaseTokenAccount,
-				pool.PoolQuoteTokenAccount,
-				protocolFeeRecipient,
-				protocolFeeRecipientATA,
-				TokenProgramID,
-				TokenProgramID,
-				dex.config.EventAuthority,
-				dex.config.ProgramID,
-				amount, // Исходное количество
-				1,      // Абсолютный минимум
-			)
-			retryInstructions = append(retryInstructions, sellIx)
-
-			// Отправляем транзакцию повторно
-			signature, err = dex.buildAndSubmitTransaction(ctx, retryInstructions)
-			if err != nil {
-				return fmt.Errorf("retry failed: %w", err)
-			}
-
-			dex.logger.Info("Micro transaction retry succeeded",
-				zap.String("signature", signature.String()))
-			return nil
-		}
-
+		// В случае ошибки для микротранзакций (например, amount <= 100_000) можно добавить логику повторной попытки.
 		return err
 	}
-
-	dex.logger.Info("Swap transaction confirmed",
-		zap.String("signature", signature.String()),
+	dex.logger.Info("Swap executed",
+		zap.String("signature", sig.String()),
 		zap.Bool("is_buy", isBuy),
-		zap.Bool("actual_is_buy", actualIsBuy),
 		zap.Uint64("amount", amount),
 		zap.Float64("slippage_percent", slippagePercent))
-
 	return nil
 }
 
-// ExecuteSell implements the sell operation for PumpSwap
-func (dex *DEX) ExecuteSell(
-	ctx context.Context,
-	tokenAmount uint64,
-	slippagePercent float64,
-	priorityFeeSol string,
-	computeUnits uint32,
-) error {
-	// Execute sell operation
+// ExecuteSell выполняет операцию продажи токена за WSOL.
+func (dex *DEX) ExecuteSell(ctx context.Context, tokenAmount uint64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
 	return dex.ExecuteSwap(ctx, false, tokenAmount, slippagePercent, priorityFeeSol, computeUnits)
 }
 
-// GetTokenPrice retrieves the current price of the token
+// GetTokenPrice вычисляет цену токена по соотношению резервов пула.
 func (dex *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
-	// Validate token mint matches config
+	// Здесь мы считаем, что tokenMint должен соответствовать effectiveBaseMint.
+	effBase, effQuote := dex.effectiveMints()
 	mint, err := solana.PublicKeyFromBase58(tokenMint)
 	if err != nil {
-		return 0, fmt.Errorf("invalid token mint address: %w", err)
+		return 0, fmt.Errorf("invalid token mint: %w", err)
 	}
-
-	// Make sure the token mint matches our config
-	if !mint.Equals(dex.config.QuoteMint) {
-		return 0, fmt.Errorf("token mint mismatch: expected %s, got %s",
-			dex.config.QuoteMint.String(), mint.String())
+	if !mint.Equals(effBase) {
+		return 0, fmt.Errorf("token mint mismatch: expected %s, got %s", effBase.String(), mint.String())
 	}
-
-	// Find the pool and get pool info
-	pool, err := dex.poolManager.FindPoolWithRetry(
-		ctx,
-		dex.config.BaseMint,
-		dex.config.QuoteMint,
-		3,             // max retries
-		time.Second*1, // retry delay
-	)
+	pool, err := dex.poolManager.FindPoolWithRetry(ctx, effBase, effQuote, 3, 1*time.Second)
 	if err != nil {
 		return 0, fmt.Errorf("failed to find pool: %w", err)
 	}
-
-	// Calculate the price based on pool reserves
-	// For SOL/TOKEN pair, price is SOL per TOKEN
 	var price float64
 	if pool.BaseReserves > 0 && pool.QuoteReserves > 0 {
-		// Get the decimal precision for both tokens
-		solDecimals := uint8(9) // SOL has 9 decimals
-		tokenDecimals, err := dex.DetermineTokenPrecision(ctx, dex.config.QuoteMint)
-		if err != nil {
-			// Default to 6 decimals if cannot determine
-			tokenDecimals = 6
-			dex.logger.Warn("Could not determine token precision, using default",
-				zap.Uint8("default_decimals", tokenDecimals),
-				zap.Error(err))
-		}
-
-		// Adjust reserves based on token decimals
-		baseReservesFloat := new(big.Float).SetUint64(pool.BaseReserves)
-		quoteReservesFloat := new(big.Float).SetUint64(pool.QuoteReserves)
-
-		// Calculate the price: base_reserves / quote_reserves, adjusted for decimals
-		// Price = (base_reserves / 10^base_decimals) / (quote_reserves / 10^quote_decimals)
-		//       = (base_reserves * 10^quote_decimals) / (quote_reserves * 10^base_decimals)
-		baseAdjustment := math.Pow10(int(solDecimals))
-		quoteAdjustment := math.Pow10(int(tokenDecimals))
-
-		// Perform calculation: price = (base_reserves / quote_reserves) * (10^quote_decimals / 10^base_decimals)
-		ratio := new(big.Float).Quo(baseReservesFloat, quoteReservesFloat)
-		decimalAdjustment := float64(quoteAdjustment) / float64(baseAdjustment)
-
-		adjustedRatio := new(big.Float).Mul(ratio, big.NewFloat(decimalAdjustment))
+		solDecimals := uint8(9)
+		tokenDecimals := dex.getTokenDecimals(ctx, pool.BaseMint, 6)
+		baseReserves := new(big.Float).SetUint64(pool.BaseReserves)
+		quoteReserves := new(big.Float).SetUint64(pool.QuoteReserves)
+		ratio := new(big.Float).Quo(baseReserves, quoteReserves)
+		adjustment := math.Pow10(int(tokenDecimals)) / math.Pow10(int(solDecimals))
+		adjustedRatio := new(big.Float).Mul(ratio, big.NewFloat(adjustment))
 		price, _ = adjustedRatio.Float64()
 	}
-
 	return price, nil
 }
 
-// DetermineTokenPrecision gets the decimal precision for a token
+// DetermineTokenPrecision получает количество десятичных знаков для данного токена.
 func (dex *DEX) DetermineTokenPrecision(ctx context.Context, mint solana.PublicKey) (uint8, error) {
-	// Get the mint account info
-	mintInfo, err := dex.client.GetAccountInfo(ctx, mint)
+	info, err := dex.client.GetAccountInfo(ctx, mint)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get mint info: %w", err)
 	}
-
-	if mintInfo == nil || mintInfo.Value == nil {
+	if info == nil || info.Value == nil {
 		return 0, fmt.Errorf("mint account not found")
 	}
-
-	// SPL Token mint account layout has decimals at offset 44 (1 byte)
-	data := mintInfo.Value.Data.GetBinary()
+	data := info.Value.Data.GetBinary()
 	if len(data) < 45 {
 		return 0, fmt.Errorf("mint account data too short")
 	}
-
-	// Extract decimals (1 byte at offset 44)
-	decimals := data[44]
-
-	return decimals, nil
+	return data[44], nil
 }
