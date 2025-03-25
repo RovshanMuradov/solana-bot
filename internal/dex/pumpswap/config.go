@@ -1,5 +1,5 @@
 // =============================
-// File: internal/dex/pumpswap/config.go (исправление)
+// File: internal/dex/pumpswap/config.go
 // =============================
 package pumpswap
 

@@ -1,3 +1,6 @@
+// =============================
+// File: internal/dex/pumpswap/pumpswap.go
+// =============================
 package pumpswap
 
 import (
@@ -242,13 +245,30 @@ func (dex *DEX) ExecuteSwap(ctx context.Context, isBuy bool, amount uint64, slip
 	if isBuy {
 		// При покупке мы хотим получить определённое количество токена (baseAmountOut),
 		// и готовы заплатить максимум amount (WSOL).
-		outputAmount, price := dex.poolManager.CalculateSwapQuote(pool, amount, true)
+		outputAmount, price := dex.poolManager.CalculateSwapQuote(pool, amount, false)
 		minOut := uint64(float64(outputAmount) * (1.0 - slippagePercent/100.0))
+
+		// Добавляем буфер к максимальной сумме для учета возможного проскальзывания и комиссий
+		// Для микротранзакций (<0.001 SOL) используем больший буфер, для крупных - меньший
+		var maxAmountWithBuffer uint64
+		if amount < 1_000_000 { // < 0.001 SOL
+			// Для очень маленьких сумм увеличиваем буфер до 5%
+			maxAmountWithBuffer = uint64(float64(amount) * 1.05)
+		} else if amount < 10_000_000 { // < 0.01 SOL
+			// Для маленьких сумм буфер 2%
+			maxAmountWithBuffer = uint64(float64(amount) * 1.02)
+		} else {
+			// Для обычных сумм буфер 1%
+			maxAmountWithBuffer = uint64(float64(amount) * 1.01)
+		}
+
 		dex.logger.Debug("Buy swap calculation",
 			zap.Uint64("input_amount", amount),
+			zap.Uint64("max_amount_with_buffer", maxAmountWithBuffer),
 			zap.Uint64("expected_output", outputAmount),
 			zap.Uint64("min_out_amount", minOut),
 			zap.Float64("price", price))
+
 		swapIx = createBuyInstruction(
 			pool.Address,
 			dex.wallet.PublicKey,
@@ -266,17 +286,21 @@ func (dex *DEX) ExecuteSwap(ctx context.Context, isBuy bool, amount uint64, slip
 			dex.config.EventAuthority,
 			dex.config.ProgramID,
 			outputAmount,
-			amount,
+			maxAmountWithBuffer, // Используем увеличенную максимальную сумму
 		)
 	} else {
 		// Продажа: продаём токен (base) за WSOL.
 		expectedOutput, price := dex.poolManager.CalculateSwapQuote(pool, amount, false)
+
+		// Для продажи также добавляем буфер, но уменьшаем минимальный выход
 		minOut := uint64(float64(expectedOutput) * (1.0 - slippagePercent/100.0))
+
 		dex.logger.Debug("Sell swap calculation",
 			zap.Uint64("input_amount", amount),
 			zap.Uint64("expected_output", expectedOutput),
 			zap.Uint64("min_out_amount", minOut),
 			zap.Float64("price", price))
+
 		swapIx = createSellInstruction(
 			pool.Address,
 			dex.wallet.PublicKey,
@@ -301,9 +325,19 @@ func (dex *DEX) ExecuteSwap(ctx context.Context, isBuy bool, amount uint64, slip
 	instructions = append(instructions, swapIx)
 	sig, err := dex.buildAndSubmitTransaction(ctx, instructions)
 	if err != nil {
-		// В случае ошибки для микротранзакций (например, amount <= 100_000) можно добавить логику повторной попытки.
+		// Проверяем ошибку на тип ExceededSlippage и логируем более подробно
+		if strings.Contains(err.Error(), "ExceededSlippage") ||
+			strings.Contains(err.Error(), "0x1774") ||
+			strings.Contains(err.Error(), "6004") {
+			dex.logger.Warn("Exceeded slippage error - try increasing slippage percentage",
+				zap.Float64("current_slippage_percent", slippagePercent),
+				zap.Uint64("amount", amount),
+				zap.Error(err))
+			return fmt.Errorf("slippage exceeded: transaction requires more funds than maximum specified: %w", err)
+		}
 		return err
 	}
+
 	dex.logger.Info("Swap executed",
 		zap.String("signature", sig.String()),
 		zap.Bool("is_buy", isBuy),
