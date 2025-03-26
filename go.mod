@@ -3,6 +3,7 @@ module github.com/rovshanmuradov/solana-bot
 go 1.23.2
 
 require (
+	github.com/cenkalti/backoff/v5 v5.0.2
 	github.com/gagliardetto/solana-go v1.11.0
 	github.com/gobwas/ws v1.4.0
 	github.com/google/uuid v1.6.0
@@ -48,6 +49,7 @@ require (
 	github.com/mostynb/zstdpool-freelist v0.0.0-20201229113212-927304c0c3b1 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/onsi/gomega v1.15.0 // indirect
+	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
 	github.com/pelletier/go-toml/v2 v2.2.2 // indirect
 	github.com/prometheus/client_model v0.6.1 // indirect
 	github.com/prometheus/common v0.55.0 // indirect
