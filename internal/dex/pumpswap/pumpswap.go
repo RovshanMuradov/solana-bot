@@ -88,12 +88,23 @@ func (dex *DEX) effectiveMints() (baseMint, quoteMint solana.PublicKey) {
 }
 
 func (dex *DEX) getGlobalConfig(ctx context.Context) (*GlobalConfig, error) {
+	// First check with read lock
 	dex.configMutex.RLock()
 	if dex.globalConfig != nil {
-		defer dex.configMutex.RUnlock()
-		return dex.globalConfig, nil
+		config := dex.globalConfig
+		dex.configMutex.RUnlock()
+		return config, nil
 	}
 	dex.configMutex.RUnlock()
+
+	// If not found, use write lock for the entire fetch-and-set operation
+	dex.configMutex.Lock()
+	defer dex.configMutex.Unlock()
+
+	// Double-check after acquiring write lock
+	if dex.globalConfig != nil {
+		return dex.globalConfig, nil
+	}
 
 	globalConfigAddr, _, err := dex.config.DeriveGlobalConfigAddress()
 	if err != nil {
@@ -102,7 +113,7 @@ func (dex *DEX) getGlobalConfig(ctx context.Context) (*GlobalConfig, error) {
 
 	globalConfigInfo, err := dex.client.GetAccountInfo(ctx, globalConfigAddr)
 	if err != nil || globalConfigInfo == nil || globalConfigInfo.Value == nil {
-		return nil, fmt.Errorf("failed to get global config")
+		return nil, fmt.Errorf("failed to get global config: %w", err)
 	}
 
 	config, err := ParseGlobalConfig(globalConfigInfo.Value.Data.GetBinary())
@@ -110,8 +121,6 @@ func (dex *DEX) getGlobalConfig(ctx context.Context) (*GlobalConfig, error) {
 		return nil, err
 	}
 
-	dex.configMutex.Lock()
-	defer dex.configMutex.Unlock()
 	dex.globalConfig = config
 	return config, nil
 }
@@ -122,6 +131,7 @@ func (dex *DEX) prepareTokenAccounts(ctx context.Context, pool *PoolInfo) (*Prep
 	if err != nil {
 		return nil, err
 	}
+
 	userQuoteATA, _, err := solana.FindAssociatedTokenAddress(dex.wallet.PublicKey, pool.QuoteMint)
 	if err != nil {
 		return nil, err
@@ -137,8 +147,9 @@ func (dex *DEX) prepareTokenAccounts(ctx context.Context, pool *PoolInfo) (*Prep
 		return nil, err
 	}
 
+	// Initialize with zero key and check if first recipient is non-zero
 	protocolFeeRecipient := solana.PublicKeyFromBytes(make([]byte, 32))
-	if len(globalConfig.ProtocolFeeRecipients) > 0 {
+	if !globalConfig.ProtocolFeeRecipients[0].IsZero() {
 		protocolFeeRecipient = globalConfig.ProtocolFeeRecipients[0]
 	}
 
