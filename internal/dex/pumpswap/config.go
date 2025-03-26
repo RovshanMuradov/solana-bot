@@ -101,21 +101,3 @@ func (cfg *Config) DeriveGlobalConfigAddress() (solana.PublicKey, uint8, error) 
 		cfg.ProgramID,
 	)
 }
-
-// DerivePoolAddress вычисляет PDA для пула с заданными параметрами.
-func (cfg *Config) DerivePoolAddress(index uint16, creator solana.PublicKey) (solana.PublicKey, uint8, error) {
-	indexBytes := make([]byte, 2)
-	indexBytes[0] = byte(index)
-	indexBytes[1] = byte(index >> 8)
-
-	return solana.FindProgramAddress(
-		[][]byte{
-			[]byte("pool"),
-			indexBytes,
-			creator.Bytes(),
-			cfg.BaseMint.Bytes(),
-			cfg.QuoteMint.Bytes(),
-		},
-		cfg.ProgramID,
-	)
-}

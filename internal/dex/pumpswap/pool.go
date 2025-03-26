@@ -888,3 +888,112 @@ func (pm *PoolManager) FindPoolWithRetry(
 
 	return nil, fmt.Errorf("failed to find pool after %d attempts: %w", maxRetries, lastErr)
 }
+
+// DerivePoolAddress вычисляет PDA для пула с заданными параметрами.
+func (cfg *Config) DerivePoolAddress(index uint16, creator solana.PublicKey) (solana.PublicKey, uint8, error) {
+	indexBytes := make([]byte, 2)
+	indexBytes[0] = byte(index)
+	indexBytes[1] = byte(index >> 8)
+
+	return solana.FindProgramAddress(
+		[][]byte{
+			[]byte("pool"),
+			indexBytes,
+			creator.Bytes(),
+			cfg.BaseMint.Bytes(),
+			cfg.QuoteMint.Bytes(),
+		},
+		cfg.ProgramID,
+	)
+}
+
+// findAndValidatePool ищет пул для эффективной пары (baseMint, quoteMint) и проверяет, что
+// найденный пул соответствует ожидаемым значениям (base mint должен совпадать).
+func (dex *DEX) findAndValidatePool(ctx context.Context) (*PoolInfo, bool, error) {
+	// Получаем эффективные значения минтов для свапа.
+	effBase, effQuote := dex.effectiveMints()
+
+	// Ищем пул с заданной парой с повторами.
+	pool, err := dex.poolManager.FindPoolWithRetry(ctx, effBase, effQuote, 5, 2*time.Second)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to find pool: %w", err)
+	}
+
+	// Обновляем конфигурацию (адрес пула и LP-токена).
+	dex.config.PoolAddress = pool.Address
+	dex.config.LPMint = pool.LPMint
+
+	dex.logger.Debug("Found pool details",
+		zap.String("pool_address", pool.Address.String()),
+		zap.String("base_mint", pool.BaseMint.String()),
+		zap.String("quote_mint", pool.QuoteMint.String()))
+
+	// Если пул найден в обратном порядке, вернём флаг poolMintReversed = true.
+	poolMintReversed := false
+	if !pool.BaseMint.Equals(effBase) {
+		poolMintReversed = true
+	}
+
+	return pool, poolMintReversed, nil
+}
+
+// ParsePool парсит данные аккаунта в структуру Pool.
+func ParsePool(data []byte) (*Pool, error) {
+	if len(data) < 8 {
+		return nil, fmt.Errorf("data too short for Pool")
+	}
+
+	for i := 0; i < 8; i++ {
+		if data[i] != PoolDiscriminator[i] {
+			return nil, fmt.Errorf("invalid discriminator for Pool")
+		}
+	}
+
+	pos := 8
+
+	if len(data) < pos+1+2+32+32+32+32+32+32+8 {
+		return nil, fmt.Errorf("data too short for Pool content")
+	}
+
+	pool := &Pool{}
+
+	pool.PoolBump = data[pos]
+	pos++
+
+	pool.Index = uint16(data[pos]) | (uint16(data[pos+1]) << 8)
+	pos += 2
+
+	creatorBytes := make([]byte, 32)
+	copy(creatorBytes, data[pos:pos+32])
+	pool.Creator = solana.PublicKeyFromBytes(creatorBytes)
+	pos += 32
+
+	baseMintBytes := make([]byte, 32)
+	copy(baseMintBytes, data[pos:pos+32])
+	pool.BaseMint = solana.PublicKeyFromBytes(baseMintBytes)
+	pos += 32
+
+	quoteMintBytes := make([]byte, 32)
+	copy(quoteMintBytes, data[pos:pos+32])
+	pool.QuoteMint = solana.PublicKeyFromBytes(quoteMintBytes)
+	pos += 32
+
+	lpMintBytes := make([]byte, 32)
+	copy(lpMintBytes, data[pos:pos+32])
+	pool.LPMint = solana.PublicKeyFromBytes(lpMintBytes)
+	pos += 32
+
+	poolBaseTokenAccountBytes := make([]byte, 32)
+	copy(poolBaseTokenAccountBytes, data[pos:pos+32])
+	pool.PoolBaseTokenAccount = solana.PublicKeyFromBytes(poolBaseTokenAccountBytes)
+	pos += 32
+
+	poolQuoteTokenAccountBytes := make([]byte, 32)
+	copy(poolQuoteTokenAccountBytes, data[pos:pos+32])
+	pool.PoolQuoteTokenAccount = solana.PublicKeyFromBytes(poolQuoteTokenAccountBytes)
+	pos += 32
+
+	pool.LPSupply = binary.LittleEndian.Uint64(data[pos : pos+8])
+
+	return pool, nil
+}

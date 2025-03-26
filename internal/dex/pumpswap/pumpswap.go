@@ -61,36 +61,6 @@ func (dex *DEX) effectiveMints() (baseMint, quoteMint solana.PublicKey) {
 	return dex.config.BaseMint, dex.config.QuoteMint
 }
 
-// findAndValidatePool ищет пул для эффективной пары (baseMint, quoteMint) и проверяет, что
-// найденный пул соответствует ожидаемым значениям (base mint должен совпадать).
-func (dex *DEX) findAndValidatePool(ctx context.Context) (*PoolInfo, bool, error) {
-	// Получаем эффективные значения минтов для свапа.
-	effBase, effQuote := dex.effectiveMints()
-
-	// Ищем пул с заданной парой с повторами.
-	pool, err := dex.poolManager.FindPoolWithRetry(ctx, effBase, effQuote, 5, 2*time.Second)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to find pool: %w", err)
-	}
-
-	// Обновляем конфигурацию (адрес пула и LP-токена).
-	dex.config.PoolAddress = pool.Address
-	dex.config.LPMint = pool.LPMint
-
-	dex.logger.Debug("Found pool details",
-		zap.String("pool_address", pool.Address.String()),
-		zap.String("base_mint", pool.BaseMint.String()),
-		zap.String("quote_mint", pool.QuoteMint.String()))
-
-	// Если пул найден в обратном порядке, вернём флаг poolMintReversed = true.
-	poolMintReversed := false
-	if !pool.BaseMint.Equals(effBase) {
-		poolMintReversed = true
-	}
-
-	return pool, poolMintReversed, nil
-}
-
 // prepareTokenAccounts подготавливает ATA пользователя и инструкции для их создания.
 func (dex *DEX) prepareTokenAccounts(ctx context.Context, pool *PoolInfo) (
 	userBaseATA, userQuoteATA, protocolFeeRecipientATA, protocolFeeRecipient solana.PublicKey,
