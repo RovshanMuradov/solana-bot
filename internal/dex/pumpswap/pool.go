@@ -5,7 +5,6 @@ package pumpswap
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"github.com/cenkalti/backoff/v5"
@@ -94,11 +93,11 @@ func (pc *PoolCache) cleanExpired() {
 }
 
 func makePoolCacheKey(baseMint, quoteMint solana.PublicKey) string {
-	key := baseMint.String() + quoteMint.String()
-	if baseMint.String() > quoteMint.String() {
-		key = quoteMint.String() + baseMint.String()
+	// Sort mints for consistent key regardless of order
+	if baseMint.String() < quoteMint.String() {
+		return fmt.Sprintf("%s:%s", baseMint, quoteMint)
 	}
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(key)))
+	return fmt.Sprintf("%s:%s", quoteMint, baseMint)
 }
 
 // PoolManager handles operations with PumpSwap pools
@@ -356,40 +355,41 @@ func (pm *PoolManager) FetchPoolInfo(
 	return poolInfo, nil
 }
 
-func calculateOutput(x, y, a uint64, feeFactor float64) uint64 {
-	xf := new(big.Float).SetUint64(x)
-	yf := new(big.Float).SetUint64(y)
-	af := new(big.Float).SetUint64(a)
-	af.Mul(af, big.NewFloat(feeFactor))
-	numerator := new(big.Float).Mul(yf, af)
-	denominator := new(big.Float).Add(xf, af)
+func calculateOutput(reserves, otherReserves, amount uint64, feeFactor float64) uint64 {
+	x := new(big.Float).SetUint64(reserves)
+	y := new(big.Float).SetUint64(otherReserves)
+	a := new(big.Float).SetUint64(amount)
+
+	// Apply fee to input amount
+	a.Mul(a, big.NewFloat(feeFactor))
+
+	// Formula: outputAmount = y * a / (x + a)
+	numerator := new(big.Float).Mul(y, a)
+	denominator := new(big.Float).Add(x, a)
 	result := new(big.Float).Quo(numerator, denominator)
-	resultUint64, _ := result.Uint64()
-	return resultUint64
+
+	output, _ := result.Uint64()
+	return output
 }
 
-func (pm *PoolManager) CalculateSwapQuote(
-	pool *PoolInfo,
-	inputAmount uint64,
-	isBaseToQuote bool,
-) (uint64, float64) {
+func (pm *PoolManager) CalculateSwapQuote(pool *PoolInfo, inputAmount uint64, isBaseToQuote bool) (uint64, float64) {
 	feeFactor := 1.0 - (float64(pool.FeesBasisPoints) / 10000.0)
-	var outputAmount uint64
-	var price float64
 
 	if isBaseToQuote {
-		outputAmount = calculateOutput(pool.BaseReserves, pool.QuoteReserves, inputAmount, feeFactor)
+		output := calculateOutput(pool.BaseReserves, pool.QuoteReserves, inputAmount, feeFactor)
+		price := float64(0)
 		if inputAmount > 0 {
-			price = float64(outputAmount) / float64(inputAmount)
+			price = float64(output) / float64(inputAmount)
 		}
+		return output, price
 	} else {
-		outputAmount = calculateOutput(pool.QuoteReserves, pool.BaseReserves, inputAmount, feeFactor)
-		if outputAmount > 0 {
-			price = float64(inputAmount) / float64(outputAmount)
+		output := calculateOutput(pool.QuoteReserves, pool.BaseReserves, inputAmount, feeFactor)
+		price := float64(0)
+		if output > 0 {
+			price = float64(inputAmount) / float64(output)
 		}
+		return output, price
 	}
-
-	return outputAmount, price
 }
 
 func (pm *PoolManager) CalculateSlippage(
