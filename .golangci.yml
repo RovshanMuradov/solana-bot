@@ -1,23 +1,26 @@
-  run:
-    timeout: 5m
+run:
+  timeout: 5m
 
-  linters:
-    enable:
-      - errcheck
-      - staticcheck
-      - ineffassign
-      - revive
-      - govet
-      - gosec
-      - unused
-      - typecheck
-      - gosimple
-      - stylecheck
-      - unconvert
-      - gocritic
+linters:
+  enable:
+    - errcheck
+    - staticcheck
+    - ineffassign
+    - revive
+    - govet
+    - gosec
+    - unused
+    - typecheck
+    - gosimple
+    - stylecheck
+    - unconvert
+    - gocritic
+    - depguard        # контроль импортов
+    - cyclop          # цикломатическая сложность
+    - dupl            # дублирование кода
 
-  issues:
-    exclude-rules:
-      - linters:
-          - errcheck
-        text: "error return value not checked"
+issues:
+  exclude-rules:
+    - linters:
+        - errcheck
+      text: "error return value not checked"
