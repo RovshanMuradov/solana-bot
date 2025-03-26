@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/cenkalti/backoff/v5"
+	"github.com/gagliardetto/solana-go/programs/token"
 	"math"
 	"math/big"
 	"strconv"
@@ -48,6 +49,7 @@ type DEX struct {
 	logger      *zap.Logger
 	config      *Config
 	poolManager *PoolManager
+	rpc         *rpc.Client
 
 	// Новые поля
 	globalConfig *GlobalConfig
@@ -390,28 +392,11 @@ func (dex *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, e
 
 // DetermineTokenPrecision получает количество десятичных знаков для данного токена.
 func (dex *DEX) DetermineTokenPrecision(ctx context.Context, mint solana.PublicKey) (uint8, error) {
-	info, err := dex.client.GetAccountInfo(ctx, mint)
+	var mintInfo token.Mint
+	err := dex.client.GetAccountDataInto(ctx, mint, &mintInfo)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get mint info: %w", err)
 	}
-	if info == nil || info.Value == nil {
-		return 0, fmt.Errorf("mint account not found")
-	}
 
-	data := info.Value.Data.GetBinary()
-
-	// Proper validation for SPL Token mint account data
-	// SPL Token mint accounts must have at least 82 bytes in standard layout
-	const (
-		MintMinLength  = 82
-		DecimalsOffset = 44
-	)
-
-	if len(data) < MintMinLength {
-		return 0, fmt.Errorf("invalid mint account data: too short (%d bytes)", len(data))
-	}
-
-	// The decimals field is at offset 44 in the SPL Token mint layout
-	// This is a stable part of the SPL Token standard
-	return data[DecimalsOffset], nil
+	return mintInfo.Decimals, nil
 }

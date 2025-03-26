@@ -61,7 +61,19 @@ func (c *Client) SendTransaction(ctx context.Context, tx *solana.Transaction) (s
 	return sig, nil
 }
 
-// GetAccountInfo получает информацию об аккаунте.
+// GetAccountDataInto получает данные аккаунта и декодирует их в указанную структуру.
+func (c *Client) GetAccountDataInto(ctx context.Context, pubkey solana.PublicKey, dst interface{}) error {
+	err := c.rpc.GetAccountDataInto(ctx, pubkey, dst)
+	if err != nil {
+		c.logger.Debug("GetAccountDataInto error",
+			zap.String("pubkey", pubkey.String()),
+			zap.Error(err))
+		return err
+	}
+	return nil
+}
+
+// // GetAccountInfo получает информацию об аккаунте.
 func (c *Client) GetAccountInfo(ctx context.Context, pubkey solana.PublicKey) (*rpc.GetAccountInfoResult, error) {
 	result, err := c.rpc.GetAccountInfo(ctx, pubkey)
 	if err != nil {

@@ -107,25 +107,25 @@ func (w *Wallet) PrecomputeATAs(mints []solana.PublicKey) error {
 	return nil
 }
 
-// createAssociatedTokenAccountIdempotentInstruction creates an instruction to create an associated token account
+// CreateAssociatedTokenAccountIdempotentInstruction создает инструкцию для создания ассоциированного токен-аккаунта
 func (w *Wallet) CreateAssociatedTokenAccountIdempotentInstruction(payer, wallet, mint solana.PublicKey) solana.Instruction {
-	associatedTokenProgramID := solana.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
-
-	// Calculate the associated token account address
-	ata, _, _ := solana.FindAssociatedTokenAddress(wallet, mint)
+	ata, _, err := solana.FindAssociatedTokenAddress(wallet, mint)
+	if err != nil {
+		panic(fmt.Sprintf("failed to find associated token address: %v", err))
+	}
 
 	return solana.NewInstruction(
-		associatedTokenProgramID,
+		solana.SPLAssociatedTokenAccountProgramID,
 		[]*solana.AccountMeta{
-			{PublicKey: payer, IsWritable: true, IsSigner: true},
-			{PublicKey: ata, IsWritable: true, IsSigner: false},
-			{PublicKey: wallet, IsWritable: false, IsSigner: false},
-			{PublicKey: mint, IsWritable: false, IsSigner: false},
-			{PublicKey: solana.SystemProgramID, IsWritable: false, IsSigner: false},
-			{PublicKey: solana.TokenProgramID, IsWritable: false, IsSigner: false},
-			{PublicKey: solana.SysVarRentPubkey, IsWritable: false, IsSigner: false},
+			solana.Meta(payer).WRITE().SIGNER(),
+			solana.Meta(ata).WRITE(),
+			solana.Meta(wallet),
+			solana.Meta(mint),
+			solana.Meta(solana.SystemProgramID),
+			solana.Meta(solana.TokenProgramID),
+			solana.Meta(solana.SysVarRentPubkey),
 		},
-		[]byte{1}, // Instruction code 1 for create idempotent
+		[]byte{1}, // 1 = create_idempotent
 	)
 }
 
