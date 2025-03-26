@@ -230,25 +230,29 @@ func (pm *PoolManager) findPoolByProgramAccounts(
 			continue
 		}
 
-		if (pool.BaseMint.Equals(baseMint) && pool.QuoteMint.Equals(quoteMint)) ||
-			(pool.BaseMint.Equals(quoteMint) && pool.QuoteMint.Equals(baseMint)) {
+		// Check if pool matches our token pair
+		isMatch := (pool.BaseMint.Equals(baseMint) && pool.QuoteMint.Equals(quoteMint)) ||
+			(pool.BaseMint.Equals(quoteMint) && pool.QuoteMint.Equals(baseMint))
 
-			poolInfo, err := pm.FetchPoolInfo(ctx, account.Pubkey)
-			if err != nil {
-				continue
-			}
-
-			if poolInfo.BaseReserves == 0 || poolInfo.QuoteReserves == 0 {
-				continue
-			}
-
-			pm.logger.Info("Found PumpSwap pool",
-				zap.String("pool_address", account.Pubkey.String()),
-				zap.String("base_mint", pool.BaseMint.String()),
-				zap.String("quote_mint", pool.QuoteMint.String()))
-
-			return poolInfo, nil
+		if !isMatch {
+			continue
 		}
+
+		poolInfo, err := pm.FetchPoolInfo(ctx, account.Pubkey)
+		if err != nil {
+			continue
+		}
+
+		if poolInfo.BaseReserves == 0 || poolInfo.QuoteReserves == 0 {
+			continue
+		}
+
+		pm.logger.Info("Found PumpSwap pool",
+			zap.String("pool_address", account.Pubkey.String()),
+			zap.String("base_mint", pool.BaseMint.String()),
+			zap.String("quote_mint", pool.QuoteMint.String()))
+
+		return poolInfo, nil
 	}
 
 	return nil, fmt.Errorf("no matching pool found for %s/%s",
@@ -289,6 +293,39 @@ func parseTokenAccounts(baseData, quoteData []byte) (uint64, uint64) {
 	return baseReserves, quoteReserves
 }
 
+// getPool извлекает и парсит данные пула по адресу.
+func (pm *PoolManager) getPool(ctx context.Context, poolAddress solana.PublicKey) (*Pool, error) {
+	accountInfo, err := pm.client.GetAccountInfo(ctx, poolAddress)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pool account: %w", err)
+	}
+	if accountInfo == nil || accountInfo.Value == nil {
+		return nil, fmt.Errorf("pool account not found: %s", poolAddress.String())
+	}
+	return ParsePool(accountInfo.Value.Data.GetBinary())
+}
+
+// getTokenAccountsData получает бинарные данные для заданных аккаунтов.
+func (pm *PoolManager) getTokenAccountsData(
+	ctx context.Context, accounts []solana.PublicKey,
+) ([][]byte, error) {
+	accountsInfo, err := pm.client.GetMultipleAccounts(ctx, accounts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get accounts info: %w", err)
+	}
+	if accountsInfo == nil || accountsInfo.Value == nil || len(accountsInfo.Value) < len(accounts) {
+		return nil, fmt.Errorf("failed to get required token accounts")
+	}
+
+	data := make([][]byte, len(accounts))
+	for i, info := range accountsInfo.Value {
+		if info != nil {
+			data[i] = info.Data.GetBinary()
+		}
+	}
+	return data, nil
+}
+
 func (pm *PoolManager) FetchPoolInfo(
 	ctx context.Context,
 	poolAddress solana.PublicKey,
@@ -296,19 +333,9 @@ func (pm *PoolManager) FetchPoolInfo(
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	accountInfo, err := pm.client.GetAccountInfo(ctx, poolAddress)
+	pool, err := pm.getPool(ctx, poolAddress)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get pool account: %w", err)
-	}
-
-	if accountInfo == nil || accountInfo.Value == nil {
-		return nil, fmt.Errorf("pool account not found: %s", poolAddress.String())
-	}
-
-	poolData := accountInfo.Value.Data.GetBinary()
-	pool, err := ParsePool(poolData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse pool data: %w", err)
+		return nil, err
 	}
 
 	config, err := pm.fetchGlobalConfig(ctx)
@@ -321,24 +348,21 @@ func (pm *PoolManager) FetchPoolInfo(
 		pool.PoolQuoteTokenAccount,
 	}
 
-	accountsInfo, err := pm.client.GetMultipleAccounts(ctx, accounts)
+	accountsData, err := pm.getTokenAccountsData(ctx, accounts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get accounts info: %w", err)
-	}
-	if accountsInfo == nil || accountsInfo.Value == nil || len(accountsInfo.Value) < 2 {
-		return nil, fmt.Errorf("failed to get required token accounts")
+		return nil, err
 	}
 
 	var baseData, quoteData []byte
-	if accountsInfo.Value[0] != nil {
-		baseData = accountsInfo.Value[0].Data.GetBinary()
+	if len(accountsData) > 0 {
+		baseData = accountsData[0]
 	}
-	if accountsInfo.Value[1] != nil {
-		quoteData = accountsInfo.Value[1].Data.GetBinary()
+	if len(accountsData) > 1 {
+		quoteData = accountsData[1]
 	}
 	baseReserves, quoteReserves := parseTokenAccounts(baseData, quoteData)
 
-	poolInfo := &PoolInfo{
+	return &PoolInfo{
 		Address:               poolAddress,
 		BaseMint:              pool.BaseMint,
 		QuoteMint:             pool.QuoteMint,
@@ -350,9 +374,7 @@ func (pm *PoolManager) FetchPoolInfo(
 		LPMint:                pool.LPMint,
 		PoolBaseTokenAccount:  pool.PoolBaseTokenAccount,
 		PoolQuoteTokenAccount: pool.PoolQuoteTokenAccount,
-	}
-
-	return poolInfo, nil
+	}, nil
 }
 
 func calculateOutput(reserves, otherReserves, amount uint64, feeFactor float64) uint64 {
@@ -382,14 +404,14 @@ func (pm *PoolManager) CalculateSwapQuote(pool *PoolInfo, inputAmount uint64, is
 			price = float64(output) / float64(inputAmount)
 		}
 		return output, price
-	} else {
-		output := calculateOutput(pool.QuoteReserves, pool.BaseReserves, inputAmount, feeFactor)
-		price := float64(0)
-		if output > 0 {
-			price = float64(inputAmount) / float64(output)
-		}
-		return output, price
 	}
+
+	output := calculateOutput(pool.QuoteReserves, pool.BaseReserves, inputAmount, feeFactor)
+	price := float64(0)
+	if output > 0 {
+		price = float64(inputAmount) / float64(output)
+	}
+	return output, price
 }
 
 func (pm *PoolManager) CalculateSlippage(
@@ -433,6 +455,7 @@ func (pm *PoolManager) FindPoolWithRetry(
 	backoffPolicy.InitialInterval = retryDelay
 	backoffPolicy.MaxInterval = retryDelay * 10
 
+	// Create a properly typed operation function
 	operation := func() (*PoolInfo, error) {
 		pool, err := pm.FindPool(ctx, baseMint, quoteMint)
 		if err != nil {
@@ -440,21 +463,30 @@ func (pm *PoolManager) FindPoolWithRetry(
 				zap.String("base", baseMint.String()),
 				zap.String("quote", quoteMint.String()),
 				zap.Error(err))
+			return nil, err
 		}
-		return pool, err
+		return pool, nil
 	}
 
+	// Create a notify function
 	notify := func(err error, duration time.Duration) {
 		pm.logger.Debug("Retry after error",
 			zap.Error(err),
 			zap.Duration("backoff", duration))
 	}
 
+	// Use the proper option functions
+	var maxTriesUint uint = 1
+	if maxRetries > 0 {
+		maxTriesUint = uint(maxRetries)
+	}
+
+	// Use the Retry function with correct options
 	return backoff.Retry(
 		ctx,
 		operation,
 		backoff.WithBackOff(backoffPolicy),
-		backoff.WithMaxTries(uint(maxRetries)),
+		backoff.WithMaxTries(maxTriesUint),
 		backoff.WithNotify(notify),
 	)
 }

@@ -265,8 +265,8 @@ func (dex *DEX) ExecuteSwap(ctx context.Context, isBuy bool, amount uint64, slip
 	instructions = append(instructions, accounts.CreateBaseATAIx, accounts.CreateQuoteATAIx)
 
 	// Получаем точность токенов.
-	baseDecimals := dex.getTokenDecimals(ctx, pool.BaseMint, DefaultTokenDecimals) // Точность для токена (покупаемого)
-	quoteDecimals := dex.getTokenDecimals(ctx, pool.QuoteMint, WSOLDecimals)       // Для WSOL обычно 9
+	baseDecimals := dex.getTokenDecimals(ctx, pool.BaseMint, DefaultTokenDecimals)
+	quoteDecimals := dex.getTokenDecimals(ctx, pool.QuoteMint, WSOLDecimals)
 
 	dex.logger.Debug("Token decimals",
 		zap.Uint8("base_decimals", baseDecimals),
@@ -274,14 +274,31 @@ func (dex *DEX) ExecuteSwap(ctx context.Context, isBuy bool, amount uint64, slip
 		zap.String("base_mint", pool.BaseMint.String()),
 		zap.String("quote_mint", pool.QuoteMint.String()))
 
-	var swapIx solana.Instruction
+	// Подготовка общих параметров для инструкции
+	swapParams := &SwapInstructionParams{
+		IsBuy:                            isBuy,
+		PoolAddress:                      pool.Address,
+		User:                             dex.wallet.PublicKey,
+		GlobalConfig:                     dex.config.GlobalConfig,
+		BaseMint:                         pool.BaseMint,
+		QuoteMint:                        pool.QuoteMint,
+		UserBaseTokenAccount:             accounts.UserBaseATA,
+		UserQuoteTokenAccount:            accounts.UserQuoteATA,
+		PoolBaseTokenAccount:             pool.PoolBaseTokenAccount,
+		PoolQuoteTokenAccount:            pool.PoolQuoteTokenAccount,
+		ProtocolFeeRecipient:             accounts.ProtocolFeeRecipient,
+		ProtocolFeeRecipientTokenAccount: accounts.ProtocolFeeRecipientATA,
+		BaseTokenProgram:                 TokenProgramID,
+		QuoteTokenProgram:                TokenProgramID,
+		EventAuthority:                   dex.config.EventAuthority,
+		ProgramID:                        dex.config.ProgramID,
+	}
+
 	if isBuy {
 		// При покупке мы хотим получить определённое количество токена (baseAmountOut),
 		// и готовы заплатить максимум amount (WSOL).
 		outputAmount, price := dex.poolManager.CalculateSwapQuote(pool, amount, false)
 		minOut := uint64(float64(outputAmount) * (1.0 - slippagePercent/100.0))
-
-		// Используем только пользовательский slippage для максимальной суммы
 		maxAmountWithBuffer := uint64(float64(amount) * (1.0 + slippagePercent/100.0))
 
 		dex.logger.Debug("Buy swap calculation",
@@ -291,30 +308,12 @@ func (dex *DEX) ExecuteSwap(ctx context.Context, isBuy bool, amount uint64, slip
 			zap.Uint64("min_out_amount", minOut),
 			zap.Float64("price", price))
 
-		swapIx = createBuyInstruction(
-			pool.Address,
-			dex.wallet.PublicKey,
-			dex.config.GlobalConfig,
-			pool.BaseMint,  // Токен, который покупаем
-			pool.QuoteMint, // WSOL
-			accounts.UserBaseATA,
-			accounts.UserQuoteATA,
-			pool.PoolBaseTokenAccount,
-			pool.PoolQuoteTokenAccount,
-			accounts.ProtocolFeeRecipient,
-			accounts.ProtocolFeeRecipientATA,
-			TokenProgramID,
-			TokenProgramID,
-			dex.config.EventAuthority,
-			dex.config.ProgramID,
-			outputAmount,
-			maxAmountWithBuffer, // Используем увеличенную максимальную сумму
-		)
+		// Установка параметров для покупки
+		swapParams.Amount1 = outputAmount        // baseAmountOut для buy
+		swapParams.Amount2 = maxAmountWithBuffer // maxQuoteAmountIn для buy
 	} else {
 		// Продажа: продаём токен (base) за WSOL.
 		expectedOutput, price := dex.poolManager.CalculateSwapQuote(pool, amount, false)
-
-		// Для продажи также добавляем буфер, но уменьшаем минимальный выход
 		minOut := uint64(float64(expectedOutput) * (1.0 - slippagePercent/100.0))
 
 		dex.logger.Debug("Sell swap calculation",
@@ -323,26 +322,13 @@ func (dex *DEX) ExecuteSwap(ctx context.Context, isBuy bool, amount uint64, slip
 			zap.Uint64("min_out_amount", minOut),
 			zap.Float64("price", price))
 
-		swapIx = createSellInstruction(
-			pool.Address,
-			dex.wallet.PublicKey,
-			dex.config.GlobalConfig,
-			pool.BaseMint,
-			pool.QuoteMint,
-			accounts.UserBaseATA,
-			accounts.UserQuoteATA,
-			pool.PoolBaseTokenAccount,
-			pool.PoolQuoteTokenAccount,
-			accounts.ProtocolFeeRecipient,
-			accounts.ProtocolFeeRecipientATA,
-			TokenProgramID,
-			TokenProgramID,
-			dex.config.EventAuthority,
-			dex.config.ProgramID,
-			amount,
-			minOut,
-		)
+		// Установка параметров для продажи
+		swapParams.Amount1 = amount // baseAmountIn для sell
+		swapParams.Amount2 = minOut // minQuoteAmountOut для sell
 	}
+
+	// Создание инструкции для свапа с использованием новой функции
+	swapIx := createSwapInstruction(swapParams)
 
 	instructions = append(instructions, swapIx)
 	sig, err := dex.buildAndSubmitTransaction(ctx, instructions)
