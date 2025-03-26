@@ -22,10 +22,10 @@ import (
 
 const (
 	MinimumLiquidity         uint64 = 1000
-	TokenAccountMintOffset          = 0
-	TokenAccountOwnerOffset         = 32
-	TokenAccountAmountOffset        = 64
-	TokenAccountAmountSize          = 8
+	TokenAccountMintOffset   uint64 = 0
+	TokenAccountOwnerOffset  uint64 = 32
+	TokenAccountAmountOffset uint64 = 64
+	TokenAccountAmountSize   uint64 = 8
 )
 
 // PoolCache stores found pools for quick access
@@ -280,10 +280,10 @@ func (pm *PoolManager) fetchGlobalConfig(ctx context.Context) (*GlobalConfig, er
 
 func parseTokenAccounts(baseData, quoteData []byte) (uint64, uint64) {
 	var baseReserves, quoteReserves uint64
-	if len(baseData) >= TokenAccountAmountOffset+TokenAccountAmountSize {
+	if len(baseData) >= int(TokenAccountAmountOffset+TokenAccountAmountSize) {
 		baseReserves = binary.LittleEndian.Uint64(baseData[TokenAccountAmountOffset : TokenAccountAmountOffset+TokenAccountAmountSize])
 	}
-	if len(quoteData) >= TokenAccountAmountOffset+TokenAccountAmountSize {
+	if len(quoteData) >= int(TokenAccountAmountOffset+TokenAccountAmountSize) {
 		quoteReserves = binary.LittleEndian.Uint64(quoteData[TokenAccountAmountOffset : TokenAccountAmountOffset+TokenAccountAmountSize])
 	}
 	return baseReserves, quoteReserves
@@ -492,10 +492,7 @@ func (dex *DEX) findAndValidatePool(ctx context.Context) (*PoolInfo, bool, error
 		zap.String("base_mint", pool.BaseMint.String()),
 		zap.String("quote_mint", pool.QuoteMint.String()))
 
-	poolMintReversed := false
-	if !pool.BaseMint.Equals(effBase) {
-		poolMintReversed = true
-	}
+	poolMintReversed := !pool.BaseMint.Equals(effBase)
 
 	return pool, poolMintReversed, nil
 }

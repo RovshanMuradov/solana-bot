@@ -146,9 +146,13 @@ func (m *Manager) LoadTasks(path string) ([]Task, error) {
 			continue
 		}
 
-		// Validate slippage is between 0 and 100
-		if slippagePercent < 0 || slippagePercent > 100 {
-			m.logger.Warn("Slippage percent out of range (0-100)", zap.Float64("slippage", slippagePercent))
+		// Validate slippage is between MIN_SLIPPAGE and 100
+		const MinSlippage = 0.5 // Минимальный порог 0.5%
+		if slippagePercent < MinSlippage || slippagePercent > 100 {
+			m.logger.Warn("Slippage percent out of range (MIN_SLIPPAGE-100)",
+				zap.Float64("slippage", slippagePercent),
+				zap.Float64("min_allowed", MinSlippage))
+
 			// Default to 1% if out of range
 			slippagePercent = 1.0
 		}
