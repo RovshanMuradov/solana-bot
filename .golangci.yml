@@ -1,26 +1,33 @@
-run:
-  timeout: 5m
-
+version: "2"
 linters:
   enable:
-    - errcheck
-    - staticcheck
-    - ineffassign
-    - revive
-    - govet
-    - gosec
-    - unused
-    - typecheck
-    - gosimple
-    - stylecheck
-    - unconvert
+    - cyclop
+    - depguard
+    - dupl
     - gocritic
-    - depguard        # контроль импортов
-    - cyclop          # цикломатическая сложность
-    - dupl            # дублирование кода
-
-issues:
-  exclude-rules:
-    - linters:
-        - errcheck
-      text: "error return value not checked"
+    - gosec
+    - revive
+    - staticcheck
+    - unconvert
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+        text: error return value not checked
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
