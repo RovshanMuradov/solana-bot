@@ -15,9 +15,6 @@ import (
 )
 
 const (
-	// Адрес WSOL токена
-	WSOLMint = "So11111111111111111111111111111111111111112"
-
 	// Decimals по умолчанию
 	DefaultTokenDecimals = 6
 	WSOLDecimals         = 9
@@ -31,11 +28,11 @@ var (
 	// PumpSwapProgramID – адрес программы PumpSwap.
 	PumpSwapProgramID = solana.MustPublicKeyFromBase58("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA")
 	// SystemProgramID – ID системной программы Solana.
-	SystemProgramID = solana.MustPublicKeyFromBase58("11111111111111111111111111111111")
+	SystemProgramID = solana.SystemProgramID
 	// TokenProgramID – ID программы токенов Solana.
-	TokenProgramID = solana.MustPublicKeyFromBase58("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+	TokenProgramID = solana.TokenProgramID
 	// AssociatedTokenProgramID – ID ассоциированной токенной программы.
-	AssociatedTokenProgramID = solana.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
+	AssociatedTokenProgramID = solana.SPLAssociatedTokenAccountProgramID
 )
 
 type GlobalConfig struct {

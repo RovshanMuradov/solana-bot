@@ -1,2 +1,2 @@
 task_name,module,wallet,operation,amount,slippage_percent,priority_fee_sol,contract_address,compute_units
-swap_wsol_to_token,pump.swap,main,swap,0.00001,20.0,0.000002,GtkqnCWXi9b8FddyKHqdqiFcJu1ippUrz9pUfiXmpump,200000
+buy_tokens,pump.fun,main,snipe,0.00001,1.0,0.000002,5NRA3uzAbMuxNWhmAPXV7DRsRVM6mfjqjCekQQv5pump,200000

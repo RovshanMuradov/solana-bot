@@ -14,7 +14,7 @@ import (
 // а квотный – WSOL. Если в конфигурации указано обратное (base = WSOL, quote = токен),
 // то мы инвертируем их.
 func (d *DEX) effectiveMints() (baseMint, quoteMint solana.PublicKey) {
-	wsol := solana.MustPublicKeyFromBase58(WSOLMint)
+	wsol := solana.SolMint
 	// Если конфигурация указана как base = WSOL, а quote = токен,
 	// то для свапа effectiveBaseMint = токен, effectiveQuoteMint = WSOL.
 	if d.config.BaseMint.Equals(wsol) && !d.config.QuoteMint.Equals(wsol) {

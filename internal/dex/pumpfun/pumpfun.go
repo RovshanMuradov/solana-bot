@@ -135,17 +135,19 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amountSol float64, slippagePerce
 	d.logger.Debug("Derived bonding curve ATA", zap.String("address", associatedBondingCurve.String()))
 
 	// Create buy-exact-sol instruction
-	buyIx := createBuyExactSolInstruction(
-		d.config.Global,         // Global account
-		d.config.FeeRecipient,   // Fee recipient
-		d.config.Mint,           // Token mint
-		bondingCurve,            // Bonding curve
-		associatedBondingCurve,  // Associated bonding curve ATA
-		userATA,                 // User's associated token account
-		d.wallet.PublicKey,      // User's wallet
-		d.config.EventAuthority, // Event authority
-		adjustedSolLamports,     // Exact SOL amount in lamports
-	)
+	params := &PumpFunInstructionParams{
+		Global:                 d.config.Global,
+		FeeRecipient:           d.config.FeeRecipient,
+		Mint:                   d.config.Mint,
+		BondingCurve:           bondingCurve,
+		AssociatedBondingCurve: associatedBondingCurve,
+		UserATA:                userATA,
+		UserWallet:             d.wallet.PublicKey,
+		EventAuthority:         d.config.EventAuthority,
+		ProgramID:              d.config.ContractAddress,
+		SolAmountLamports:      adjustedSolLamports,
+	}
+	buyIx := createBuyExactSolInstruction(params)
 
 	// Assemble all instructions
 	var instructions []solana.Instruction
@@ -287,19 +289,20 @@ func (d *DEX) ExecuteSell(ctx context.Context, tokenAmount uint64, slippagePerce
 		zap.Uint64("min_sol_output_lamports", minSolOutput))
 
 	// Instruction #4: sell
-	sellIx := createSellInstruction(
-		d.config.ContractAddress, // Program ID
-		d.config.Global,          // Global account
-		d.config.FeeRecipient,    // Fee recipient
-		d.config.Mint,            // Token mint
-		bondingCurve,             // Bonding curve
-		associatedBondingCurve,   // Associated bonding curve ATA
-		userATA,                  // User's associated token account
-		d.wallet.PublicKey,       // User's wallet
-		d.config.EventAuthority,  // Event authority
-		tokenAmount,              // Amount of tokens to sell
-		minSolOutput,             // Minimum SOL output with slippage
-	)
+	params := &PumpFunInstructionParams{
+		Global:                 d.config.Global,
+		FeeRecipient:           d.config.FeeRecipient,
+		Mint:                   d.config.Mint,
+		BondingCurve:           bondingCurve,
+		AssociatedBondingCurve: associatedBondingCurve,
+		UserATA:                userATA,
+		UserWallet:             d.wallet.PublicKey,
+		EventAuthority:         d.config.EventAuthority,
+		ProgramID:              d.config.ContractAddress,
+		TokenAmount:            tokenAmount,
+		MinSolOutput:           minSolOutput,
+	}
+	sellIx := createSellInstruction(params)
 
 	// Assemble all instructions
 	var instructions []solana.Instruction

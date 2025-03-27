@@ -15,106 +15,55 @@ var (
 
 	// Program ID for exact-sol operations
 	PumpFunExactSolProgramID = solana.MustPublicKeyFromBase58("6sbiyZ7mLKmYkES2AKYPHtg4FjQMaqVx3jTHez6ZtfmX")
-	AssociatedTokenProgramID = solana.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
+	AssociatedTokenProgramID = solana.SPLAssociatedTokenAccountProgramID
 )
 
-// createBuyInstruction creates a buy instruction for the Pump.fun protocol
-/*func createBuyInstruction(
-	programID,
-	global,
-	feeRecipient,
-	mint,
-	bondingCurve,
-	associatedBondingCurve,
-	userATA,
-	userWallet,
-	eventAuthority solana.PublicKey,
-	amount,
-	maxSolCost uint64,
-) solana.Instruction {
-	// Create instruction data with precise byte layout:
-	// 1. 8-byte discriminator prefix
-	// 2. 8-byte little-endian encoded amount
-	// 3. 8-byte little-endian encoded maxSolCost
-	data := make([]byte, 24)
+// PumpFunInstructionParams содержит все параметры для создания инструкций Pump.fun
+type PumpFunInstructionParams struct {
+	// Общие параметры
+	Global                 solana.PublicKey
+	FeeRecipient           solana.PublicKey
+	Mint                   solana.PublicKey
+	BondingCurve           solana.PublicKey
+	AssociatedBondingCurve solana.PublicKey
+	UserATA                solana.PublicKey
+	UserWallet             solana.PublicKey
+	EventAuthority         solana.PublicKey
+	ProgramID              solana.PublicKey
 
-	// Copy discriminator (8 bytes)
-	copy(data[0:8], buyDiscriminator)
-
-	// Add amount in little-endian bytes (8 bytes)
-	binary.LittleEndian.PutUint64(data[8:16], amount)
-
-	// Add max SOL cost in little-endian bytes (8 bytes)
-	binary.LittleEndian.PutUint64(data[16:24], maxSolCost)
-
-	// Account list MUST follow exact protocol-mandated order
-	accounts := []*solana.AccountMeta{
-		{PublicKey: global, IsSigner: false, IsWritable: false},
-		{PublicKey: feeRecipient, IsSigner: false, IsWritable: true},
-		{PublicKey: mint, IsSigner: false, IsWritable: false},
-		{PublicKey: bondingCurve, IsSigner: false, IsWritable: true},
-		{PublicKey: associatedBondingCurve, IsSigner: false, IsWritable: true},
-		{PublicKey: userATA, IsSigner: false, IsWritable: true},
-		{PublicKey: userWallet, IsSigner: true, IsWritable: true},
-		{PublicKey: solana.SystemProgramID, IsSigner: false, IsWritable: false},
-		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
-		{PublicKey: solana.SysVarRentPubkey, IsSigner: false, IsWritable: false},
-		{PublicKey: eventAuthority, IsSigner: false, IsWritable: false},
-		{PublicKey: programID, IsSigner: false, IsWritable: false},
-	}
-
-	return solana.NewInstruction(programID, accounts, data)
-}*/
+	// Параметры операций
+	SolAmountLamports uint64 // Для buy exact SOL
+	TokenAmount       uint64 // Для sell
+	MinSolOutput      uint64 // Для sell
+}
 
 // createBuyExactSolInstruction creates an instruction for buying with an exact SOL amount
-func createBuyExactSolInstruction(
-	global,
-	feeRecipient,
-	mint,
-	bondingCurve,
-	associatedBondingCurve,
-	userATA,
-	userWallet,
-	eventAuthority solana.PublicKey,
-	solAmountLamports uint64,
-) solana.Instruction {
+func createBuyExactSolInstruction(params *PumpFunInstructionParams) solana.Instruction {
 	// Create instruction data - only 8 bytes for sol amount in lamports
 	data := make([]byte, 8)
-	binary.LittleEndian.PutUint64(data, solAmountLamports)
+	binary.LittleEndian.PutUint64(data, params.SolAmountLamports)
 
 	// Account list follows the same order as regular buy instruction
 	accounts := []*solana.AccountMeta{
-		{PublicKey: global, IsSigner: false, IsWritable: false},
-		{PublicKey: feeRecipient, IsSigner: false, IsWritable: true},
-		{PublicKey: mint, IsSigner: false, IsWritable: false},
-		{PublicKey: bondingCurve, IsSigner: false, IsWritable: true},
-		{PublicKey: associatedBondingCurve, IsSigner: false, IsWritable: true},
-		{PublicKey: userATA, IsSigner: false, IsWritable: true},
-		{PublicKey: userWallet, IsSigner: true, IsWritable: true},
-		{PublicKey: solana.SystemProgramID, IsSigner: false, IsWritable: false},
-		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},
-		{PublicKey: solana.SysVarRentPubkey, IsSigner: false, IsWritable: false},
-		{PublicKey: eventAuthority, IsSigner: false, IsWritable: false},
-		{PublicKey: PumpFunProgramID, IsSigner: false, IsWritable: false},
+		solana.NewAccountMeta(params.Global, false, false),
+		solana.NewAccountMeta(params.FeeRecipient, false, true),
+		solana.NewAccountMeta(params.Mint, false, false),
+		solana.NewAccountMeta(params.BondingCurve, false, true),
+		solana.NewAccountMeta(params.AssociatedBondingCurve, false, true),
+		solana.NewAccountMeta(params.UserATA, false, true),
+		solana.NewAccountMeta(params.UserWallet, true, true),
+		solana.NewAccountMeta(solana.SystemProgramID, false, false),
+		solana.NewAccountMeta(solana.TokenProgramID, false, false),
+		solana.NewAccountMeta(solana.SysVarRentPubkey, false, false),
+		solana.NewAccountMeta(params.EventAuthority, false, false),
+		solana.NewAccountMeta(PumpFunProgramID, false, false),
 	}
 
 	return solana.NewInstruction(PumpFunExactSolProgramID, accounts, data)
 }
 
 // createSellInstruction creates a sell instruction for the Pump.fun protocol
-func createSellInstruction(
-	programID,
-	global,
-	feeRecipient,
-	mint,
-	bondingCurve,
-	associatedBondingCurve,
-	userATA,
-	userWallet,
-	eventAuthority solana.PublicKey,
-	amount,
-	minSolOutput uint64,
-) solana.Instruction {
+func createSellInstruction(params *PumpFunInstructionParams) solana.Instruction {
 	// Create instruction data with precise byte layout:
 	// 1. 8-byte discriminator prefix
 	// 2. 8-byte little-endian encoded amount
@@ -125,26 +74,26 @@ func createSellInstruction(
 	copy(data[0:8], sellDiscriminator)
 
 	// Add amount in little-endian bytes (8 bytes)
-	binary.LittleEndian.PutUint64(data[8:16], amount)
+	binary.LittleEndian.PutUint64(data[8:16], params.TokenAmount)
 
 	// Add min SOL output in little-endian bytes (8 bytes)
-	binary.LittleEndian.PutUint64(data[16:24], minSolOutput)
+	binary.LittleEndian.PutUint64(data[16:24], params.MinSolOutput)
 
 	// Account list MUST follow exact protocol-mandated order
 	accounts := []*solana.AccountMeta{
-		{PublicKey: global, IsSigner: false, IsWritable: false},
-		{PublicKey: feeRecipient, IsSigner: false, IsWritable: true},
-		{PublicKey: mint, IsSigner: false, IsWritable: false},
-		{PublicKey: bondingCurve, IsSigner: false, IsWritable: true},
-		{PublicKey: associatedBondingCurve, IsSigner: false, IsWritable: true},
-		{PublicKey: userATA, IsSigner: false, IsWritable: true},
-		{PublicKey: userWallet, IsSigner: true, IsWritable: true},
-		{PublicKey: solana.SystemProgramID, IsSigner: false, IsWritable: false},
-		{PublicKey: AssociatedTokenProgramID, IsSigner: false, IsWritable: false}, // Сначала Associated Token Program
-		{PublicKey: solana.TokenProgramID, IsSigner: false, IsWritable: false},    // Затем Token Program
-		{PublicKey: eventAuthority, IsSigner: false, IsWritable: false},
-		{PublicKey: programID, IsSigner: false, IsWritable: false},
+		solana.NewAccountMeta(params.Global, false, false),
+		solana.NewAccountMeta(params.FeeRecipient, false, true),
+		solana.NewAccountMeta(params.Mint, false, false),
+		solana.NewAccountMeta(params.BondingCurve, false, true),
+		solana.NewAccountMeta(params.AssociatedBondingCurve, false, true),
+		solana.NewAccountMeta(params.UserATA, false, true),
+		solana.NewAccountMeta(params.UserWallet, true, true),
+		solana.NewAccountMeta(solana.SystemProgramID, false, false),
+		solana.NewAccountMeta(AssociatedTokenProgramID, false, false),
+		solana.NewAccountMeta(solana.TokenProgramID, false, false),
+		solana.NewAccountMeta(params.EventAuthority, false, false),
+		solana.NewAccountMeta(params.ProgramID, false, false),
 	}
 
-	return solana.NewInstruction(programID, accounts, data)
+	return solana.NewInstruction(params.ProgramID, accounts, data)
 }
