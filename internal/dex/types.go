@@ -24,3 +24,12 @@ type Task struct {
 	ComputeUnits    uint32        // Compute units for the transaction
 	MonitorInterval time.Duration // Интервал обновления цены при мониторинге (новое поле)
 }
+
+// SwapParams содержит параметры для выполнения свапа
+type SwapParams struct {
+	IsBuy           bool
+	Amount          uint64
+	SlippagePercent float64
+	PriorityFeeSol  string
+	ComputeUnits    uint32
+}
