@@ -1,5 +1,5 @@
 // =============================
-// File: internal/dex/dex.go
+// File: internal/dex/adapters.go
 // =============================
 package dex
 
@@ -234,39 +234,14 @@ func (d *pumpswapDEXAdapter) Execute(ctx context.Context, task *Task) error {
 
 	// Initialize DEX if not already done
 	if d.inner == nil {
-		solClient, ok := d.metrics.GetSolanaClient()
-		if !ok {
-			err := fmt.Errorf("solana client not available")
+		if err := d.initializeInnerDEX(ctx, tokenMint); err != nil {
 			d.metrics.RecordTransaction("error", d.GetName(), time.Since(start), false)
 			return err
-		}
-
-		// Get default config and set up for token
-		config := pumpswap.GetDefaultConfig()
-		if err := config.SetupForToken(tokenMint, d.logger); err != nil {
-			d.metrics.RecordTransaction("error", d.GetName(), time.Since(start), false)
-			return fmt.Errorf("failed to setup token config: %w", err)
-		}
-
-		// Get user wallet
-		wallet, err := d.metrics.GetUserWallet()
-		if err != nil {
-			d.metrics.RecordTransaction("error", d.GetName(), time.Since(start), false)
-			return fmt.Errorf("failed to get user wallet: %w", err)
-		}
-
-		// Create new DEX instance
-		var dexErr error
-		d.inner, dexErr = pumpswap.NewDEX(solClient, wallet, d.logger, config, config.MonitorInterval)
-		if dexErr != nil {
-			d.metrics.RecordTransaction("error", d.GetName(), time.Since(start), false)
-			return fmt.Errorf("failed to initialize Pump.Swap DEX: %w", dexErr)
 		}
 	}
 
 	// Execute operation based on task type
 	switch task.Operation {
-
 	case OperationSwap:
 		txType = "swap"
 
@@ -330,35 +305,43 @@ func (d *pumpswapDEXAdapter) Execute(ctx context.Context, task *Task) error {
 	}
 }
 
+// initializeInnerDEX инициализирует внутренний DEX с заданным токеном
+func (d *pumpswapDEXAdapter) initializeInnerDEX(ctx context.Context, tokenMint string) error {
+	solClient, ok := d.metrics.GetSolanaClient()
+	if !ok {
+		return fmt.Errorf("solana client not available")
+	}
+
+	config := pumpswap.GetDefaultConfig()
+	if err := config.SetupForToken(tokenMint, d.logger); err != nil {
+		return fmt.Errorf("failed to setup token config: %w", err)
+	}
+
+	wallet, err := d.metrics.GetUserWallet()
+	if err != nil {
+		return fmt.Errorf("failed to get user wallet: %w", err)
+	}
+
+	poolManager := pumpswap.NewPoolManager(solClient, d.logger)
+
+	var dexErr error
+	d.inner, dexErr = pumpswap.NewDEX(solClient, wallet, d.logger, config, poolManager, config.MonitorInterval)
+	if dexErr != nil {
+		return fmt.Errorf("failed to initialize Pump.Swap DEX: %w", dexErr)
+	}
+
+	return nil
+}
+
 // GetTokenPrice returns the current price of the token
 func (d *pumpswapDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
-	// Initialize DEX if not already done
+	// Инициализировать DEX если необходимо
 	if d.inner == nil {
-		solClient, ok := d.metrics.GetSolanaClient()
-		if !ok {
-			return 0, fmt.Errorf("solana client not available")
-		}
-
-		// Get default config and set up for token
-		config := pumpswap.GetDefaultConfig()
-		if err := config.SetupForToken(tokenMint, d.logger); err != nil {
-			return 0, fmt.Errorf("failed to setup token config: %w", err)
-		}
-
-		// Get user wallet
-		wallet, err := d.metrics.GetUserWallet()
-		if err != nil {
-			return 0, fmt.Errorf("failed to get user wallet: %w", err)
-		}
-
-		// Create new DEX instance
-		var dexErr error
-		d.inner, dexErr = pumpswap.NewDEX(solClient, wallet, d.logger, config, "5s") // Default monitor interval
-		if dexErr != nil {
-			return 0, fmt.Errorf("failed to initialize Pump.Swap DEX: %w", dexErr)
+		if err := d.initializeInnerDEX(ctx, tokenMint); err != nil {
+			return 0, err
 		}
 	}
 
-	// Call inner DEX method
+	// Просто делегируем вызов внутренней реализации
 	return d.inner.GetTokenPrice(ctx, tokenMint)
 }

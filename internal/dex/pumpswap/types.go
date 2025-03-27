@@ -4,8 +4,6 @@
 package pumpswap
 
 import (
-	"encoding/binary"
-	"fmt"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 
@@ -16,9 +14,28 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 )
 
+const (
+	// Адрес WSOL токена
+	WSOLMint = "So11111111111111111111111111111111111111112"
+
+	// Decimals по умолчанию
+	DefaultTokenDecimals = 6
+	WSOLDecimals         = 9
+)
+
 var (
 	GlobalConfigDiscriminator = []byte{149, 8, 156, 202, 160, 252, 176, 217}
 	PoolDiscriminator         = []byte{241, 154, 109, 4, 17, 177, 109, 188}
+)
+var (
+	// PumpSwapProgramID – адрес программы PumpSwap.
+	PumpSwapProgramID = solana.MustPublicKeyFromBase58("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA")
+	// SystemProgramID – ID системной программы Solana.
+	SystemProgramID = solana.MustPublicKeyFromBase58("11111111111111111111111111111111")
+	// TokenProgramID – ID программы токенов Solana.
+	TokenProgramID = solana.MustPublicKeyFromBase58("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+	// AssociatedTokenProgramID – ID ассоциированной токенной программы.
+	AssociatedTokenProgramID = solana.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
 )
 
 type GlobalConfig struct {
@@ -55,15 +72,6 @@ type PoolInfo struct {
 	PoolQuoteTokenAccount solana.PublicKey
 }
 
-const (
-	// Адрес WSOL токена
-	WSOLMint = "So11111111111111111111111111111111111111112"
-
-	// Decimals по умолчанию
-	DefaultTokenDecimals = 6
-	WSOLDecimals         = 9
-)
-
 type PreparedTokenAccounts struct {
 	UserBaseATA             solana.PublicKey
 	UserQuoteATA            solana.PublicKey
@@ -79,7 +87,7 @@ type DEX struct {
 	wallet      *wallet.Wallet
 	logger      *zap.Logger
 	config      *Config
-	poolManager *PoolManager
+	poolManager PoolManagerInterface
 	rpc         *rpc.Client
 
 	// Новые поля
@@ -101,50 +109,4 @@ type SwapParams struct {
 	SlippagePercent float64
 	PriorityFeeSol  string
 	ComputeUnits    uint32
-}
-
-// SlippageExceededError представляет ошибку превышения проскальзывания
-type SlippageExceededError struct {
-	SlippagePercent float64
-	Amount          uint64
-	OriginalError   error
-}
-
-func ParseGlobalConfig(data []byte) (*GlobalConfig, error) {
-	if len(data) < 8 {
-		return nil, fmt.Errorf("data too short for GlobalConfig")
-	}
-
-	for i := 0; i < 8; i++ {
-		if data[i] != GlobalConfigDiscriminator[i] {
-			return nil, fmt.Errorf("invalid discriminator for GlobalConfig")
-		}
-	}
-
-	pos := 8
-
-	if len(data) < pos+32+8+8+1+(32*8) {
-		return nil, fmt.Errorf("data too short for GlobalConfig content")
-	}
-
-	config := &GlobalConfig{}
-
-	config.Admin = solana.PublicKeyFromBytes(data[pos : pos+32])
-	pos += 32
-
-	config.LPFeeBasisPoints = binary.LittleEndian.Uint64(data[pos : pos+8])
-	pos += 8
-
-	config.ProtocolFeeBasisPoints = binary.LittleEndian.Uint64(data[pos : pos+8])
-	pos += 8
-
-	config.DisableFlags = data[pos]
-	pos++
-
-	for i := 0; i < 8; i++ {
-		config.ProtocolFeeRecipients[i] = solana.PublicKeyFromBytes(data[pos : pos+32])
-		pos += 32
-	}
-
-	return config, nil
 }

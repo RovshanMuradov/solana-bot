@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"github.com/cenkalti/backoff/v5"
 	"math"
-	"math/big"
 	"sync"
 	"time"
 
@@ -27,6 +26,31 @@ const (
 	TokenAccountAmountOffset uint64 = 64
 	TokenAccountAmountSize   uint64 = 8
 )
+
+type PoolManagerInterface interface {
+	FindPool(ctx context.Context, baseMint, quoteMint solana.PublicKey) (*PoolInfo, error)
+	FindPoolWithRetry(ctx context.Context, baseMint, quoteMint solana.PublicKey, maxRetries int, retryDelay time.Duration) (*PoolInfo, error)
+	CalculateSwapQuote(pool *PoolInfo, inputAmount uint64, isBaseToQuote bool) (uint64, float64)
+	CalculateSlippage(pool *PoolInfo, inputAmount uint64, isBaseToQuote bool) float64
+}
+
+// PoolManager handles operations with PumpSwap pools
+type PoolManager struct {
+	client     *solbc.Client
+	logger     *zap.Logger
+	cache      *PoolCache
+	programID  solana.PublicKey
+	maxRetries int
+	retryDelay time.Duration
+}
+
+// PoolManagerOptions contains options for creating a PoolManager
+type PoolManagerOptions struct {
+	CacheTTL   time.Duration
+	MaxRetries int
+	RetryDelay time.Duration
+	ProgramID  solana.PublicKey
+}
 
 // PoolCache stores found pools for quick access
 type PoolCache struct {
@@ -98,24 +122,6 @@ func makePoolCacheKey(baseMint, quoteMint solana.PublicKey) string {
 		return fmt.Sprintf("%s:%s", baseMint, quoteMint)
 	}
 	return fmt.Sprintf("%s:%s", quoteMint, baseMint)
-}
-
-// PoolManager handles operations with PumpSwap pools
-type PoolManager struct {
-	client     *solbc.Client
-	logger     *zap.Logger
-	cache      *PoolCache
-	programID  solana.PublicKey
-	maxRetries int
-	retryDelay time.Duration
-}
-
-// PoolManagerOptions contains options for creating a PoolManager
-type PoolManagerOptions struct {
-	CacheTTL   time.Duration
-	MaxRetries int
-	RetryDelay time.Duration
-	ProgramID  solana.PublicKey
 }
 
 // DefaultPoolManagerOptions returns default options for PoolManager
@@ -375,23 +381,6 @@ func (pm *PoolManager) FetchPoolInfo(
 		PoolBaseTokenAccount:  pool.PoolBaseTokenAccount,
 		PoolQuoteTokenAccount: pool.PoolQuoteTokenAccount,
 	}, nil
-}
-
-func calculateOutput(reserves, otherReserves, amount uint64, feeFactor float64) uint64 {
-	x := new(big.Float).SetUint64(reserves)
-	y := new(big.Float).SetUint64(otherReserves)
-	a := new(big.Float).SetUint64(amount)
-
-	// Apply fee to input amount
-	a.Mul(a, big.NewFloat(feeFactor))
-
-	// Formula: outputAmount = y * a / (x + a)
-	numerator := new(big.Float).Mul(y, a)
-	denominator := new(big.Float).Add(x, a)
-	result := new(big.Float).Quo(numerator, denominator)
-
-	output, _ := result.Uint64()
-	return output
 }
 
 func (pm *PoolManager) CalculateSwapQuote(pool *PoolInfo, inputAmount uint64, isBaseToQuote bool) (uint64, float64) {

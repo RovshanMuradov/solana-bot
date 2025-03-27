@@ -4,21 +4,11 @@
 package pumpswap
 
 import (
+	"encoding/binary"
 	"fmt"
 
 	"github.com/gagliardetto/solana-go"
 	"go.uber.org/zap"
-)
-
-var (
-	// PumpSwapProgramID – адрес программы PumpSwap.
-	PumpSwapProgramID = solana.MustPublicKeyFromBase58("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA")
-	// SystemProgramID – ID системной программы Solana.
-	SystemProgramID = solana.MustPublicKeyFromBase58("11111111111111111111111111111111")
-	// TokenProgramID – ID программы токенов Solana.
-	TokenProgramID = solana.MustPublicKeyFromBase58("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
-	// AssociatedTokenProgramID – ID ассоциированной токенной программы.
-	AssociatedTokenProgramID = solana.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
 )
 
 // Config хранит конфигурацию для взаимодействия с PumpSwap.
@@ -100,4 +90,43 @@ func (cfg *Config) DeriveGlobalConfigAddress() (solana.PublicKey, uint8, error) 
 		[][]byte{[]byte("global_config")},
 		cfg.ProgramID,
 	)
+}
+
+func ParseGlobalConfig(data []byte) (*GlobalConfig, error) {
+	if len(data) < 8 {
+		return nil, fmt.Errorf("data too short for GlobalConfig")
+	}
+
+	for i := 0; i < 8; i++ {
+		if data[i] != GlobalConfigDiscriminator[i] {
+			return nil, fmt.Errorf("invalid discriminator for GlobalConfig")
+		}
+	}
+
+	pos := 8
+
+	if len(data) < pos+32+8+8+1+(32*8) {
+		return nil, fmt.Errorf("data too short for GlobalConfig content")
+	}
+
+	config := &GlobalConfig{}
+
+	config.Admin = solana.PublicKeyFromBytes(data[pos : pos+32])
+	pos += 32
+
+	config.LPFeeBasisPoints = binary.LittleEndian.Uint64(data[pos : pos+8])
+	pos += 8
+
+	config.ProtocolFeeBasisPoints = binary.LittleEndian.Uint64(data[pos : pos+8])
+	pos += 8
+
+	config.DisableFlags = data[pos]
+	pos++
+
+	for i := 0; i < 8; i++ {
+		config.ProtocolFeeRecipients[i] = solana.PublicKeyFromBytes(data[pos : pos+32])
+		pos += 32
+	}
+
+	return config, nil
 }
