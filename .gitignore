@@ -8,7 +8,8 @@ mainnet.json
 TODO.md
 .env
 TODO-RAY.md
-configs/
+configs/tasks.csv
+.configs/
 .idea/
 internal/dex/pumpfun/pump.json
 CLAUDE.md
