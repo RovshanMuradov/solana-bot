@@ -9,7 +9,6 @@ import (
 	"os"
 
 	"github.com/gagliardetto/solana-go"
-	"github.com/mr-tron/base58"
 )
 
 // Wallet представляет кошелёк Solana.
@@ -21,15 +20,13 @@ type Wallet struct {
 
 // NewWallet создаёт новый кошелёк из base58-encoded приватного ключа.
 func NewWallet(privateKeyBase58 string) (*Wallet, error) {
-	privateKeyBytes, err := base58.Decode(privateKeyBase58)
+	privateKey, err := solana.PrivateKeyFromBase58(privateKeyBase58)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode private key: %w", err)
+		return nil, fmt.Errorf("invalid private key: %w", err)
 	}
-	if len(privateKeyBytes) != 64 {
-		return nil, fmt.Errorf("invalid private key length: expected 64 bytes, got %d", len(privateKeyBytes))
-	}
-	privateKey := solana.PrivateKey(privateKeyBytes)
+
 	publicKey := privateKey.PublicKey()
+
 	return &Wallet{
 		PrivateKey: privateKey,
 		PublicKey:  publicKey,
