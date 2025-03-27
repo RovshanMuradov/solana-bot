@@ -23,14 +23,6 @@ type GlobalConfig struct {
 	ProtocolFeeRecipients  [8]solana.PublicKey
 }
 
-const (
-	DisableCreatePool = 1 << iota
-	DisableDeposit
-	DisableWithdraw
-	DisableBuy
-	DisableSell
-)
-
 type Pool struct {
 	PoolBump              uint8
 	Index                 uint16
@@ -55,22 +47,6 @@ type PoolInfo struct {
 	LPMint                solana.PublicKey
 	PoolBaseTokenAccount  solana.PublicKey
 	PoolQuoteTokenAccount solana.PublicKey
-}
-
-func (p *PoolInfo) SwapTokens() *PoolInfo {
-	return &PoolInfo{
-		Address:               p.Address,
-		BaseMint:              p.QuoteMint,
-		QuoteMint:             p.BaseMint,
-		BaseReserves:          p.QuoteReserves,
-		QuoteReserves:         p.BaseReserves,
-		LPSupply:              p.LPSupply,
-		FeesBasisPoints:       p.FeesBasisPoints,
-		ProtocolFeeBPS:        p.ProtocolFeeBPS,
-		LPMint:                p.LPMint,
-		PoolBaseTokenAccount:  p.PoolQuoteTokenAccount,
-		PoolQuoteTokenAccount: p.PoolBaseTokenAccount,
-	}
 }
 
 func ParseGlobalConfig(data []byte) (*GlobalConfig, error) {
