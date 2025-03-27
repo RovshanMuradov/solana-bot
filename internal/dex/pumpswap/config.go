@@ -56,7 +56,7 @@ func (cfg *Config) SetupForToken(quoteTokenMint string, logger *zap.Logger) erro
 		return fmt.Errorf("invalid token mint address: %w", err)
 	}
 
-	cfg.BaseMint = solana.MustPublicKeyFromBase58("So11111111111111111111111111111111111111112")
+	cfg.BaseMint = solana.SolMint
 
 	globalConfigAddr, _, err := cfg.DeriveGlobalConfigAddress()
 	if err != nil {
