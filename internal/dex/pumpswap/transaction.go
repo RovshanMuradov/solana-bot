@@ -17,25 +17,21 @@ import (
 
 // buildAndSubmitTransaction строит, подписывает и отправляет транзакцию.
 func (d *DEX) buildAndSubmitTransaction(ctx context.Context, instructions []solana.Instruction) (solana.Signature, error) {
-	var sig solana.Signature
-	var err error
-
 	op := func() (solana.Signature, error) {
 		tx, err := d.createSignedTransaction(ctx, instructions)
 		if err != nil {
 			return solana.Signature{}, err
 		}
 
-		sig, err = d.submitAndConfirmTransaction(ctx, tx)
-		return sig, err
+		return d.submitAndConfirmTransaction(ctx, tx)
 	}
 
-	sig, err = backoff.Retry(ctx, op,
+	return backoff.Retry(
+		ctx,
+		op,
 		backoff.WithBackOff(backoff.NewExponentialBackOff()),
 		backoff.WithMaxElapsedTime(15*time.Second),
 	)
-
-	return sig, err
 }
 
 func (d *DEX) createSignedTransaction(ctx context.Context, instructions []solana.Instruction) (*solana.Transaction, error) {
@@ -56,16 +52,31 @@ func (d *DEX) createSignedTransaction(ctx context.Context, instructions []solana
 	return tx, nil
 }
 
+// В transaction.go:
 func (d *DEX) submitAndConfirmTransaction(ctx context.Context, tx *solana.Transaction) (solana.Signature, error) {
 	sig, err := d.client.SendTransaction(ctx, tx)
-	if err != nil && strings.Contains(err.Error(), "BlockhashNotFound") {
-		return solana.Signature{}, err
-	}
 	if err != nil {
-		return solana.Signature{}, backoff.Permanent(err)
+		if strings.Contains(err.Error(), "BlockhashNotFound") {
+			return solana.Signature{}, err // Временная ошибка для retry
+		}
+
+		// Проверка на известные ошибки
+		if IsSlippageExceededError(err) {
+			return solana.Signature{}, &SlippageExceededError{
+				OriginalError: err,
+			}
+		}
+
+		// Постоянная ошибка
+		return solana.Signature{}, backoff.Permanent(fmt.Errorf("transaction failed: %w", err))
 	}
 
-	return sig, d.client.WaitForTransactionConfirmation(ctx, sig, rpc.CommitmentConfirmed)
+	err = d.client.WaitForTransactionConfirmation(ctx, sig, rpc.CommitmentConfirmed)
+	if err != nil {
+		return sig, fmt.Errorf("transaction confirmed but with error: %w", err)
+	}
+
+	return sig, nil
 }
 
 // preparePriorityInstructions подготавливает инструкции для установки лимита и цены вычислительных единиц.

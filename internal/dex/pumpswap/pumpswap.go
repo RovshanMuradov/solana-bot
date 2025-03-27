@@ -23,40 +23,49 @@ func (d *DEX) effectiveMints() (baseMint, quoteMint solana.PublicKey) {
 	return d.config.BaseMint, d.config.QuoteMint
 }
 
+// В pumpswap.go:
 func (d *DEX) getGlobalConfig(ctx context.Context) (*GlobalConfig, error) {
-	// First check with read lock
 	d.configMutex.RLock()
-	if d.globalConfig != nil {
-		config := d.globalConfig
-		d.configMutex.RUnlock()
-		return config, nil
-	}
+	config := d.globalConfig
 	d.configMutex.RUnlock()
 
-	// If not found, use write lock for the entire fetch-and-set operation
+	if config != nil {
+		return config, nil
+	}
+
+	// Если кэша нет, получаем данные с блокировкой записи
 	d.configMutex.Lock()
 	defer d.configMutex.Unlock()
 
-	// Double-check after acquiring write lock
+	// Повторная проверка после получения блокировки
 	if d.globalConfig != nil {
 		return d.globalConfig, nil
 	}
 
-	globalConfigAddr, _, err := d.config.DeriveGlobalConfigAddress()
-	if err != nil {
-		return nil, fmt.Errorf("failed to derive global config address: %w", err)
-	}
-
-	globalConfigInfo, err := d.client.GetAccountInfo(ctx, globalConfigAddr)
-	if err != nil || globalConfigInfo == nil || globalConfigInfo.Value == nil {
-		return nil, fmt.Errorf("failed to get global config: %w", err)
-	}
-
-	config, err := ParseGlobalConfig(globalConfigInfo.Value.Data.GetBinary())
+	config, err := d.fetchGlobalConfigFromChain(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	d.globalConfig = config
 	return config, nil
+}
+
+// Выделение получения данных в отдельный метод
+func (d *DEX) fetchGlobalConfigFromChain(ctx context.Context) (*GlobalConfig, error) {
+	globalConfigAddr, _, err := d.config.DeriveGlobalConfigAddress()
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive global config address: %w", err)
+	}
+
+	accountInfo, err := d.client.GetAccountInfo(ctx, globalConfigAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get global config: %w", err)
+	}
+
+	if accountInfo == nil || accountInfo.Value == nil {
+		return nil, fmt.Errorf("global config account not found")
+	}
+
+	return ParseGlobalConfig(accountInfo.Value.Data.GetBinary())
 }

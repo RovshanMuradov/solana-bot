@@ -32,6 +32,7 @@ type PoolManagerInterface interface {
 	FindPoolWithRetry(ctx context.Context, baseMint, quoteMint solana.PublicKey, maxRetries int, retryDelay time.Duration) (*PoolInfo, error)
 	CalculateSwapQuote(pool *PoolInfo, inputAmount uint64, isBaseToQuote bool) (uint64, float64)
 	CalculateSlippage(pool *PoolInfo, inputAmount uint64, isBaseToQuote bool) float64
+	FetchPoolInfo(ctx context.Context, poolAddress solana.PublicKey) (*PoolInfo, error)
 }
 
 // PoolManager handles operations with PumpSwap pools

@@ -51,14 +51,9 @@ func NewDEX(
 // Возвращает ошибку в случае неудачи, включая специализированную SlippageExceededError
 // при превышении допустимого проскальзывания.
 func (d *DEX) ExecuteSwap(ctx context.Context, params SwapParams) error {
-	pool, poolReversed, err := d.findAndValidatePool(ctx)
+	pool, _, err := d.findAndValidatePool(ctx)
 	if err != nil {
 		return err
-	}
-
-	// Если пул найден в обратном порядке, логируем это
-	if poolReversed {
-		d.logger.Debug("Pool mint order is reversed relative to effective configuration")
 	}
 
 	accounts, err := d.prepareTokenAccounts(ctx, pool)
@@ -71,34 +66,36 @@ func (d *DEX) ExecuteSwap(ctx context.Context, params SwapParams) error {
 		return err
 	}
 
-	// Получаем точность токенов
-	baseDecimals := d.getTokenDecimals(ctx, pool.BaseMint, DefaultTokenDecimals)
-	quoteDecimals := d.getTokenDecimals(ctx, pool.QuoteMint, WSOLDecimals)
-
-	d.logger.Debug("Token decimals",
-		zap.Uint8("base_decimals", baseDecimals),
-		zap.Uint8("quote_decimals", quoteDecimals),
-		zap.String("base_mint", pool.BaseMint.String()),
-		zap.String("quote_mint", pool.QuoteMint.String()))
-
 	// Вычисляем параметры для свапа
 	amounts := d.calculateSwapAmounts(pool, params.IsBuy, params.Amount, params.SlippagePercent)
 
-	// Собираем инструкции для транзакции
-	instructions := d.buildSwapTransaction(pool, accounts, params.IsBuy, amounts.BaseAmount, amounts.QuoteAmount, priorityInstructions)
+	// Создаем и отправляем транзакцию
+	instructions := d.buildSwapTransaction(pool, accounts, params.IsBuy, amounts.BaseAmount,
+		amounts.QuoteAmount, priorityInstructions)
 
-	// Отправляем транзакцию
 	sig, err := d.buildAndSubmitTransaction(ctx, instructions)
 	if err != nil {
 		return d.handleSwapError(err, params)
 	}
 
-	d.logger.Info("Swap executed",
+	d.logger.Info("Swap executed successfully",
 		zap.String("signature", sig.String()),
 		zap.Bool("is_buy", params.IsBuy),
-		zap.Uint64("amount", params.Amount),
-		zap.Float64("slippage_percent", params.SlippagePercent))
+		zap.Uint64("amount", params.Amount))
 	return nil
+}
+
+// Новый метод для подготовки инструкций
+func (d *DEX) prepareSwapInstructions(pool *PoolInfo, accounts *PreparedTokenAccounts,
+	params SwapParams, amounts *SwapAmounts) ([]solana.Instruction, error) {
+
+	priorityInstructions, err := d.preparePriorityInstructions(params.ComputeUnits, params.PriorityFeeSol)
+	if err != nil {
+		return nil, err
+	}
+
+	return d.buildSwapTransaction(pool, accounts, params.IsBuy, amounts.BaseAmount,
+		amounts.QuoteAmount, priorityInstructions), nil
 }
 
 // ExecuteSell выполняет операцию продажи токена за WSOL
