@@ -6,8 +6,14 @@ package pumpswap
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
+	"github.com/rovshanmuradov/solana-bot/internal/wallet"
+
+	"go.uber.org/zap"
+	"sync"
 
 	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
 )
 
 var (
@@ -47,6 +53,61 @@ type PoolInfo struct {
 	LPMint                solana.PublicKey
 	PoolBaseTokenAccount  solana.PublicKey
 	PoolQuoteTokenAccount solana.PublicKey
+}
+
+const (
+	// Адрес WSOL токена
+	WSOLMint = "So11111111111111111111111111111111111111112"
+
+	// Decimals по умолчанию
+	DefaultTokenDecimals = 6
+	WSOLDecimals         = 9
+)
+
+type PreparedTokenAccounts struct {
+	UserBaseATA             solana.PublicKey
+	UserQuoteATA            solana.PublicKey
+	ProtocolFeeRecipientATA solana.PublicKey
+	ProtocolFeeRecipient    solana.PublicKey
+	CreateBaseATAIx         solana.Instruction
+	CreateQuoteATAIx        solana.Instruction
+}
+
+// DEX реализует операции для PumpSwap.
+type DEX struct {
+	client      *solbc.Client
+	wallet      *wallet.Wallet
+	logger      *zap.Logger
+	config      *Config
+	poolManager *PoolManager
+	rpc         *rpc.Client
+
+	// Новые поля
+	globalConfig *GlobalConfig
+	configMutex  sync.RWMutex
+}
+
+// SwapAmounts содержит результаты расчёта параметров свапа
+type SwapAmounts struct {
+	BaseAmount  uint64  // Сумма базовой валюты
+	QuoteAmount uint64  // Сумма котируемой валюты
+	Price       float64 // Расчётная цена
+}
+
+// Определяем SwapParams локально в пакете pumpswap
+type SwapParams struct {
+	IsBuy           bool
+	Amount          uint64
+	SlippagePercent float64
+	PriorityFeeSol  string
+	ComputeUnits    uint32
+}
+
+// SlippageExceededError представляет ошибку превышения проскальзывания
+type SlippageExceededError struct {
+	SlippagePercent float64
+	Amount          uint64
+	OriginalError   error
 }
 
 func ParseGlobalConfig(data []byte) (*GlobalConfig, error) {

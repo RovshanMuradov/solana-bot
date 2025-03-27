@@ -12,7 +12,6 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
@@ -23,61 +22,6 @@ import (
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 )
-
-const (
-	// Адрес WSOL токена
-	WSOLMint = "So11111111111111111111111111111111111111112"
-
-	// Decimals по умолчанию
-	DefaultTokenDecimals = 6
-	WSOLDecimals         = 9
-)
-
-type PreparedTokenAccounts struct {
-	UserBaseATA             solana.PublicKey
-	UserQuoteATA            solana.PublicKey
-	ProtocolFeeRecipientATA solana.PublicKey
-	ProtocolFeeRecipient    solana.PublicKey
-	CreateBaseATAIx         solana.Instruction
-	CreateQuoteATAIx        solana.Instruction
-}
-
-// DEX реализует операции для PumpSwap.
-type DEX struct {
-	client      *solbc.Client
-	wallet      *wallet.Wallet
-	logger      *zap.Logger
-	config      *Config
-	poolManager *PoolManager
-	rpc         *rpc.Client
-
-	// Новые поля
-	globalConfig *GlobalConfig
-	configMutex  sync.RWMutex
-}
-
-// SwapAmounts содержит результаты расчёта параметров свапа
-type SwapAmounts struct {
-	BaseAmount  uint64  // Сумма базовой валюты
-	QuoteAmount uint64  // Сумма котируемой валюты
-	Price       float64 // Расчётная цена
-}
-
-// Определяем SwapParams локально в пакете pumpswap
-type SwapParams struct {
-	IsBuy           bool
-	Amount          uint64
-	SlippagePercent float64
-	PriorityFeeSol  string
-	ComputeUnits    uint32
-}
-
-// SlippageExceededError представляет ошибку превышения проскальзывания
-type SlippageExceededError struct {
-	SlippagePercent float64
-	Amount          uint64
-	OriginalError   error
-}
 
 // NewDEX создаёт новый экземпляр DEX для PumpSwap.
 func NewDEX(client *solbc.Client, w *wallet.Wallet, logger *zap.Logger, config *Config, monitorInterval string) (*DEX, error) {
