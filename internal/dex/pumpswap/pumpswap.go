@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"github.com/cenkalti/backoff/v5"
 	"github.com/gagliardetto/solana-go/programs/token"
-	"github.com/rovshanmuradov/solana-bot/internal/dex"
 	"math"
 	"math/big"
 	"strconv"
@@ -57,18 +56,27 @@ type DEX struct {
 	configMutex  sync.RWMutex
 }
 
-// SlippageExceededError представляет ошибку превышения проскальзывания
-type SlippageExceededError struct {
-	SlippagePercent float64
-	Amount          uint64
-	OriginalError   error
-}
-
 // SwapAmounts содержит результаты расчёта параметров свапа
 type SwapAmounts struct {
 	BaseAmount  uint64  // Сумма базовой валюты
 	QuoteAmount uint64  // Сумма котируемой валюты
 	Price       float64 // Расчётная цена
+}
+
+// Определяем SwapParams локально в пакете pumpswap
+type SwapParams struct {
+	IsBuy           bool
+	Amount          uint64
+	SlippagePercent float64
+	PriorityFeeSol  string
+	ComputeUnits    uint32
+}
+
+// SlippageExceededError представляет ошибку превышения проскальзывания
+type SlippageExceededError struct {
+	SlippagePercent float64
+	Amount          uint64
+	OriginalError   error
 }
 
 // NewDEX создаёт новый экземпляр DEX для PumpSwap.
@@ -263,15 +271,6 @@ func (d *DEX) getTokenDecimals(ctx context.Context, mint solana.PublicKey, defau
 	return dec
 }
 
-func (e *SlippageExceededError) Error() string {
-	return fmt.Sprintf("slippage exceeded: transaction requires more funds than maximum specified (%f%%): %v",
-		e.SlippagePercent, e.OriginalError)
-}
-
-func (e *SlippageExceededError) Unwrap() error {
-	return e.OriginalError
-}
-
 // calculateSwapAmounts вычисляет параметры для операции свапа в зависимости от типа операции (покупка/продажа)
 func (d *DEX) calculateSwapAmounts(
 	pool *PoolInfo,
@@ -379,8 +378,17 @@ func IsSlippageExceededError(err error) bool {
 		strings.Contains(err.Error(), strconv.Itoa(SlippageExceededCodeInt)))
 }
 
+func (e *SlippageExceededError) Error() string {
+	return fmt.Sprintf("slippage exceeded: transaction requires more funds than maximum specified (%f%%): %v",
+		e.SlippagePercent, e.OriginalError)
+}
+
+func (e *SlippageExceededError) Unwrap() error {
+	return e.OriginalError
+}
+
 // handleSwapError обрабатывает специфичные ошибки операции свапа
-func (d *DEX) handleSwapError(err error, params dex.SwapParams) error {
+func (d *DEX) handleSwapError(err error, params SwapParams) error {
 	if IsSlippageExceededError(err) {
 		d.logger.Warn("Exceeded slippage error - try increasing slippage percentage",
 			zap.Float64("current_slippage_percent", params.SlippagePercent),
@@ -406,13 +414,13 @@ func (d *DEX) handleSwapError(err error, params dex.SwapParams) error {
 //
 // Возвращает ошибку в случае неудачи, включая специализированную SlippageExceededError
 // при превышении допустимого проскальзывания.
-func (d *DEX) ExecuteSwap(ctx context.Context, params dex.SwapParams) error {
+func (d *DEX) ExecuteSwap(ctx context.Context, params SwapParams) error {
 	pool, poolReversed, err := d.findAndValidatePool(ctx)
 	if err != nil {
 		return err
 	}
 
-	// Если пул найден в обратном порядке, логируем это – для дальнейшей отладки.
+	// Если пул найден в обратном порядке, логируем это
 	if poolReversed {
 		d.logger.Debug("Pool mint order is reversed relative to effective configuration")
 	}
@@ -427,7 +435,7 @@ func (d *DEX) ExecuteSwap(ctx context.Context, params dex.SwapParams) error {
 		return err
 	}
 
-	// Получаем точность токенов для логирования
+	// Получаем точность токенов
 	baseDecimals := d.getTokenDecimals(ctx, pool.BaseMint, DefaultTokenDecimals)
 	quoteDecimals := d.getTokenDecimals(ctx, pool.QuoteMint, WSOLDecimals)
 
@@ -457,10 +465,9 @@ func (d *DEX) ExecuteSwap(ctx context.Context, params dex.SwapParams) error {
 	return nil
 }
 
-// ExecuteSell выполняет операцию продажи токена за WSOL.
+// ExecuteSell выполняет операцию продажи токена за WSOL
 func (d *DEX) ExecuteSell(ctx context.Context, tokenAmount uint64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
-	// Создаем параметры свапа с импортированным типом из пакета dex
-	params := dex.SwapParams{
+	params := SwapParams{
 		IsBuy:           false,
 		Amount:          tokenAmount,
 		SlippagePercent: slippagePercent,

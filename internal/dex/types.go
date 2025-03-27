@@ -1,9 +1,11 @@
-// ==========================================
-// File: internal/dex/types.go (modified)
-// ==========================================
+// Файл: internal/dex/types.go
+
 package dex
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // OperationType defines a DEX operation type.
 type OperationType string
@@ -22,14 +24,15 @@ type Task struct {
 	TokenMint       string        // Token mint address
 	PriorityFee     string        // Priority fee in SOL (string format, e.g. "0.000001")
 	ComputeUnits    uint32        // Compute units for the transaction
-	MonitorInterval time.Duration // Интервал обновления цены при мониторинге (новое поле)
+	MonitorInterval time.Duration // Интервал обновления цены при мониторинге
 }
 
-// SwapParams содержит параметры для выполнения свапа
-type SwapParams struct {
-	IsBuy           bool
-	Amount          uint64
-	SlippagePercent float64
-	PriorityFeeSol  string
-	ComputeUnits    uint32
+// DEX — единый интерфейс для работы с различными DEX.
+type DEX interface {
+	// GetName возвращает название биржи.
+	GetName() string
+	// Execute выполняет операцию, описанную в задаче.
+	Execute(ctx context.Context, task *Task) error
+	// GetTokenPrice возвращает текущую цену токена
+	GetTokenPrice(ctx context.Context, tokenMint string) (float64, error)
 }

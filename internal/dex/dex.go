@@ -20,16 +20,6 @@ import (
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 )
 
-// DEX — единый интерфейс для работы с различными DEX.
-type DEX interface {
-	// GetName возвращает название биржи.
-	GetName() string
-	// Execute выполняет операцию, описанную в задаче.
-	Execute(ctx context.Context, task *Task) error
-	// GetTokenPrice возвращает текущую цену токена (новый метод)
-	GetTokenPrice(ctx context.Context, tokenMint string) (float64, error)
-}
-
 // pumpfunDEXAdapter – адаптер для Pump.fun, реализующий интерфейс DEX.
 type pumpfunDEXAdapter struct {
 	inner   *pumpfun.DEX
@@ -290,8 +280,8 @@ func (d *pumpswapDEXAdapter) Execute(ctx context.Context, task *Task) error {
 		// Convert SOL amount to lamports for swap
 		amountLamports := uint64(task.AmountSol * 1e9)
 
-		// Execute swap (buy) operation - assuming user has WSOL and wants to buy the token
-		err := d.inner.ExecuteSwap(ctx, SwapParams{
+		// Execute swap (buy) operation с использованием типа из пакета pumpswap
+		err := d.inner.ExecuteSwap(ctx, pumpswap.SwapParams{
 			IsBuy:           true,
 			Amount:          amountLamports,
 			SlippagePercent: task.SlippagePercent,
