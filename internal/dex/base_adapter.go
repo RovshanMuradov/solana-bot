@@ -1,3 +1,6 @@
+// =============================
+// File: internal/dex/base_adapter.go
+// =============================
 package dex
 
 import (

@@ -1,4 +1,6 @@
-// Файл: internal/dex/types.go
+// =============================
+// File: internal/dex/types.go
+// =============================
 
 package dex
 

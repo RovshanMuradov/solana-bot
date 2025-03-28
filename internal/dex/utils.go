@@ -1,3 +1,6 @@
+// =============================
+// File: internal/dex/utils.go
+// =============================
 package dex
 
 import (

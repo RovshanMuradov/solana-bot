@@ -1,3 +1,6 @@
+// =============================
+// File: internal/dex/pumpfun_adapter.go
+// =============================
 package dex
 
 import (
