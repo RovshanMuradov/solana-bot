@@ -18,21 +18,19 @@ import (
 	"github.com/rovshanmuradov/solana-bot/internal/storage"
 	"github.com/rovshanmuradov/solana-bot/internal/storage/postgres"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
-	"github.com/rovshanmuradov/solana-bot/internal/utils/metrics"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 )
 
 // Runner represents the main bot process controller
 type Runner struct {
-	logger           *zap.Logger
-	config           *task.Config
-	solClient        *solbc.Client
-	metricsCollector *metrics.Collector
-	db               storage.Storage // Changed from *postgres.Storage to storage.Storage
-	taskManager      *task.Manager
-	wallets          map[string]*wallet.Wallet
-	defaultWallet    *wallet.Wallet
-	shutdownCh       chan os.Signal
+	logger        *zap.Logger
+	config        *task.Config
+	solClient     *solbc.Client
+	db            storage.Storage
+	taskManager   *task.Manager
+	wallets       map[string]*wallet.Wallet
+	defaultWallet *wallet.Wallet
+	shutdownCh    chan os.Signal
 }
 
 // NewRunner creates a new bot runner instance
@@ -71,11 +69,6 @@ func (r *Runner) Initialize(configPath string) error {
 
 	// Initialize Solana client
 	r.solClient = solbc.NewClient(cfg.RPCList[0], r.logger)
-
-	// Initialize metrics collector
-	r.metricsCollector = metrics.NewCollector()
-	r.metricsCollector.SetSolanaClient(r.solClient)
-	r.metricsCollector.SetDefaultWallet(r.defaultWallet)
 
 	// Initialize task manager
 	r.taskManager = task.NewManager(r.logger)
@@ -138,7 +131,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		// Get DEX adapter
-		dexAdapter, err := dex.GetDEXByName(t.Module, r.solClient, w, r.logger, r.metricsCollector)
+		dexAdapter, err := dex.GetDEXByName(t.Module, r.solClient, w, r.logger)
 		if err != nil {
 			r.logger.Error("DEX adapter init error", zap.String("task", t.TaskName), zap.Error(err))
 			continue
@@ -192,7 +185,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			// Convert priceDelay from milliseconds to time.Duration
 			// price_delay is in milliseconds where 100-1000 = 1 second
 			monitorInterval := time.Duration(r.config.PriceDelay) * time.Millisecond
-			
+
 			monitorConfig := &monitor.SessionConfig{
 				TokenMint:       dexTask.TokenMint,
 				TokenAmount:     tokenAmount,       // This should be the actual received tokens
