@@ -19,7 +19,7 @@ func (d *pumpfunDEXAdapter) GetName() string {
 }
 
 // initPumpFun инициализирует Pump.fun DEX если необходимо
-func (d *pumpfunDEXAdapter) initPumpFun(ctx context.Context, tokenMint string) error {
+func (d *pumpfunDEXAdapter) initPumpFun(_ context.Context, tokenMint string) error {
 	d.initMu.Lock()
 	defer d.initMu.Unlock()
 

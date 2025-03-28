@@ -15,7 +15,7 @@ import (
 )
 
 // deriveBondingCurveAccounts выводит адреса bonding curve и ассоциированного токен-аккаунта
-func (d *DEX) deriveBondingCurveAccounts(ctx context.Context) (bondingCurve, associatedBondingCurve solana.PublicKey, err error) {
+func (d *DEX) deriveBondingCurveAccounts(_ context.Context) (bondingCurve, associatedBondingCurve solana.PublicKey, err error) {
 	bondingCurve, _, err = solana.FindProgramAddress(
 		[][]byte{[]byte("bonding-curve"), d.config.Mint.Bytes()},
 		d.config.ContractAddress,

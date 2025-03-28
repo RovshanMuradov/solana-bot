@@ -11,7 +11,6 @@ import (
 	"sync"
 
 	"github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
 )
 
 const (
@@ -85,7 +84,6 @@ type DEX struct {
 	logger      *zap.Logger
 	config      *Config
 	poolManager PoolManagerInterface
-	rpc         *rpc.Client
 
 	// Новые поля
 	globalConfig *GlobalConfig

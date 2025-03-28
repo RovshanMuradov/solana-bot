@@ -19,7 +19,7 @@ func (d *DEX) prepareTransactionContext(ctx context.Context, timeout time.Durati
 }
 
 // prepareBaseInstructions подготавливает базовые инструкции (приоритет и ATA)
-func (d *DEX) prepareBaseInstructions(ctx context.Context, priorityFeeSol string, computeUnits uint32) ([]solana.Instruction, solana.PublicKey, error) {
+func (d *DEX) prepareBaseInstructions(_ context.Context, priorityFeeSol string, computeUnits uint32) ([]solana.Instruction, solana.PublicKey, error) {
 	// Create priority instructions
 	priorityInstructions, err := d.priorityManager.CreatePriorityInstructions(priorityFeeSol, computeUnits)
 	if err != nil {

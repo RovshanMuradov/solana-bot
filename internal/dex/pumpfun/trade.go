@@ -40,8 +40,8 @@ func (d *DEX) prepareBuyTransaction(ctx context.Context, solAmountLamports uint6
 	)
 
 	// Add buy instruction to base instructions
-	instructions := append(baseInstructions, buyIx)
-	return instructions, nil
+	baseInstructions = append(baseInstructions, buyIx)
+	return baseInstructions, nil
 }
 
 // prepareSellTransaction подготавливает транзакцию продажи
@@ -94,8 +94,8 @@ func (d *DEX) prepareSellTransaction(ctx context.Context, tokenAmount uint64, sl
 	)
 
 	// Add sell instruction to base instructions
-	instructions := append(baseInstructions, sellIx)
-	return instructions, nil
+	baseInstructions = append(baseInstructions, sellIx)
+	return baseInstructions, nil
 }
 
 // calculateMinSolOutput вычисляет минимальный выход SOL с учетом проскальзывания

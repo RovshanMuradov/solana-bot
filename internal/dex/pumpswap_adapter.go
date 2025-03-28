@@ -82,7 +82,7 @@ func (d *pumpswapDEXAdapter) Execute(ctx context.Context, task *Task) error {
 }
 
 // initPumpSwap инициализирует Pump.swap DEX если необходимо
-func (d *pumpswapDEXAdapter) initPumpSwap(ctx context.Context, tokenMint string) error {
+func (d *pumpswapDEXAdapter) initPumpSwap(_ context.Context, tokenMint string) error {
 	d.initMu.Lock()
 	defer d.initMu.Unlock()
 

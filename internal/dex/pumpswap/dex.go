@@ -61,17 +61,14 @@ func (d *DEX) ExecuteSwap(ctx context.Context, params SwapParams) error {
 		return err
 	}
 
-	priorityInstructions, err := d.preparePriorityInstructions(params.ComputeUnits, params.PriorityFeeSol)
-	if err != nil {
-		return err
-	}
-
 	// Вычисляем параметры для свапа
 	amounts := d.calculateSwapAmounts(pool, params.IsBuy, params.Amount, params.SlippagePercent)
 
-	// Создаем и отправляем транзакцию
-	instructions := d.buildSwapTransaction(pool, accounts, params.IsBuy, amounts.BaseAmount,
-		amounts.QuoteAmount, priorityInstructions)
+	// Подготавливаем инструкции для транзакции
+	instructions, err := d.prepareSwapInstructions(pool, accounts, params, amounts)
+	if err != nil {
+		return err
+	}
 
 	sig, err := d.buildAndSubmitTransaction(ctx, instructions)
 	if err != nil {
