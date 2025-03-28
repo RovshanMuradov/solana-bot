@@ -11,13 +11,6 @@ import (
 )
 
 // Known PumpFun protocol addresses
-var (
-	// Program ID for Pump.fun protocol
-	PumpFunProgramID = solana.MustPublicKeyFromBase58("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
-
-	// Event authority for the Pump.fun protocol
-	PumpFunEventAuth = solana.MustPublicKeyFromBase58("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")
-)
 
 // Config holds the configuration for the Pump.fun DEX
 type Config struct {
