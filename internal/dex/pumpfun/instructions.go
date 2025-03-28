@@ -11,19 +11,14 @@ import (
 
 // Constants for the Pump.fun protocol
 var (
-	sellDiscriminator = []byte{0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad}
-
-	// Program ID for exact-sol operations
+	sellDiscriminator        = []byte{0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad}
 	PumpFunExactSolProgramID = solana.MustPublicKeyFromBase58("6sbiyZ7mLKmYkES2AKYPHtg4FjQMaqVx3jTHez6ZtfmX")
+	PumpFunProgramID         = solana.MustPublicKeyFromBase58("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+	PumpFunEventAuth         = solana.MustPublicKeyFromBase58("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")
 	AssociatedTokenProgramID = solana.SPLAssociatedTokenAccountProgramID
 	SystemProgramID          = solana.SystemProgramID
 	TokenProgramID           = solana.TokenProgramID
 	SysVarRentPubkey         = solana.SysVarRentPubkey
-	// Program ID for Pump.fun protocol
-	PumpFunProgramID = solana.MustPublicKeyFromBase58("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
-
-	// Event authority for the Pump.fun protocol
-	PumpFunEventAuth = solana.MustPublicKeyFromBase58("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")
 )
 
 // createBuyExactSolInstruction creates an instruction for buying with an exact SOL amount
@@ -89,9 +84,9 @@ func createSellInstruction(
 		solana.NewAccountMeta(associatedBondingCurve, true, false),
 		solana.NewAccountMeta(userATA, true, false),
 		solana.NewAccountMeta(userWallet, true, true),
-		solana.NewAccountMeta(solana.SystemProgramID, false, false),
+		solana.NewAccountMeta(SystemProgramID, false, false),
 		solana.NewAccountMeta(AssociatedTokenProgramID, false, false),
-		solana.NewAccountMeta(solana.TokenProgramID, false, false),
+		solana.NewAccountMeta(TokenProgramID, false, false),
 		solana.NewAccountMeta(eventAuthority, false, false),
 		solana.NewAccountMeta(programID, false, false),
 	}
