@@ -75,22 +75,12 @@ func createSellInstruction(
 	amount,
 	minSolOutput uint64,
 ) solana.Instruction {
-	// Create instruction data with precise byte layout:
-	// 1. 8-byte discriminator prefix
-	// 2. 8-byte little-endian encoded amount
-	// 3. 8-byte little-endian encoded minSolOutput
 	data := make([]byte, 24)
-
-	// Copy discriminator (8 bytes)
 	copy(data[0:8], sellDiscriminator)
-
-	// Add amount in little-endian bytes (8 bytes)
 	binary.LittleEndian.PutUint64(data[8:16], amount)
-
-	// Add min SOL output in little-endian bytes (8 bytes)
 	binary.LittleEndian.PutUint64(data[16:24], minSolOutput)
 
-	// Account list MUST follow exact protocol-mandated order
+	// Порядок параметров в NewAccountMeta: pubKey, IsWritable, IsSigner
 	accounts := []*solana.AccountMeta{
 		solana.NewAccountMeta(global, false, false),
 		solana.NewAccountMeta(feeRecipient, true, false),
@@ -99,9 +89,9 @@ func createSellInstruction(
 		solana.NewAccountMeta(associatedBondingCurve, true, false),
 		solana.NewAccountMeta(userATA, true, false),
 		solana.NewAccountMeta(userWallet, true, true),
-		solana.NewAccountMeta(SystemProgramID, false, false),
-		solana.NewAccountMeta(AssociatedTokenProgramID, false, false), // Сначала Associated Token Program
-		solana.NewAccountMeta(TokenProgramID, false, false),           // Затем Token Program
+		solana.NewAccountMeta(solana.SystemProgramID, false, false),
+		solana.NewAccountMeta(AssociatedTokenProgramID, false, false),
+		solana.NewAccountMeta(solana.TokenProgramID, false, false),
 		solana.NewAccountMeta(eventAuthority, false, false),
 		solana.NewAccountMeta(programID, false, false),
 	}

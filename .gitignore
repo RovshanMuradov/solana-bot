@@ -1,15 +1,7 @@
-merged_output.txt
-newSwap.txt
-diff_output.txt
-metrcis_info.txt
-newdif.txt
-swap-ts.txt
-mainnet.json
+# Игнорировать конкретные файлы
 TODO.md
 .env
-TODO-RAY.md
-configs/tasks.csv
-.configs/
-.idea/
-internal/dex/pumpfun/pump.json
 CLAUDE.md
+
+# Игнорировать всю директорию configs и все её содержимое
+/configs/
