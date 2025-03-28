@@ -1,5 +1,4 @@
 # Игнорировать конкретные файлы
-TODO.md
 .env
 CLAUDE.md
 .golangci.yml
