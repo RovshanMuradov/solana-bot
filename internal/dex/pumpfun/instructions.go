@@ -19,26 +19,12 @@ var (
 	SystemProgramID          = solana.SystemProgramID
 	TokenProgramID           = solana.TokenProgramID
 	SysVarRentPubkey         = solana.SysVarRentPubkey
-)
+	// Program ID for Pump.fun protocol
+	PumpFunProgramID = solana.MustPublicKeyFromBase58("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
 
-//// PumpFunInstructionParams содержит все параметры для создания инструкций Pump.fun
-//type PumpFunInstructionParams struct {
-//	// Общие параметры
-//	Global                 solana.PublicKey
-//	FeeRecipient           solana.PublicKey
-//	Mint                   solana.PublicKey
-//	BondingCurve           solana.PublicKey
-//	AssociatedBondingCurve solana.PublicKey
-//	UserATA                solana.PublicKey
-//	UserWallet             solana.PublicKey
-//	EventAuthority         solana.PublicKey
-//	ProgramID              solana.PublicKey
-//
-//	// Параметры операций
-//	SolAmountLamports uint64 // Для buy exact SOL
-//	TokenAmount       uint64 // Для sell
-//	MinSolOutput      uint64 // Для sell
-//}
+	// Event authority for the Pump.fun protocol
+	PumpFunEventAuth = solana.MustPublicKeyFromBase58("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")
+)
 
 // createBuyExactSolInstruction creates an instruction for buying with an exact SOL amount
 func createBuyExactSolInstruction(
