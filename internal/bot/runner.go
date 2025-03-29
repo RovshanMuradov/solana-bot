@@ -15,8 +15,6 @@ import (
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
 	"github.com/rovshanmuradov/solana-bot/internal/monitor"
-	"github.com/rovshanmuradov/solana-bot/internal/storage"
-	"github.com/rovshanmuradov/solana-bot/internal/storage/postgres"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 )
@@ -26,7 +24,6 @@ type Runner struct {
 	logger        *zap.Logger
 	config        *task.Config
 	solClient     *solbc.Client
-	db            storage.Storage
 	taskManager   *task.Manager
 	wallets       map[string]*wallet.Wallet
 	defaultWallet *wallet.Wallet
@@ -72,17 +69,6 @@ func (r *Runner) Initialize(configPath string) error {
 
 	// Initialize task manager
 	r.taskManager = task.NewManager(r.logger)
-
-	// Initialize postgres
-	store, err := postgres.NewStorage(cfg.PostgresURL, r.logger)
-	if err != nil {
-		return err
-	}
-	if err := store.RunMigrations(); err != nil {
-		return err
-	}
-	r.db = store
-	r.logger.Info("Postgres ready")
 
 	return nil
 }
@@ -178,20 +164,15 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 
 			// Create monitor session config
-			// Assuming the tokensReceived is the AmountSol for now (this should be updated to actual tokens received)
-			// In a real implementation, we would capture the actual tokens received from the snipe operation
-			tokenAmount := dexTask.AmountSol * 10 // This is just an example, should be actual token amount
-
-			// Convert priceDelay from milliseconds to time.Duration
-			// price_delay is in milliseconds where 100-1000 = 1 second
+			tokenAmount := dexTask.AmountSol * 10 // Пример, должно быть фактическое количество токенов
 			monitorInterval := time.Duration(r.config.PriceDelay) * time.Millisecond
 
 			monitorConfig := &monitor.SessionConfig{
 				TokenMint:       dexTask.TokenMint,
-				TokenAmount:     tokenAmount,       // This should be the actual received tokens
-				InitialAmount:   dexTask.AmountSol, // SOL spent
-				InitialPrice:    initialPrice,      // Initial price
-				MonitorInterval: monitorInterval,   // Use price_delay from config.json
+				TokenAmount:     tokenAmount,
+				InitialAmount:   dexTask.AmountSol,
+				InitialPrice:    initialPrice,
+				MonitorInterval: monitorInterval,
 				DEX:             dexAdapter,
 				Logger:          r.logger.Named("monitor"),
 			}
@@ -205,7 +186,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				continue
 			}
 
-			// Wait for session to complete (this blocks until user input or context cancellation)
+			// Wait for session to complete
 			if err := session.Wait(); err != nil {
 				r.logger.Error("Error during monitoring session",
 					zap.String("task", t.TaskName),
@@ -236,15 +217,7 @@ func (r *Runner) Run(ctx context.Context) error {
 // Shutdown performs graceful shutdown
 func (r *Runner) Shutdown() {
 	r.logger.Info("Bot shutting down gracefully")
-	// Close resources and connections
-	if r.db != nil {
-		// If your storage implementation provides a Close method, it should be added to the interface
-		if closer, ok := r.db.(interface{ Close() error }); ok {
-			if err := closer.Close(); err != nil {
-				r.logger.Error("Error closing database connection", zap.Error(err))
-			}
-		}
-	}
+	// Здесь был код закрытия БД, который удален
 }
 
 // WaitForShutdown blocks until shutdown signal is received

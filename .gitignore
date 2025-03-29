@@ -7,3 +7,4 @@ CLAUDE.md
 # Игнорировать всю директорию configs и все её содержимое
 /configs/
 .idea/
+solana-bot
