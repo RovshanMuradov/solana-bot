@@ -1,7 +1,6 @@
 // =============================================
 // File: internal/task/models.go
 // =============================================
-// Package task provides task management functionality
 package task
 
 import (
@@ -9,85 +8,9 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"time"
 
-	"github.com/spf13/viper"
 	"go.uber.org/zap"
-
-	"github.com/rovshanmuradov/solana-bot/internal/dex"
 )
-
-// Constants
-const LamportsPerSOL = 1_000_000_000
-
-// Task represents a trading task from CSV configuration
-type Task struct {
-	TaskName            string
-	Module              string
-	WalletName          string
-	Operation           string
-	AmountSol           float64 // For buy: Amount in SOL to spend. For sell: Number of tokens to sell
-	SlippagePercent     float64 // Slippage tolerance in percent (0-100)
-	PriorityFeeSol      string  // Priority fee in SOL (string format, e.g. "0.000001")
-	ComputeUnits        uint32  // Compute units for the transaction
-	ContractOrTokenMint string
-}
-
-// Config defines application configuration
-type Config struct {
-	RPCList      []string `mapstructure:"rpc_list"`
-	WebSocketURL string   `mapstructure:"websocket_url"`
-	PostgresURL  string   `mapstructure:"postgres_url"`
-	DebugLogging bool     `mapstructure:"debug_logging"`
-	PriceDelay   int      `mapstructure:"price_delay"`
-}
-
-// LoadConfig reads and validates configuration
-func LoadConfig(path string) (*Config, error) {
-	v := viper.New()
-	v.SetConfigFile(path)
-	v.SetDefault("debug_logging", true)
-	v.SetDefault("price_delay", 500) // Default to 500ms (half a second) for price monitoring
-
-	if err := v.ReadInConfig(); err != nil {
-		return nil, fmt.Errorf("read config error: %w", err)
-	}
-
-	var cfg Config
-	if err := v.Unmarshal(&cfg); err != nil {
-		return nil, fmt.Errorf("unmarshal error: %w", err)
-	}
-
-	// Basic validation
-	if len(cfg.RPCList) == 0 {
-		return nil, fmt.Errorf("rpc_list is empty")
-	}
-	if cfg.PostgresURL == "" {
-		return nil, fmt.Errorf("postgres_url is required")
-	}
-
-	return &cfg, nil
-}
-
-// ToDEXTask converts Task to dex.Task format
-func (t *Task) ToDEXTask() *dex.Task {
-	// We'll use a default value in case price_delay isn't specified in config
-	interval := 5 * time.Second
-
-	// Get the price_delay from config.json - needs to be loaded and passed
-	// Since we don't have direct access to the config here, this will be updated
-	// when the task is passed to the monitor in bot/runner.go
-
-	return &dex.Task{
-		Operation:       dex.OperationType(t.Operation),
-		AmountSol:       t.AmountSol,
-		SlippagePercent: t.SlippagePercent,
-		TokenMint:       t.ContractOrTokenMint,
-		PriorityFee:     t.PriorityFeeSol,
-		ComputeUnits:    t.ComputeUnits,
-		MonitorInterval: interval,
-	}
-}
 
 // Manager handles task loading and processing
 type Manager struct {
@@ -100,11 +23,8 @@ func NewManager(logger *zap.Logger) *Manager {
 }
 
 // LoadTasks reads tasks from CSV file
-// CSV format: task_name,module,wallet,operation,amount,slippage_percent,priority_fee_sol,contract_address,compute_units
-// For buy operations, amount = SOL to spend
-// For sell operations, amount = number of tokens to sell
-// Operation should be either "snipe" or "sell"
-func (m *Manager) LoadTasks(path string) ([]Task, error) {
+// CSV format: task_name,module,wallet,operation,amount,slippage_percent,priority_fee_sol,token_mint,compute_units
+func (m *Manager) LoadTasks(path string) ([]*Task, error) {
 	m.logger.Debug("Loading tasks", zap.String("path", path))
 
 	file, err := os.Open(path)
@@ -123,7 +43,7 @@ func (m *Manager) LoadTasks(path string) ([]Task, error) {
 	}
 
 	// Process records (skip header)
-	tasks := make([]Task, 0, len(records)-1)
+	tasks := make([]*Task, 0, len(records)-1)
 
 	for i, row := range records[1:] {
 		if len(row) < 8 {
@@ -133,61 +53,82 @@ func (m *Manager) LoadTasks(path string) ([]Task, error) {
 			continue
 		}
 
-		// Parse numeric values
-		amountSol, err := strconv.ParseFloat(row[4], 64)
+		task, err := m.parseTaskRow(row, i)
 		if err != nil {
-			m.logger.Warn("Invalid amount_sol value", zap.String("value", row[4]), zap.Error(err))
-			continue // Skip invalid rows instead of setting zeros
-		}
-
-		slippagePercent, err := strconv.ParseFloat(row[5], 64)
-		if err != nil {
-			m.logger.Warn("Invalid slippage_percent value", zap.String("value", row[5]), zap.Error(err))
+			m.logger.Warn("Skipping invalid task row",
+				zap.Int("row", i+2),
+				zap.Error(err))
 			continue
 		}
 
-		// Validate slippage is between MIN_SLIPPAGE and 100
-		const MinSlippage = 0.5 // Минимальный порог 0.5%
-		if slippagePercent < MinSlippage || slippagePercent > 100 {
-			m.logger.Warn("Slippage percent out of range (MIN_SLIPPAGE-100)",
-				zap.Float64("slippage", slippagePercent),
-				zap.Float64("min_allowed", MinSlippage))
-
-			// Default to 1% if out of range
-			slippagePercent = 1.0
-		}
-
-		// Parse priority fee as string (in SOL)
-		priorityFeeSol := row[6]
-		if priorityFeeSol == "" {
-			priorityFeeSol = "default" // Use default if not specified
-		}
-
-		// Parse compute units (default is 0 which means use default value)
-		var computeUnits uint32
-		if len(row) > 8 && row[8] != "" {
-			computeUnitsUint64, err := strconv.ParseUint(row[8], 10, 32)
-			if err != nil {
-				m.logger.Warn("Invalid compute_units value", zap.String("value", row[8]), zap.Error(err))
-			} else {
-				computeUnits = uint32(computeUnitsUint64)
-			}
-		}
-		// MonitorInterval from CSV is no longer used, we use PriceDelay from config.json instead
-
-		tasks = append(tasks, Task{
-			TaskName:            row[0],
-			Module:              row[1],
-			WalletName:          row[2],
-			Operation:           row[3],
-			AmountSol:           amountSol,
-			SlippagePercent:     slippagePercent,
-			PriorityFeeSol:      priorityFeeSol,
-			ComputeUnits:        computeUnits,
-			ContractOrTokenMint: row[7],
-		})
+		tasks = append(tasks, task)
 	}
 
 	m.logger.Info("Tasks loaded successfully", zap.Int("count", len(tasks)))
 	return tasks, nil
+}
+
+// parseTaskRow parses a single row from the CSV into a Task object
+func (m *Manager) parseTaskRow(row []string, index int) (*Task, error) {
+	// Parse operation
+	op := OperationType(row[3])
+	switch op {
+	case OperationSnipe, OperationSell, OperationSwap:
+		// Valid operations
+	default:
+		return nil, fmt.Errorf("invalid operation: %s", op)
+	}
+
+	// Parse amount
+	amountSol, err := strconv.ParseFloat(row[4], 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid amount_sol value: %w", err)
+	}
+
+	// Parse slippage
+	slippagePercent, err := strconv.ParseFloat(row[5], 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid slippage_percent value: %w", err)
+	}
+
+	// Validate slippage
+	const MinSlippage = 0.5
+	if slippagePercent < MinSlippage || slippagePercent > 100 {
+		m.logger.Warn("Slippage percent out of range, using default",
+			zap.Float64("provided", slippagePercent),
+			zap.Float64("min_allowed", MinSlippage))
+		slippagePercent = 1.0
+	}
+
+	// Parse priority fee (use default if empty)
+	priorityFeeSol := row[6]
+	if priorityFeeSol == "" {
+		priorityFeeSol = "default"
+	}
+
+	// Parse compute units (default is 0 which means use default value)
+	var computeUnits uint32
+	if len(row) > 8 && row[8] != "" {
+		computeUnitsUint64, err := strconv.ParseUint(row[8], 10, 32)
+		if err != nil {
+			m.logger.Warn("Invalid compute_units value, using default",
+				zap.String("value", row[8]),
+				zap.Error(err))
+		} else {
+			computeUnits = uint32(computeUnitsUint64)
+		}
+	}
+
+	return &Task{
+		ID:              index + 1,
+		TaskName:        row[0],
+		Module:          row[1],
+		WalletName:      row[2],
+		Operation:       op,
+		AmountSol:       amountSol,
+		SlippagePercent: slippagePercent,
+		PriorityFeeSol:  priorityFeeSol,
+		ComputeUnits:    computeUnits,
+		TokenMint:       row[7],
+	}, nil
 }

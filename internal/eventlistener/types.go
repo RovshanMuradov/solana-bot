@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// Event represents a WebSocket event
 type Event struct {
 	Type   string `json:"type"`
 	PoolID string `json:"pool_id,omitempty"`
@@ -16,10 +17,12 @@ type Event struct {
 	TokenB string `json:"token_b,omitempty"`
 }
 
+// EventValidator validates incoming events
 type eventValidator struct {
 	validTypes map[string]bool
 }
 
+// EventListener represents a WebSocket connection manager
 type EventListener struct {
 	conn      net.Conn
 	logger    *zap.Logger

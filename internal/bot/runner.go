@@ -1,20 +1,17 @@
-// =============================================
-// File: internal/bot/runner.go
-// =============================================
+// internal/bot/runner.go
 package bot
 
 import (
 	"context"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"go.uber.org/zap"
 
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
-	"github.com/rovshanmuradov/solana-bot/internal/dex"
-	"github.com/rovshanmuradov/solana-bot/internal/monitor"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 )
@@ -73,15 +70,16 @@ func (r *Runner) Initialize(configPath string) error {
 	return nil
 }
 
-// Run executes the main bot logic
+// Run executes the main bot logic with parallel workers
 func (r *Runner) Run(ctx context.Context) error {
 	// Setup signal handling
 	signal.Notify(r.shutdownCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// Start background monitoring for shutdown signal
+	// Create a context that can be cancelled
 	shutdownCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// Setup handler for shutdown signal
 	go func() {
 		sig := <-r.shutdownCh
 		r.logger.Info("Signal received", zap.String("signal", sig.String()))
@@ -95,129 +93,62 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	r.logger.Info("Tasks loaded", zap.Int("count", len(tasks)))
 
-	// Process each task
+	// Create a task channel and add tasks to it
+	taskCh := make(chan *task.Task, len(tasks))
 	for _, t := range tasks {
-		// Check for shutdown
+		taskCh <- t
+	}
+	close(taskCh)
+
+	// Determine number of workers from config
+	numWorkers := r.config.Workers
+	if numWorkers <= 0 {
+		numWorkers = 1
+	}
+	r.logger.Info("Starting task execution", zap.Int("workers", numWorkers))
+
+	// Create a wait group to track worker completion
+	var wg sync.WaitGroup
+	wg.Add(numWorkers)
+
+	// Start workers
+	for i := 0; i < numWorkers; i++ {
+		workerID := i + 1
+		go func(id int) {
+			defer wg.Done()
+			r.worker(id, shutdownCtx, taskCh)
+		}(workerID)
+	}
+
+	// Wait for workers to complete or context to be cancelled
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	// Wait for workers to finish or context to be cancelled
+	select {
+	case <-done:
+		r.logger.Info("All tasks completed successfully")
+	case <-shutdownCtx.Done():
+		r.logger.Info("Execution interrupted, waiting for workers to finish")
+		// Wait for workers to finish gracefully
 		select {
-		case <-shutdownCtx.Done():
-			r.logger.Info("Shutdown requested, stopping task processing")
-			return nil
-		default:
-			// Continue processing
-		}
-
-		// Get wallet for this task
-		w := r.defaultWallet
-		if r.wallets[t.WalletName] != nil {
-			w = r.wallets[t.WalletName]
-		}
-		if w == nil {
-			r.logger.Warn("Skipping task - no wallet found", zap.String("task", t.TaskName))
-			continue
-		}
-
-		// Get DEX adapter
-		dexAdapter, err := dex.GetDEXByName(t.Module, r.solClient, w, r.logger)
-		if err != nil {
-			r.logger.Error("DEX adapter init error", zap.String("task", t.TaskName), zap.Error(err))
-			continue
-		}
-
-		r.logger.Info("Executing task",
-			zap.String("task", t.TaskName),
-			zap.String("operation", t.Operation),
-			zap.String("DEX", dexAdapter.GetName()),
-			zap.String("token_mint", t.ContractOrTokenMint),
-		)
-
-		// Convert task to DEX format and execute
-		dexTask := t.ToDEXTask()
-
-		// Execute operation
-		if dexTask.Operation == dex.OperationSnipe {
-			r.logger.Info("Executing snipe operation with monitoring",
-				zap.String("task", t.TaskName),
-				zap.Duration("monitor_interval", dexTask.MonitorInterval))
-
-			// Execute the snipe operation
-			err = dexAdapter.Execute(shutdownCtx, dexTask)
-			if err != nil {
-				r.logger.Error("Error during snipe operation",
-					zap.String("task", t.TaskName),
-					zap.Error(err))
-				continue // Skip monitoring if snipe fails
-			}
-
-			r.logger.Info("Snipe completed, starting monitoring",
-				zap.String("task", t.TaskName))
-
-			// Get initial token price
-			ctx, cancel := context.WithTimeout(shutdownCtx, 10*time.Second)
-			initialPrice, err := dexAdapter.GetTokenPrice(ctx, dexTask.TokenMint)
-			cancel()
-
-			if err != nil {
-				r.logger.Error("Failed to get initial token price",
-					zap.String("task", t.TaskName),
-					zap.Error(err))
-				continue
-			}
-
-			// Create monitor session config
-			tokenAmount := dexTask.AmountSol * 10 // Пример, должно быть фактическое количество токенов
-			monitorInterval := time.Duration(r.config.PriceDelay) * time.Millisecond
-
-			monitorConfig := &monitor.SessionConfig{
-				TokenMint:       dexTask.TokenMint,
-				TokenAmount:     tokenAmount,
-				InitialAmount:   dexTask.AmountSol,
-				InitialPrice:    initialPrice,
-				MonitorInterval: monitorInterval,
-				DEX:             dexAdapter,
-				Logger:          r.logger.Named("monitor"),
-			}
-
-			// Create and start monitoring session
-			session := monitor.NewMonitoringSession(monitorConfig)
-			if err := session.Start(); err != nil {
-				r.logger.Error("Failed to start monitoring session",
-					zap.String("task", t.TaskName),
-					zap.Error(err))
-				continue
-			}
-
-			// Wait for session to complete
-			if err := session.Wait(); err != nil {
-				r.logger.Error("Error during monitoring session",
-					zap.String("task", t.TaskName),
-					zap.Error(err))
-			} else {
-				r.logger.Info("Monitoring session completed successfully",
-					zap.String("task", t.TaskName))
-			}
-		} else {
-			// Normal execution for sell operations
-			err = dexAdapter.Execute(shutdownCtx, dexTask)
-			if err != nil {
-				r.logger.Error("Error executing operation",
-					zap.String("task", t.TaskName),
-					zap.Error(err),
-				)
-			} else {
-				r.logger.Info("Operation completed",
-					zap.String("task", t.TaskName))
-			}
+		case <-done:
+			r.logger.Info("All workers finished gracefully")
+		case <-time.After(5 * time.Second):
+			r.logger.Warn("Not all workers finished in time")
 		}
 	}
 
-	r.logger.Info("All tasks completed")
 	return nil
 }
 
 // Shutdown performs graceful shutdown
 func (r *Runner) Shutdown() {
 	r.logger.Info("Bot shutting down gracefully")
-	// Здесь был код закрытия БД, который удален
+	// Здесь может быть код для корректного завершения всех подсистем
 }
 
 // WaitForShutdown blocks until shutdown signal is received

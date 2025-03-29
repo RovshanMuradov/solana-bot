@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// NewEventListener creates a new event listener instance
 func NewEventListener(ctx context.Context, wsURL string, logger *zap.Logger) (*EventListener, error) {
 	conn, _, _, err := ws.Dial(ctx, wsURL)
 	if err != nil {
@@ -34,6 +35,7 @@ func NewEventListener(ctx context.Context, wsURL string, logger *zap.Logger) (*E
 	}, nil
 }
 
+// Subscribe sets up an event handler that will receive all valid events
 func (el *EventListener) Subscribe(ctx context.Context, handler func(event Event)) error {
 	go func() {
 		defer el.Close()
@@ -62,6 +64,7 @@ func (el *EventListener) Subscribe(ctx context.Context, handler func(event Event
 	return nil
 }
 
+// readAndHandleMessage reads and processes a single WebSocket message
 func (el *EventListener) readAndHandleMessage(handler func(event Event)) error {
 	for {
 		el.mu.Lock()
@@ -121,6 +124,7 @@ func (el *EventListener) readAndHandleMessage(handler func(event Event)) error {
 	}
 }
 
+// reconnect attempts to reestablish the WebSocket connection
 func (el *EventListener) reconnect() error {
 	el.mu.Lock()
 	if el.conn != nil {
@@ -170,6 +174,7 @@ func (el *EventListener) reconnect() error {
 	return fmt.Errorf("failed to reconnect after %d attempts", maxAttempts)
 }
 
+// Close closes the event listener and its WebSocket connection
 func (el *EventListener) Close() {
 	el.closeOnce.Do(func() {
 		close(el.done)
@@ -181,6 +186,7 @@ func (el *EventListener) Close() {
 	})
 }
 
+// isValidEvent checks if an event has valid structure and type
 func (v *eventValidator) isValidEvent(event Event) bool {
 	if !v.validTypes[event.Type] {
 		return false
