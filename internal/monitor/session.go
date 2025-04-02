@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -13,12 +14,18 @@ import (
 // SessionConfig contains configuration for a monitoring session
 type SessionConfig struct {
 	TokenMint       string        // Token mint address
-	TokenAmount     float64       // Amount of tokens purchased
+	TokenAmount     float64       // Human-readable amount of tokens purchased
+	TokenBalance    uint64        // Raw token balance in smallest units
 	InitialAmount   float64       // Initial SOL amount spent
 	InitialPrice    float64       // Initial token price
 	MonitorInterval time.Duration // Interval for price updates
 	DEX             dex.DEX       // DEX interface
 	Logger          *zap.Logger   // Logger
+
+	// Transaction parameters from the original task
+	SlippagePercent float64 // Slippage percentage for transactions
+	PriorityFee     string  // Priority fee for transactions
+	ComputeUnits    uint32  // Compute units for transactions
 }
 
 // MonitoringSession manages a token monitoring session
@@ -103,7 +110,7 @@ func (ms *MonitoringSession) Stop() {
 }
 
 // onPriceUpdate is called when the price is updated
-func (ms *MonitoringSession) onPriceUpdate(currentPrice, _ /*initialPrice*/, percentChange, tokenAmount float64) {
+func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentChange, tokenAmount float64) {
 	// Calculate current value and profit
 	currentValue := currentPrice * tokenAmount
 	profit := currentValue - ms.config.InitialAmount
@@ -112,9 +119,12 @@ func (ms *MonitoringSession) onPriceUpdate(currentPrice, _ /*initialPrice*/, per
 		profitPercent = (profit / ms.config.InitialAmount) * 100
 	}
 
-	// Display price information
-	fmt.Printf("Price: %.9f SOL | Change: %.2f%% | Value: %.6f SOL | Profit: %.6f SOL (%.2f%%)\n",
-		currentPrice, percentChange, currentValue, profit, profitPercent)
+	// Форматируем вывод для большей информативности
+	fmt.Printf("\nEntry Price: %.9f SOL | Current Price: %.9f SOL | Change: %.2f%%\n",
+		initialPrice, currentPrice, percentChange)
+	fmt.Printf("Tokens: %.6f | Value: %.6f SOL | P&L: %.6f SOL (ROI: %.2f%%)\n",
+		tokenAmount, currentValue, profit, profitPercent)
+	fmt.Println("\nPress Enter to sell tokens or 'q' to exit.")
 }
 
 // onEnterPressed is called when Enter is pressed
@@ -124,18 +134,48 @@ func (ms *MonitoringSession) onEnterPressed(_ string) error {
 	// Stop the monitoring session
 	ms.Stop()
 
-	// Create the sell task
+	// Получаем актуальный баланс
+	balanceCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	tokenBalance, err := ms.config.DEX.GetTokenBalance(balanceCtx, ms.config.TokenMint)
+	cancel()
+
+	if err != nil {
+		ms.logger.Warn("Failed to get current token balance, using previous value",
+			zap.Float64("previous_token_amount", ms.config.TokenAmount),
+			zap.Error(err))
+	} else {
+		// Обновляем информацию о количестве токенов
+		tokenDecimals := float64(6) // Обычно 6 для токенов PumpFun
+		tokenAmount := float64(tokenBalance) / math.Pow10(int(tokenDecimals))
+
+		ms.logger.Info("Updated token amount for sell operation",
+			zap.Uint64("token_balance_raw", tokenBalance),
+			zap.Float64("token_amount", tokenAmount))
+
+		// Обновляем количество токенов в конфигурации
+		ms.config.TokenAmount = tokenAmount
+		ms.config.TokenBalance = tokenBalance
+	}
+
+	// Create the sell task, используя параметры из конфигурации
 	sellTask := &dex.Task{
 		Operation:       dex.OperationSell,
 		TokenMint:       ms.config.TokenMint,
-		AmountSol:       ms.config.TokenAmount, // AmountSol is used for token amount in sell operations
-		SlippagePercent: 1.0,                   // Default slippage
-		PriorityFee:     "0.000001",            // Default priority fee
-		ComputeUnits:    300000,                // Default compute units
+		AmountSol:       ms.config.TokenAmount,     // Human-readable token amount for logging
+		SlippagePercent: ms.config.SlippagePercent, // Используем значение из конфигурации
+		PriorityFee:     ms.config.PriorityFee,     // Используем значение из конфигурации
+		ComputeUnits:    ms.config.ComputeUnits,    // Используем значение из конфигурации
 	}
 
+	ms.logger.Info("Executing sell operation",
+		zap.String("token_mint", ms.config.TokenMint),
+		zap.Float64("token_amount", ms.config.TokenAmount),
+		zap.Float64("slippage_percent", ms.config.SlippagePercent),
+		zap.String("priority_fee", ms.config.PriorityFee),
+		zap.Uint32("compute_units", ms.config.ComputeUnits))
+
 	// Execute the sell operation
-	err := ms.config.DEX.Execute(context.Background(), sellTask)
+	err = ms.config.DEX.Execute(context.Background(), sellTask)
 	if err != nil {
 		fmt.Printf("Error selling tokens: %v\n", err)
 		return err

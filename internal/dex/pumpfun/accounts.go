@@ -7,8 +7,10 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"math"
+	"strconv"
 
 	"github.com/gagliardetto/solana-go"
 	"go.uber.org/zap"
@@ -131,6 +133,55 @@ func (d *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, err
 		return 0, fmt.Errorf("failed to fetch bonding curve data: %w", err)
 	}
 
+	// Проверяем, что резервы токенов не нулевые
+	if bondingCurveData.VirtualTokenReserves == 0 {
+		return 0, fmt.Errorf("virtual token reserves are zero, cannot calculate price")
+	}
+
+	// Рассчитываем цену по формуле из bonding curve
+	// Цена токена = виртуальный SOL резерв / виртуальный токен резерв
+	// Это дает цену за 1 токен в SOL
 	price := float64(bondingCurveData.VirtualSolReserves) / float64(bondingCurveData.VirtualTokenReserves)
-	return math.Floor(price*1e9) / 1e9, nil
+
+	// Округляем до 9 десятичных знаков (точность SOL)
+	price = math.Floor(price*1e9) / 1e9
+
+	d.logger.Debug("Calculated token price",
+		zap.Float64("price", price),
+		zap.Uint64("virtual_sol_reserves", bondingCurveData.VirtualSolReserves),
+		zap.Uint64("virtual_token_reserves", bondingCurveData.VirtualTokenReserves))
+
+	return price, nil
+}
+
+// GetTokenBalance возвращает текущий баланс токена в кошельке пользователя
+func (d *DEX) GetTokenBalance(ctx context.Context) (uint64, error) {
+	// Находим ATA адрес для токена
+	userATA, _, err := solana.FindAssociatedTokenAddress(d.wallet.PublicKey, d.config.Mint)
+	if err != nil {
+		return 0, fmt.Errorf("failed to derive associated token account: %w", err)
+	}
+
+	// Получаем баланс токена с указанием уровня подтверждения
+	result, err := d.client.GetTokenAccountBalance(ctx, userATA, rpc.CommitmentConfirmed)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get token account balance: %w", err)
+	}
+
+	if result == nil || result.Value.Amount == "" {
+		return 0, fmt.Errorf("no token balance found")
+	}
+
+	// Парсим результат в uint64
+	balance, err := strconv.ParseUint(result.Value.Amount, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse token balance: %w", err)
+	}
+
+	d.logger.Debug("Got token balance",
+		zap.Uint64("balance", balance),
+		zap.String("token_mint", d.config.Mint.String()),
+		zap.String("user_ata", userATA.String()))
+
+	return balance, nil
 }

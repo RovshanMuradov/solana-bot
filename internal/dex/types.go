@@ -44,4 +44,6 @@ type DEX interface {
 	Execute(ctx context.Context, task *Task) error
 	// GetTokenPrice возвращает текущую цену токена
 	GetTokenPrice(ctx context.Context, tokenMint string) (float64, error)
+	// GetTokenBalance возвращает текущий баланс токена в кошельке пользователя
+	GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error)
 }

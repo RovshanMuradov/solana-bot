@@ -68,20 +68,39 @@ func (d *pumpfunDEXAdapter) Execute(ctx context.Context, task *Task) error {
 		return d.inner.ExecuteSnipe(ctx, task.AmountSol, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
 
 	case OperationSell:
-		tokenAmount, err := convertToTokenUnits(ctx, d.inner, task.TokenMint, task.AmountSol, 6)
+		// Получаем текущий баланс токенов для продажи всех имеющихся
+		tokenBalance, err := d.inner.GetTokenBalance(ctx)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to get token balance for sell: %w", err)
 		}
 
-		d.logger.Info("Executing sell on Pump.fun",
-			zap.String("token_mint", task.TokenMint),
-			zap.Float64("tokens_to_sell", task.AmountSol),
-			zap.Uint64("token_amount", tokenAmount),
-			zap.Float64("slippage_percent", task.SlippagePercent),
-			zap.String("priority_fee", task.PriorityFee),
-			zap.Uint32("compute_units", task.ComputeUnits))
+		// Если баланс получен успешно, используем его; иначе пытаемся конвертировать AmountSol в токены
+		if tokenBalance > 0 {
+			d.logger.Info("Executing sell on Pump.fun using actual token balance",
+				zap.String("token_mint", task.TokenMint),
+				zap.Uint64("token_balance", tokenBalance),
+				zap.Float64("slippage_percent", task.SlippagePercent),
+				zap.String("priority_fee", task.PriorityFee),
+				zap.Uint32("compute_units", task.ComputeUnits))
 
-		return d.inner.ExecuteSell(ctx, tokenAmount, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
+			return d.inner.ExecuteSell(ctx, tokenBalance, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
+		} else {
+			// Запасной вариант, если не удалось получить баланс
+			tokenAmount, err := convertToTokenUnits(ctx, d.inner, task.TokenMint, task.AmountSol, 6)
+			if err != nil {
+				return err
+			}
+
+			d.logger.Info("Executing sell on Pump.fun using converted amount",
+				zap.String("token_mint", task.TokenMint),
+				zap.Float64("tokens_to_sell", task.AmountSol),
+				zap.Uint64("token_amount", tokenAmount),
+				zap.Float64("slippage_percent", task.SlippagePercent),
+				zap.String("priority_fee", task.PriorityFee),
+				zap.Uint32("compute_units", task.ComputeUnits))
+
+			return d.inner.ExecuteSell(ctx, tokenAmount, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
+		}
 
 	default:
 		return fmt.Errorf("operation %s is not supported on Pump.fun", task.Operation)
@@ -94,4 +113,13 @@ func (d *pumpfunDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string)
 		return 0, err
 	}
 	return d.inner.GetTokenPrice(ctx, tokenMint)
+}
+
+// GetTokenBalance возвращает текущий баланс токена
+func (d *pumpfunDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error) {
+	if err := d.initPumpFun(ctx, tokenMint); err != nil {
+		return 0, fmt.Errorf("failed to initialize Pump.fun: %w", err)
+	}
+
+	return d.inner.GetTokenBalance(ctx)
 }

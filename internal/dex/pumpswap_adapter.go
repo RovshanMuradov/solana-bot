@@ -110,3 +110,14 @@ func (d *pumpswapDEXAdapter) initPumpSwap(_ context.Context, tokenMint string) e
 	d.initDone = true
 	return nil
 }
+
+// GetTokenBalance возвращает текущий баланс токена
+// Placeholder для совместимости с интерфейсом DEX
+func (d *pumpswapDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error) {
+	// В будущем здесь можно реализовать настоящую логику получения баланса
+	d.logger.Debug("GetTokenBalance called on PumpSwap (not fully implemented)",
+		zap.String("token_mint", tokenMint))
+
+	// Возможно реализовать в будущем, сейчас просто возвращаем ошибку
+	return 0, fmt.Errorf("GetTokenBalance not fully implemented for Pump.Swap DEX")
+}

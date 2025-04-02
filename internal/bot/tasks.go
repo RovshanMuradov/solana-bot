@@ -3,6 +3,7 @@ package bot
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"go.uber.org/zap"
@@ -42,16 +43,44 @@ func (r *Runner) handleSnipeTask(ctx context.Context, t *task.Task, dexAdapter d
 		return
 	}
 
-	// Create monitor session config
-	tokenAmount := dexTask.AmountSol * 10 // Пример, должно быть фактическое количество токенов
+	// Get actual token balance after purchase
+	balanceCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	tokenBalance, err := dexAdapter.GetTokenBalance(balanceCtx, dexTask.TokenMint)
+	cancel()
+
+	if err != nil {
+		logger.Error("Failed to get token balance",
+			zap.String("task", t.TaskName),
+			zap.Error(err))
+		return
+	}
+
+	// Convert token balance to human-readable format
+	// Assume 6 decimal places for tokens, can be adjusted based on token precision
+	const tokenDecimals = 6
+	tokenAmount := float64(tokenBalance) / math.Pow10(tokenDecimals)
+
+	logger.Info("Token purchase details",
+		zap.String("task", t.TaskName),
+		zap.Float64("initial_price_sol", initialPrice),
+		zap.Uint64("token_balance", tokenBalance),
+		zap.Float64("token_amount", tokenAmount))
+
+	// Create monitor session config with all transaction parameters from the original task
 	monitorConfig := &monitor.SessionConfig{
 		TokenMint:       dexTask.TokenMint,
 		TokenAmount:     tokenAmount,
+		TokenBalance:    tokenBalance,
 		InitialAmount:   dexTask.AmountSol,
 		InitialPrice:    initialPrice,
 		MonitorInterval: r.config.PriceDelay,
 		DEX:             dexAdapter,
 		Logger:          logger.Named("monitor"),
+
+		// Передаем параметры транзакции из оригинальной задачи
+		SlippagePercent: dexTask.SlippagePercent,
+		PriorityFee:     dexTask.PriorityFee,
+		ComputeUnits:    dexTask.ComputeUnits,
 	}
 
 	// Create and start monitoring session

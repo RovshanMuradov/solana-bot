@@ -7,11 +7,13 @@ import (
 	"context"
 	"fmt"
 	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
 	"math"
 	"math/big"
+	"strconv"
 	"time"
 )
 
@@ -134,4 +136,43 @@ func (d *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, err
 		price, _ = adjustedRatio.Float64()
 	}
 	return price, nil
+}
+
+// GetTokenBalance получает баланс токена в кошельке пользователя
+// Это метод-заглушка, который будет реализован позже
+func (d *DEX) GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error) {
+	// Проверяем соответствие tokenMint
+	mint, err := solana.PublicKeyFromBase58(tokenMint)
+	if err != nil {
+		return 0, fmt.Errorf("invalid token mint: %w", err)
+	}
+
+	effBase, _ := d.effectiveMints()
+	if !mint.Equals(effBase) {
+		return 0, fmt.Errorf("token mint mismatch: expected %s, got %s", effBase.String(), mint.String())
+	}
+
+	// Находим ATA адрес для токена
+	userATA, _, err := solana.FindAssociatedTokenAddress(d.wallet.PublicKey, mint)
+	if err != nil {
+		return 0, fmt.Errorf("failed to derive associated token account: %w", err)
+	}
+
+	// Получаем баланс токена
+	result, err := d.client.GetTokenAccountBalance(ctx, userATA, rpc.CommitmentConfirmed)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get token account balance: %w", err)
+	}
+
+	if result == nil || result.Value.Amount == "" {
+		return 0, fmt.Errorf("no token balance found")
+	}
+
+	// Парсим результат в uint64
+	balance, err := strconv.ParseUint(result.Value.Amount, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse token balance: %w", err)
+	}
+
+	return balance, nil
 }
