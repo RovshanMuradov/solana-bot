@@ -83,6 +83,12 @@ func (d *DEX) CalculateDiscretePnL(ctx context.Context, tokenAmount float64, ini
 	currentPrice := float64(bondingCurveData.VirtualSolReserves) / float64(bondingCurveData.VirtualTokenReserves)
 	currentPrice = math.Floor(currentPrice*1e9) / 1e9 // Округляем до 9 знаков после запятой
 
+	// TODO: В будущем получать точные параметры ценовых уровней из смарт-контракта:
+	// 1. Точный шаг инкремента цены между уровнями
+	// 2. Точное количество токенов на каждом уровне
+	// 3. Актуальные остатки токенов на каждом уровне
+	// Это потребует дополнительных RPC вызовов к смарт-контракту и декодирования данных аккаунтов
+
 	// Создаем инфо о bonding curve
 	// Определяем текущий уровень и модель ценовых уровней
 	const priceIncrement = 0.001 // Инкремент цены между уровнями, обычно 0.001 SOL
@@ -107,6 +113,7 @@ func (d *DEX) CalculateDiscretePnL(ctx context.Context, tokenAmount float64, ini
 	}
 
 	// Получаем комиссию (по умолчанию 1%)
+	// TODO: Получать точное значение из GlobalAccount.FeeBasisPoints / 10000.0
 	const defaultFeePercentage = 0.01
 
 	// Создаем info о bonding curve
