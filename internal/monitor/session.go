@@ -3,7 +3,6 @@ package monitor
 import (
 	"context"
 	"fmt"
-	"math"
 	"sync"
 	"time"
 
@@ -134,48 +133,26 @@ func (ms *MonitoringSession) onEnterPressed(_ string) error {
 	// Stop the monitoring session
 	ms.Stop()
 
-	// Получаем актуальный баланс
-	balanceCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	tokenBalance, err := ms.config.DEX.GetTokenBalance(balanceCtx, ms.config.TokenMint)
-	cancel()
-
-	if err != nil {
-		ms.logger.Warn("Failed to get current token balance, using previous value",
-			zap.Float64("previous_token_amount", ms.config.TokenAmount),
-			zap.Error(err))
-	} else {
-		// Обновляем информацию о количестве токенов
-		tokenDecimals := float64(6) // Обычно 6 для токенов PumpFun
-		tokenAmount := float64(tokenBalance) / math.Pow10(int(tokenDecimals))
-
-		ms.logger.Info("Updated token amount for sell operation",
-			zap.Uint64("token_balance_raw", tokenBalance),
-			zap.Float64("token_amount", tokenAmount))
-
-		// Обновляем количество токенов в конфигурации
-		ms.config.TokenAmount = tokenAmount
-		ms.config.TokenBalance = tokenBalance
-	}
-
-	// Create the sell task, используя параметры из конфигурации
-	sellTask := &dex.Task{
-		Operation:       dex.OperationSell,
-		TokenMint:       ms.config.TokenMint,
-		AmountSol:       ms.config.TokenAmount,     // Human-readable token amount for logging
-		SlippagePercent: ms.config.SlippagePercent, // Используем значение из конфигурации
-		PriorityFee:     ms.config.PriorityFee,     // Используем значение из конфигурации
-		ComputeUnits:    ms.config.ComputeUnits,    // Используем значение из конфигурации
-	}
+	// Процент токенов для продажи (99%)
+	percentToSell := 99.0
 
 	ms.logger.Info("Executing sell operation",
 		zap.String("token_mint", ms.config.TokenMint),
-		zap.Float64("token_amount", ms.config.TokenAmount),
+		zap.Float64("percent_to_sell", percentToSell),
 		zap.Float64("slippage_percent", ms.config.SlippagePercent),
 		zap.String("priority_fee", ms.config.PriorityFee),
 		zap.Uint32("compute_units", ms.config.ComputeUnits))
 
-	// Execute the sell operation
-	err = ms.config.DEX.Execute(context.Background(), sellTask)
+	// Продаем указанный процент токенов
+	err := ms.config.DEX.SellPercentTokens(
+		context.Background(),
+		ms.config.TokenMint,
+		percentToSell,
+		ms.config.SlippagePercent,
+		ms.config.PriorityFee,
+		ms.config.ComputeUnits,
+	)
+
 	if err != nil {
 		fmt.Printf("Error selling tokens: %v\n", err)
 		return err

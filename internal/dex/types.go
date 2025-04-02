@@ -46,4 +46,6 @@ type DEX interface {
 	GetTokenPrice(ctx context.Context, tokenMint string) (float64, error)
 	// GetTokenBalance возвращает текущий баланс токена в кошельке пользователя
 	GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error)
+	// SellPercentTokens продает указанный процент имеющихся токенов
+	SellPercentTokens(ctx context.Context, tokenMint string, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error
 }

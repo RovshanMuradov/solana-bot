@@ -6,6 +6,8 @@ package pumpfun
 import (
 	"context"
 	"fmt"
+	"github.com/gagliardetto/solana-go/rpc"
+	"math"
 	"time"
 
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
@@ -115,4 +117,46 @@ func (d *DEX) ExecuteSell(ctx context.Context, tokenAmount uint64, slippagePerce
 	}
 
 	return nil
+}
+
+// SellPercentTokens продает указанный процент доступных токенов
+func (d *DEX) SellPercentTokens(ctx context.Context, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
+	if percentToSell <= 0 || percentToSell > 100 {
+		return fmt.Errorf("percent to sell must be between 0 and 100")
+	}
+
+	// Создаем контекст с увеличенным таймаутом для надежности получения баланса
+	balanceCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	// Получаем актуальный баланс токенов с максимальным уровнем подтверждения
+	tokenBalance, err := d.GetTokenBalance(balanceCtx, rpc.CommitmentFinalized)
+	if err != nil {
+		return fmt.Errorf("failed to get token balance: %w", err)
+	}
+
+	if tokenBalance == 0 {
+		return fmt.Errorf("no tokens to sell")
+	}
+
+	// Получаем количество десятичных знаков токена
+	tokenDecimals := float64(6) // Обычно 6 для токенов PumpFun
+
+	// Просто получаем целое число токенов, отбрасывая дробную часть
+	wholeTokens := tokenBalance / uint64(math.Pow10(int(tokenDecimals)))
+
+	// Преобразуем обратно в сырые единицы
+	tokensToSell := wholeTokens * uint64(math.Pow10(int(tokenDecimals)))
+
+	// Добавляем незначительный запас безопасности для предотвращения ошибок
+	tokensToSell = uint64(float64(tokensToSell) * 0.99)
+
+	d.logger.Info("Selling tokens",
+		zap.String("token_mint", d.config.Mint.String()),
+		zap.Uint64("total_balance", tokenBalance),
+		zap.Uint64("whole_tokens", wholeTokens),
+		zap.Uint64("tokens_to_sell", tokensToSell))
+
+	// Выполняем продажу
+	return d.ExecuteSell(ctx, tokensToSell, slippagePercent, priorityFeeSol, computeUnits)
 }

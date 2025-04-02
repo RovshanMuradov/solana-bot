@@ -121,3 +121,26 @@ func (d *pumpswapDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint stri
 	// Возможно реализовать в будущем, сейчас просто возвращаем ошибку
 	return 0, fmt.Errorf("GetTokenBalance not fully implemented for Pump.Swap DEX")
 }
+
+// SellPercentTokens продает указанный процент имеющихся токенов
+func (d *pumpswapDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint string, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
+	if err := d.initPumpSwap(ctx, tokenMint); err != nil {
+		return err
+	}
+
+	d.logger.Warn("SellPercentTokens is not fully implemented for PumpSwap",
+		zap.String("token_mint", tokenMint),
+		zap.Float64("percent_to_sell", percentToSell))
+
+	// Получаем баланс токена (в настоящее время не реализовано полностью)
+	balance, err := d.inner.GetTokenBalance(ctx, tokenMint)
+	if err != nil {
+		return fmt.Errorf("failed to get token balance: %w", err)
+	}
+
+	// Рассчитываем количество токенов для продажи
+	tokensToSell := uint64(float64(balance) * percentToSell / 100.0)
+
+	// Выполняем стандартную операцию продажи
+	return d.inner.ExecuteSell(ctx, tokensToSell, slippagePercent, priorityFeeSol, computeUnits)
+}

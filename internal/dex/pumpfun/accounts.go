@@ -155,15 +155,22 @@ func (d *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, err
 }
 
 // GetTokenBalance возвращает текущий баланс токена в кошельке пользователя
-func (d *DEX) GetTokenBalance(ctx context.Context) (uint64, error) {
+func (d *DEX) GetTokenBalance(ctx context.Context, commitment ...rpc.CommitmentType) (uint64, error) {
 	// Находим ATA адрес для токена
 	userATA, _, err := solana.FindAssociatedTokenAddress(d.wallet.PublicKey, d.config.Mint)
 	if err != nil {
 		return 0, fmt.Errorf("failed to derive associated token account: %w", err)
 	}
 
+	// По умолчанию используем CommitmentFinalized,
+	// но позволяем вызывающему коду переопределить это
+	commitmentLevel := rpc.CommitmentFinalized
+	if len(commitment) > 0 && commitment[0] != "" {
+		commitmentLevel = commitment[0]
+	}
+
 	// Получаем баланс токена с указанием уровня подтверждения
-	result, err := d.client.GetTokenAccountBalance(ctx, userATA, rpc.CommitmentConfirmed)
+	result, err := d.client.GetTokenAccountBalance(ctx, userATA, commitmentLevel)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get token account balance: %w", err)
 	}
@@ -181,7 +188,8 @@ func (d *DEX) GetTokenBalance(ctx context.Context) (uint64, error) {
 	d.logger.Debug("Got token balance",
 		zap.Uint64("balance", balance),
 		zap.String("token_mint", d.config.Mint.String()),
-		zap.String("user_ata", userATA.String()))
+		zap.String("user_ata", userATA.String()),
+		zap.String("commitment", string(commitmentLevel)))
 
 	return balance, nil
 }

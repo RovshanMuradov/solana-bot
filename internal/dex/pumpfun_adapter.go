@@ -6,6 +6,7 @@ package dex
 import (
 	"context"
 	"fmt"
+	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/rovshanmuradov/solana-bot/internal/dex/pumpfun"
 	"go.uber.org/zap"
 )
@@ -69,7 +70,7 @@ func (d *pumpfunDEXAdapter) Execute(ctx context.Context, task *Task) error {
 
 	case OperationSell:
 		// Получаем текущий баланс токенов для продажи всех имеющихся
-		tokenBalance, err := d.inner.GetTokenBalance(ctx)
+		tokenBalance, err := d.inner.GetTokenBalance(ctx, rpc.CommitmentConfirmed)
 		if err != nil {
 			return fmt.Errorf("failed to get token balance for sell: %w", err)
 		}
@@ -122,4 +123,13 @@ func (d *pumpfunDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint strin
 	}
 
 	return d.inner.GetTokenBalance(ctx)
+}
+
+// SellPercentTokens продает указанный процент имеющихся токенов
+func (d *pumpfunDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint string, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
+	if err := d.initPumpFun(ctx, tokenMint); err != nil {
+		return err
+	}
+
+	return d.inner.SellPercentTokens(ctx, percentToSell, slippagePercent, priorityFeeSol, computeUnits)
 }
