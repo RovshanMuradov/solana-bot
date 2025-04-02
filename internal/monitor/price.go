@@ -103,3 +103,7 @@ func (pm *PriceMonitor) updatePrice() {
 		pm.callback(currentPrice, pm.initialPrice, percentChange, pm.tokenAmount)
 	}
 }
+
+func (pm *PriceMonitor) SetCallback(callback PriceUpdateCallback) {
+	pm.callback = callback
+}

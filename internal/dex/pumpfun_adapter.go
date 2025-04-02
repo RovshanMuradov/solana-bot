@@ -133,3 +133,12 @@ func (d *pumpfunDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint str
 
 	return d.inner.SellPercentTokens(ctx, percentToSell, slippagePercent, priorityFeeSol, computeUnits)
 }
+
+// CalculateDiscretePnL вычисляет PnL с учетом дискретной структуры Pump.fun
+func (d *pumpfunDEXAdapter) CalculateDiscretePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*DiscreteTokenPnL, error) {
+	if err := d.initPumpFun(ctx, d.tokenMint); err != nil {
+		return nil, fmt.Errorf("failed to initialize Pump.fun: %w", err)
+	}
+
+	return d.inner.CalculateDiscretePnL(ctx, tokenAmount, initialInvestment)
+}

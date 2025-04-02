@@ -144,3 +144,24 @@ func (d *pumpswapDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint st
 	// Выполняем стандартную операцию продажи
 	return d.inner.ExecuteSell(ctx, tokensToSell, slippagePercent, priorityFeeSol, computeUnits)
 }
+
+// CalculateDiscretePnL реализация для Pump.swap (заглушка)
+func (d *pumpswapDEXAdapter) CalculateDiscretePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*DiscreteTokenPnL, error) {
+	// PumpSwap не использует дискретную bonding curve, поэтому
+	// возвращаем стандартный PnL для совместимости с интерфейсом
+	price, err := d.GetTokenPrice(ctx, d.tokenMint)
+	if err != nil {
+		return nil, err
+	}
+
+	theoreticalValue := tokenAmount * price
+
+	return &DiscreteTokenPnL{
+		CurrentPrice:      price,
+		TheoreticalValue:  theoreticalValue,
+		SellEstimate:      theoreticalValue, // Для не-дискретной кривой оценка равна теоретической стоимости
+		InitialInvestment: initialInvestment,
+		NetPnL:            theoreticalValue - initialInvestment,
+		PnLPercentage:     ((theoreticalValue - initialInvestment) / initialInvestment) * 100,
+	}, nil
+}

@@ -48,4 +48,16 @@ type DEX interface {
 	GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error)
 	// SellPercentTokens продает указанный процент имеющихся токенов
 	SellPercentTokens(ctx context.Context, tokenMint string, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error
+	// CalculateDiscretePnL вычисляет PnL с учетом дискретной структуры Pump.fun
+	CalculateDiscretePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*DiscreteTokenPnL, error)
+}
+
+// DiscreteTokenPnL содержит информацию о PnL с учетом дискретной природы токена
+type DiscreteTokenPnL struct {
+	CurrentPrice      float64 // Текущая цена токена
+	TheoreticalValue  float64 // Теоретическая стоимость (цена * количество)
+	SellEstimate      float64 // Оценка реальной выручки при продаже
+	InitialInvestment float64 // Начальная инвестиция
+	NetPnL            float64 // Чистый PnL (SellEstimate - InitialInvestment)
+	PnLPercentage     float64 // Процент PnL
 }

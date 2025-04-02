@@ -108,9 +108,20 @@ func (ms *MonitoringSession) Stop() {
 	}
 }
 
+// UpdateWithDiscretePnL обновляет сессию мониторинга с учетом дискретного расчета PnL
+func (ms *MonitoringSession) UpdateWithDiscretePnL() error {
+	// Меняем callback для обработки обновлений цены
+	ms.priceMonitor.SetCallback(func(currentPrice, initialPrice, percentChange, tokenAmount float64) {
+		// Используем измененную функцию onPriceUpdate
+		ms.onPriceUpdate(currentPrice, initialPrice, percentChange, tokenAmount)
+	})
+
+	return nil
+}
+
 // onPriceUpdate is called when the price is updated
 func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentChange, tokenAmount float64) {
-	// Calculate current value and profit
+	// Стандартный расчет PnL
 	currentValue := currentPrice * tokenAmount
 	profit := currentValue - ms.config.InitialAmount
 	profitPercent := 0.0
@@ -118,11 +129,30 @@ func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentCh
 		profitPercent = (profit / ms.config.InitialAmount) * 100
 	}
 
-	// Форматируем вывод для большей информативности
-	fmt.Printf("\nEntry Price: %.9f SOL | Current Price: %.9f SOL | Change: %.2f%%\n",
-		initialPrice, currentPrice, percentChange)
-	fmt.Printf("Tokens: %.6f | Value: %.6f SOL | P&L: %.6f SOL (ROI: %.2f%%)\n",
-		tokenAmount, currentValue, profit, profitPercent)
+	// Пытаемся вычислить более точный PnL для Pump.fun
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	discretePnL, err := ms.config.DEX.CalculateDiscretePnL(ctx, tokenAmount, ms.config.InitialAmount)
+	if err == nil && discretePnL != nil {
+		// Используем дискретный расчет
+		fmt.Printf("\n=== Pump.fun Discrete PnL ===\n")
+		fmt.Printf("Entry Price: %.9f SOL | Current Price: %.9f SOL | Change: %.2f%%\n",
+			initialPrice, discretePnL.CurrentPrice, percentChange)
+		fmt.Printf("Tokens: %.6f | Theoretical Value: %.6f SOL | Sell Estimate: %.6f SOL\n",
+			tokenAmount, discretePnL.TheoreticalValue, discretePnL.SellEstimate)
+		fmt.Printf("Initial Investment: %.6f SOL | Net PnL: %.6f SOL (%.2f%%)\n",
+			discretePnL.InitialInvestment, discretePnL.NetPnL, discretePnL.PnLPercentage)
+		fmt.Printf("===========================\n")
+	} else {
+		// Используем стандартный расчет
+		ms.logger.Debug("Using standard PnL calculation", zap.Error(err))
+		fmt.Printf("\nEntry Price: %.9f SOL | Current Price: %.9f SOL | Change: %.2f%%\n",
+			initialPrice, currentPrice, percentChange)
+		fmt.Printf("Tokens: %.6f | Value: %.6f SOL | P&L: %.6f SOL (ROI: %.2f%%)\n",
+			tokenAmount, currentValue, profit, profitPercent)
+	}
+
 	fmt.Println("\nPress Enter to sell tokens or 'q' to exit.")
 }
 
