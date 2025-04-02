@@ -3,6 +3,7 @@ package bot
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"sync"
@@ -149,6 +150,17 @@ func (r *Runner) Run(ctx context.Context) error {
 func (r *Runner) Shutdown() {
 	r.logger.Info("Bot shutting down gracefully")
 	// Здесь может быть код для корректного завершения всех подсистем
+
+	// Безопасный вызов Sync для логгера
+	if err := r.logger.Sync(); err != nil {
+		// Игнорируем стандартные ошибки при синхронизации логгера
+		if !os.IsNotExist(err) &&
+			err.Error() != "sync /dev/stdout: invalid argument" &&
+			err.Error() != "sync /dev/stderr: inappropriate ioctl for device" {
+			// Выводим ошибку напрямую, так как логгер может уже не работать
+			fmt.Fprintf(os.Stderr, "failed to sync logger during shutdown: %v\n", err)
+		}
+	}
 }
 
 // WaitForShutdown blocks until shutdown signal is received

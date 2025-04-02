@@ -80,9 +80,8 @@ func (ms *MonitoringSession) Start() error {
 
 	ms.inputHandler.Start()
 
-	// Clear screen and show initial message
-	fmt.Print("\033[H\033[2J") // Clear screen
-	fmt.Println("\n🚀 Monitoring started. Press Enter to sell tokens or 'q' to exit.")
+	// Показать простое сообщение о начале мониторинга
+	fmt.Println("\nMonitoring started. Press Enter to sell tokens or 'q' to exit.")
 	return nil
 }
 
@@ -139,9 +138,6 @@ func printColoredText(format string, value float64, isPositive bool, args ...int
 
 // onPriceUpdate is called when the price is updated
 func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentChange, tokenAmount float64) {
-	// Clear screen for each update
-	fmt.Print("\033[H\033[2J")
-	
 	// Стандартный расчет PnL
 	currentValue := currentPrice * tokenAmount
 	profit := currentValue - ms.config.InitialAmount
@@ -155,65 +151,63 @@ func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentCh
 	defer cancel()
 
 	discretePnL, err := ms.config.DEX.CalculateDiscretePnL(ctx, tokenAmount, ms.config.InitialAmount)
-	fmt.Println("\n")
-	fmt.Println("┌─────────────────────────────────────────────────────────────────┐")
-	fmt.Printf("│ \033[1;36m%-63s\033[0m │\n", "SOLANA TRADING BOT - PRICE MONITOR")
-	fmt.Println("├─────────────────────────────────────────────────────────────────┤")
-	fmt.Printf("│ \033[1;33m%-20s\033[0m %-41s │\n", "Exchange:", ms.config.DEX.GetName())
-	fmt.Printf("│ \033[1;33m%-20s\033[0m %-41s │\n", "Token:", shortenAddress(ms.config.TokenMint))
-	fmt.Println("├─────────────────────────────────────────────────────────────────┤")
+	
+	// Компактный однострочный формат вывода
+	var pnlText string
 	
 	if err == nil && discretePnL != nil {
-		// Используем дискретный расчет
-		fmt.Printf("│ \033[1;37m%-20s\033[0m %.9f SOL                    │\n", "Entry Price:", initialPrice)
-		fmt.Printf("│ \033[1;37m%-20s\033[0m %.9f SOL                    │\n", "Current Price:", discretePnL.CurrentPrice)
+		// Цветовое оформление для изменения цены и PnL
+		priceChangeColor := "\033[0m" // Нейтральный
+		if percentChange > 0 {
+			priceChangeColor = "\033[32m" // Зеленый
+		} else if percentChange < 0 {
+			priceChangeColor = "\033[31m" // Красный
+		}
 		
-		// Price change with color
-		fmt.Printf("│ \033[1;37m%-20s\033[0m ", "Price Change:")
-		printColoredText("%.2f%%%-39s │\n", percentChange, percentChange > 0, "")
+		pnlColor := "\033[0m" // Нейтральный
+		if discretePnL.NetPnL > 0 {
+			pnlColor = "\033[32m" // Зеленый
+		} else if discretePnL.NetPnL < 0 {
+			pnlColor = "\033[31m" // Красный
+		}
 		
-		fmt.Printf("│ \033[1;37m%-20s\033[0m %.6f                          │\n", "Token Amount:", tokenAmount)
-		fmt.Println("├─────────────────────────────────────────────────────────────────┤")
-		fmt.Printf("│ \033[1;37m%-20s\033[0m %.6f SOL                      │\n", "Initial Investment:", discretePnL.InitialInvestment)
-		fmt.Printf("│ \033[1;37m%-20s\033[0m %.6f SOL                      │\n", "Theoretical Value:", discretePnL.TheoreticalValue)
-		fmt.Printf("│ \033[1;37m%-20s\033[0m %.6f SOL                      │\n", "Sell Estimate:", discretePnL.SellEstimate)
-		
-		// Print Net PnL with color
-		fmt.Printf("│ \033[1;37m%-20s\033[0m ", "Net PnL:")
-		printColoredText("%.6f SOL%-29s │\n", discretePnL.NetPnL, discretePnL.NetPnL > 0, "")
-		
-		// Print PnL percentage with color
-		fmt.Printf("│ \033[1;37m%-20s\033[0m ", "ROI:")
-		printColoredText("%.2f%%%-39s │\n", discretePnL.PnLPercentage, discretePnL.PnLPercentage > 0, "")
+		// Форматирование в одну строку
+		pnlText = fmt.Sprintf("\n=== %s Discrete PnL ===\n", ms.config.DEX.GetName()) +
+			fmt.Sprintf("Entry Price: %.9f SOL | Current Price: %.9f SOL | Change: %s%.2f%%\033[0m\n", 
+				initialPrice, discretePnL.CurrentPrice, priceChangeColor, percentChange) +
+			fmt.Sprintf("Tokens: %.6f | Theoretical Value: %.6f SOL | Sell Estimate: %.6f SOL\n", 
+				tokenAmount, discretePnL.TheoreticalValue, discretePnL.SellEstimate) +
+			fmt.Sprintf("Initial Investment: %.6f SOL | Net PnL: %s%.6f SOL (%.2f%%)\033[0m\n", 
+				discretePnL.InitialInvestment, pnlColor, discretePnL.NetPnL, discretePnL.PnLPercentage) +
+			fmt.Sprintf("===========================\n")
 	} else {
-		// Используем стандартный расчет
-		fmt.Printf("│ \033[1;37m%-20s\033[0m %.9f SOL                    │\n", "Entry Price:", initialPrice)
-		fmt.Printf("│ \033[1;37m%-20s\033[0m %.9f SOL                    │\n", "Current Price:", currentPrice)
+		// Стандартный расчет, если дискретный недоступен
+		priceChangeColor := "\033[0m" // Нейтральный
+		if percentChange > 0 {
+			priceChangeColor = "\033[32m" // Зеленый
+		} else if percentChange < 0 {
+			priceChangeColor = "\033[31m" // Красный
+		}
 		
-		// Price change with color
-		fmt.Printf("│ \033[1;37m%-20s\033[0m ", "Price Change:")
-		printColoredText("%.2f%%%-39s │\n", percentChange, percentChange > 0, "")
+		pnlColor := "\033[0m" // Нейтральный
+		if profit > 0 {
+			pnlColor = "\033[32m" // Зеленый
+		} else if profit < 0 {
+			pnlColor = "\033[31m" // Красный
+		}
 		
-		fmt.Printf("│ \033[1;37m%-20s\033[0m %.6f                          │\n", "Token Amount:", tokenAmount)
-		fmt.Println("├─────────────────────────────────────────────────────────────────┤")
-		fmt.Printf("│ \033[1;37m%-20s\033[0m %.6f SOL                      │\n", "Initial Investment:", ms.config.InitialAmount)
-		fmt.Printf("│ \033[1;37m%-20s\033[0m %.6f SOL                      │\n", "Current Value:", currentValue)
-		
-		// Print Net PnL with color
-		fmt.Printf("│ \033[1;37m%-20s\033[0m ", "Net PnL:")
-		printColoredText("%.6f SOL%-29s │\n", profit, profit > 0, "")
-		
-		// Print PnL percentage with color
-		fmt.Printf("│ \033[1;37m%-20s\033[0m ", "ROI:")
-		printColoredText("%.2f%%%-39s │\n", profitPercent, profitPercent > 0, "")
+		pnlText = fmt.Sprintf("\n=== %s PnL ===\n", ms.config.DEX.GetName()) +
+			fmt.Sprintf("Entry Price: %.9f SOL | Current Price: %.9f SOL | Change: %s%.2f%%\033[0m\n", 
+				initialPrice, currentPrice, priceChangeColor, percentChange) +
+			fmt.Sprintf("Tokens: %.6f | Value: %.6f SOL\n", tokenAmount, currentValue) +
+			fmt.Sprintf("Initial Investment: %.6f SOL | Net PnL: %s%.6f SOL (%.2f%%)\033[0m\n", 
+				ms.config.InitialAmount, pnlColor, profit, profitPercent) +
+			fmt.Sprintf("===========================\n")
 	}
 	
-	fmt.Println("├─────────────────────────────────────────────────────────────────┤")
-	fmt.Printf("│ \033[1;32m%-63s\033[0m │\n", "Press Enter to sell tokens or 'q' to exit")
-	fmt.Println("└─────────────────────────────────────────────────────────────────┘")
-	
-	// Add update timestamp at the bottom
-	fmt.Printf("\n\033[90mLast update: %s\033[0m\n", time.Now().Format("15:04:05"))
+	// Вывод информации и инструкции
+	fmt.Println(pnlText)
+	fmt.Println("Press Enter to sell tokens or 'q' to exit.")
 }
 
 // shortenAddress сокращает адрес, показывая только начало и конец
@@ -226,9 +220,7 @@ func shortenAddress(address string) string {
 
 // onEnterPressed is called when Enter is pressed
 func (ms *MonitoringSession) onEnterPressed(_ string) error {
-	// Clear screen
-	fmt.Print("\033[H\033[2J")
-	fmt.Println("\n🚀 Selling tokens...")
+	fmt.Println("\nSelling tokens...")
 
 	// Stop the monitoring session
 	ms.Stop()
@@ -254,19 +246,17 @@ func (ms *MonitoringSession) onEnterPressed(_ string) error {
 	)
 
 	if err != nil {
-		fmt.Printf("\n\033[31mError selling tokens: %v\033[0m\n", err)
+		fmt.Printf("Error selling tokens: %v\n", err)
 		return err
 	}
 
-	fmt.Println("\n\033[32m✅ Tokens sold successfully!\033[0m")
+	fmt.Println("Tokens sold successfully!")
 	return nil
 }
 
 // onExitCommand is called when exit command is entered
 func (ms *MonitoringSession) onExitCommand(_ string) error {
-	// Clear screen
-	fmt.Print("\033[H\033[2J")
-	fmt.Println("\n\033[33mExiting monitor mode without selling tokens.\033[0m")
+	fmt.Println("\nExiting monitor mode without selling tokens.")
 	ms.Stop()
 	return nil
 }

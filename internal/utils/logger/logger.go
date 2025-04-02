@@ -123,7 +123,8 @@ func (l *Logger) LogError(msg string, err error, fields ...zap.Field) {
 // Sync реализует безопасный вызов Sync
 func (l *Logger) Sync() error {
 	err := l.Logger.Sync()
-	if err != nil && err.Error() == "sync /dev/stdout: invalid argument" {
+	if err != nil && (err.Error() == "sync /dev/stdout: invalid argument" || 
+                     err.Error() == "sync /dev/stderr: inappropriate ioctl for device") {
 		return nil
 	}
 	return err

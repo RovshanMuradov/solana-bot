@@ -1,0 +1,5407 @@
+
+// ====================================
+// File: cmd/bot/main.go (refactored)
+// ====================================
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+
+	"go.uber.org/zap"
+
+	"github.com/rovshanmuradov/solana-bot/internal/bot"
+)
+
+func main() {
+	// Setup context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Initialize logger
+	// Create a production logger to reduce debug logs
+	logConfig := zap.NewProductionConfig()
+	// Only show Info level and above (no Debug logs)
+	logConfig.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
+	logger, _ := logConfig.Build()
+	
+	defer func() {
+		// Правильная обработка ошибки Sync
+		if err := logger.Sync(); err != nil {
+			// Игнорируем ошибку "sync /dev/stdout: invalid argument"
+			if !strings.Contains(err.Error(), "invalid argument") {
+				fmt.Fprintf(os.Stderr, "failed to sync logger: %v\n", err)
+			}
+		}
+	}()
+	logger.Info("Starting sniper bot")
+
+	// Create and initialize bot runner
+	runner := bot.NewRunner(logger)
+	if err := runner.Initialize("configs/config.json"); err != nil {
+		logger.Fatal("Failed to initialize bot", zap.Error(err))
+		// Не нужен os.Exit, так как logger.Fatal уже вызывает os.Exit(1)
+	}
+
+	// Run the bot
+	if err := runner.Run(ctx); err != nil {
+		logger.Fatal("Bot execution error", zap.Error(err))
+		// Не нужен os.Exit, так как logger.Fatal уже вызывает os.Exit(1)
+	}
+
+	// Wait for shutdown (alternatively, this could be part of Run())
+	runner.WaitForShutdown()
+}
+
+
+{
+  "license": "TEST-LICENSE-123456789",
+  "rpc_list": [
+    "https://mainnet.helius-rpc.com/?api-key=767f42d9-06c2-46f8-8031-9869035d6ce4",
+    "https://mainnet.helius-rpc.com/?api-key=29f79eeb-5eca-456a-a0b2-44d8857fee9d"
+
+  ],
+  "websocket_url": "wss://mainnet.helius-rpc.com/?api-key=29f79eeb-5eca-456a-a0b2-44d8857fee9d",
+  "monitor_delay": 1000,
+  "rpc_delay": 100,
+  "price_delay": 1000,
+  "debug_logging": true,
+  "tps_logging": true,
+  "retries": 8,
+  "webhook_url": "",
+  "workers": 1,
+  "postgres_url": "postgresql://rovshan:solanabot228@postgres:5432/solana_bot?sslmode=disable"
+}
+
+
+task_name,module,wallet,operation,amount,slippage_percent,priority_fee_sol,contract_address,compute_units
+buy_tokens,pump.fun,main,snipe,0.00001,10.0,0.000002,4pCybETPK2y12makEKwF8eA74bH4euRAqGqP2f46pump,200000
+
+// internal/blockchain/blockchain.go
+package blockchain
+
+import (
+	"context"
+)
+
+type Blockchain interface {
+	Name() string
+	SendTransaction(ctx context.Context, tx interface{}) error
+	// Другие общие методы
+}
+
+
+// internal/blockchain/solbc/client.go
+package solbc
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+	"go.uber.org/zap"
+)
+
+// Client – тонкий адаптер для взаимодействия с блокчейном Solana через solana-go.
+type Client struct {
+	rpc    *rpc.Client
+	logger *zap.Logger
+}
+
+// Определение ошибок
+var (
+	ErrAccountNotFound = errors.New("account not found")
+)
+
+// IsAccountNotFoundError проверяет, является ли ошибка "not found"
+func IsAccountNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "not found")
+}
+
+// NewClient создаёт новый клиент, принимая RPC URL и логгер через dependency injection.
+func NewClient(rpcURL string, logger *zap.Logger) *Client {
+	return &Client{
+		rpc:    rpc.New(rpcURL),
+		logger: logger.Named("solbc-client"),
+	}
+}
+
+// GetRecentBlockhash получает последний blockhash с использованием стандартного метода solana-go.
+func (c *Client) GetRecentBlockhash(ctx context.Context) (solana.Hash, error) {
+	result, err := c.rpc.GetLatestBlockhash(ctx, rpc.CommitmentFinalized)
+	if err != nil {
+		c.logger.Error("GetRecentBlockhash error", zap.Error(err))
+		return solana.Hash{}, err
+	}
+	return result.Value.Blockhash, nil
+}
+
+// SendTransaction отправляет транзакцию.
+func (c *Client) SendTransaction(ctx context.Context, tx *solana.Transaction) (solana.Signature, error) {
+	sig, err := c.rpc.SendTransaction(ctx, tx)
+	if err != nil {
+		c.logger.Error("SendTransaction error", zap.Error(err))
+		return solana.Signature{}, err
+	}
+	return sig, nil
+}
+
+// GetAccountDataInto получает данные аккаунта и декодирует их в указанную структуру.
+func (c *Client) GetAccountDataInto(ctx context.Context, pubkey solana.PublicKey, dst interface{}) error {
+	err := c.rpc.GetAccountDataInto(ctx, pubkey, dst)
+	if err != nil {
+		c.logger.Debug("GetAccountDataInto error",
+			zap.String("pubkey", pubkey.String()),
+			zap.Error(err))
+		return err
+	}
+	return nil
+}
+
+// // GetAccountInfo получает информацию об аккаунте.
+func (c *Client) GetAccountInfo(ctx context.Context, pubkey solana.PublicKey) (*rpc.GetAccountInfoResult, error) {
+	result, err := c.rpc.GetAccountInfo(ctx, pubkey)
+	if err != nil {
+		c.logger.Debug("GetAccountInfo error",
+			zap.String("pubkey", pubkey.String()),
+			zap.Error(err))
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetMultipleAccounts получает информацию о нескольких аккаунтах за один запрос
+func (c *Client) GetMultipleAccounts(
+	ctx context.Context,
+	pubkeys []solana.PublicKey,
+) (*rpc.GetMultipleAccountsResult, error) {
+	if len(pubkeys) == 0 {
+		return &rpc.GetMultipleAccountsResult{}, nil
+	}
+
+	// Создаем опции запроса
+	opts := rpc.GetMultipleAccountsOpts{
+		Commitment: rpc.CommitmentConfirmed,
+		Encoding:   solana.EncodingBase64,
+	}
+
+	// Выполняем запрос
+	res, err := c.rpc.GetMultipleAccountsWithOpts(
+		ctx,
+		pubkeys, // Передаем непосредственно []solana.PublicKey
+		&opts,
+	)
+
+	if err != nil {
+		c.logger.Debug("GetMultipleAccounts error",
+			zap.Error(err))
+		return nil, err
+	}
+
+	return res, nil
+}
+
+// GetProgramAccounts получает все аккаунты программы с фильтрами
+func (c *Client) GetProgramAccounts(
+	ctx context.Context,
+	programID solana.PublicKey,
+	discriminator []byte,
+) (*rpc.GetProgramAccountsResult, error) {
+	// Создаем опции запроса с фильтрами
+	opts := rpc.GetProgramAccountsOpts{
+		Commitment: rpc.CommitmentConfirmed,
+		Encoding:   solana.EncodingBase64,
+	}
+
+	// Добавляем фильтр по дискриминатору, если он предоставлен
+	if len(discriminator) > 0 {
+		// Используем DataSlice для фильтрации по первым байтам (дискриминатору)
+		offset := uint64(0)
+		length := uint64(len(discriminator))
+		opts.DataSlice = &rpc.DataSlice{
+			Offset: &offset,
+			Length: &length,
+		}
+
+		// Используем Filters для мемкомпа
+		opts.Filters = append(opts.Filters,
+			rpc.RPCFilter{
+				Memcmp: &rpc.RPCFilterMemcmp{
+					Offset: 0,
+					Bytes:  discriminator,
+				},
+			},
+		)
+	}
+
+	// Выполняем запрос через RPC клиент
+	accounts, err := c.rpc.GetProgramAccountsWithOpts(
+		ctx,
+		programID,
+		&opts,
+	)
+
+	if err != nil {
+		c.logger.Debug("GetProgramAccounts error",
+			zap.String("program_id", programID.String()),
+			zap.Error(err))
+		return nil, err
+	}
+
+	return &accounts, nil
+}
+
+// GetProgramAccountsWithOpts получает все аккаунты программы с опциями фильтрации
+func (c *Client) GetProgramAccountsWithOpts(
+	ctx context.Context,
+	programID solana.PublicKey,
+	opts *rpc.GetProgramAccountsOpts,
+) (rpc.GetProgramAccountsResult, error) {
+	accounts, err := c.rpc.GetProgramAccountsWithOpts(ctx, programID, opts)
+	if err != nil {
+		c.logger.Debug("GetProgramAccountsWithOpts error",
+			zap.String("program_id", programID.String()),
+			zap.Error(err))
+		return nil, err
+	}
+	return accounts, nil
+}
+
+// GetSignatureStatuses получает статусы транзакций.
+func (c *Client) GetSignatureStatuses(ctx context.Context, signatures ...solana.Signature) (*rpc.GetSignatureStatusesResult, error) {
+	result, err := c.rpc.GetSignatureStatuses(ctx, false, signatures...)
+	if err != nil {
+		c.logger.Error("GetSignatureStatuses error", zap.Error(err))
+		return nil, err
+	}
+	return result, nil
+}
+
+// SendTransactionWithOpts отправляет транзакцию с заданными опциями.
+func (c *Client) SendTransactionWithOpts(ctx context.Context, tx *solana.Transaction, opts blockchain.TransactionOptions) (solana.Signature, error) {
+	sig, err := c.rpc.SendTransactionWithOpts(ctx, tx, rpc.TransactionOpts{
+		SkipPreflight:       opts.SkipPreflight,
+		PreflightCommitment: opts.PreflightCommitment,
+	})
+	if err != nil {
+		c.logger.Error("SendTransactionWithOpts error", zap.Error(err))
+		return solana.Signature{}, err
+	}
+	return sig, nil
+}
+
+// SimulateTransaction симулирует транзакцию и возвращает результат симуляции.
+func (c *Client) SimulateTransaction(ctx context.Context, tx *solana.Transaction) (*blockchain.SimulationResult, error) {
+	result, err := c.rpc.SimulateTransaction(ctx, tx)
+	if err != nil {
+		c.logger.Error("SimulateTransaction error", zap.Error(err))
+		return nil, err
+	}
+	units := uint64(0)
+	if result.Value.UnitsConsumed != nil {
+		units = *result.Value.UnitsConsumed
+	}
+	return &blockchain.SimulationResult{
+		Err:           result.Value.Err,
+		Logs:          result.Value.Logs,
+		UnitsConsumed: units,
+	}, nil
+}
+
+// GetBalance получает баланс аккаунта.
+func (c *Client) GetBalance(ctx context.Context, pubkey solana.PublicKey, commitment rpc.CommitmentType) (uint64, error) {
+	result, err := c.rpc.GetBalance(ctx, pubkey, commitment)
+	if err != nil {
+		c.logger.Error("GetBalance error", zap.Error(err))
+		return 0, err
+	}
+	return result.Value, nil
+}
+
+// WaitForTransactionConfirmation ожидает подтверждения транзакции (с простым polling‑механизмом).
+func (c *Client) WaitForTransactionConfirmation(ctx context.Context, signature solana.Signature, _ rpc.CommitmentType) error {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.After(30 * time.Second)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timeout:
+			return fmt.Errorf("confirmation timeout")
+		case <-ticker.C:
+			statuses, err := c.GetSignatureStatuses(ctx, signature)
+			if err != nil {
+				c.logger.Warn("Error getting signature statuses", zap.Error(err))
+				continue
+			}
+			if statuses != nil && len(statuses.Value) > 0 && statuses.Value[0] != nil {
+				status := statuses.Value[0]
+				// Сравниваем с rpc.ConfirmationStatusFinalized и rpc.ConfirmationStatusConfirmed,
+				// которые имеют тип rpc.ConfirmationStatusType.
+				if status.ConfirmationStatus == rpc.ConfirmationStatusFinalized ||
+					status.ConfirmationStatus == rpc.ConfirmationStatusConfirmed {
+					return nil
+				}
+			}
+		}
+	}
+}
+
+// GetTokenAccountBalance получает баланс токенного аккаунта с указанным уровнем подтверждения.
+func (c *Client) GetTokenAccountBalance(ctx context.Context, account solana.PublicKey, commitment rpc.CommitmentType) (*rpc.GetTokenAccountBalanceResult, error) {
+	// Если commitment не указан, используем CommitmentConfirmed
+	if commitment == "" {
+		commitment = rpc.CommitmentConfirmed
+	}
+
+	result, err := c.rpc.GetTokenAccountBalance(ctx, account, commitment)
+	if err != nil {
+		c.logger.Debug("GetTokenAccountBalance error",
+			zap.String("account", account.String()),
+			zap.Error(err))
+		return nil, err
+	}
+	return result, nil
+}
+
+// Гарантируем, что Client реализует интерфейс blockchain.Client.
+var _ blockchain.Client = (*Client)(nil)
+
+
+// internal/blockchain/types.go
+package blockchain
+
+import (
+	"context"
+
+	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
+)
+
+// TransactionOptions определяет опции для отправки транзакций.
+type TransactionOptions struct {
+	SkipPreflight       bool
+	PreflightCommitment rpc.CommitmentType
+}
+
+// SimulationResult представляет результат симуляции транзакции.
+type SimulationResult struct {
+	Err           interface{}
+	Logs          []string
+	UnitsConsumed uint64
+}
+
+type Client interface {
+	// Получить последний blockhash.
+	GetRecentBlockhash(ctx context.Context) (solana.Hash, error)
+
+	// Отправить транзакцию.
+	SendTransaction(ctx context.Context, tx *solana.Transaction) (solana.Signature, error)
+
+	// Получить информацию об аккаунте.
+	GetAccountInfo(ctx context.Context, pubkey solana.PublicKey) (*rpc.GetAccountInfoResult, error)
+
+	// Получить информацию о нескольких аккаунтах за один запрос.
+	GetMultipleAccounts(ctx context.Context, pubkeys []solana.PublicKey) (*rpc.GetMultipleAccountsResult, error)
+
+	// Получить все аккаунты программы с фильтрами.
+	GetProgramAccountsWithOpts(ctx context.Context, programID solana.PublicKey, opts *rpc.GetProgramAccountsOpts) (rpc.GetProgramAccountsResult, error)
+
+	// Получить статусы подписей транзакций.
+	GetSignatureStatuses(ctx context.Context, signatures ...solana.Signature) (*rpc.GetSignatureStatusesResult, error)
+
+	// Отправить транзакцию с опциями.
+	SendTransactionWithOpts(ctx context.Context, tx *solana.Transaction, opts TransactionOptions) (solana.Signature, error)
+
+	// Симулировать транзакцию.
+	SimulateTransaction(ctx context.Context, tx *solana.Transaction) (*SimulationResult, error)
+
+	// Получить баланс аккаунта.
+	GetBalance(ctx context.Context, pubkey solana.PublicKey, commitment rpc.CommitmentType) (uint64, error)
+
+	// Ожидание подтверждения транзакции.
+	WaitForTransactionConfirmation(ctx context.Context, signature solana.Signature, commitment rpc.CommitmentType) error
+
+	// Получить баланс токенного аккаунта.
+	GetTokenAccountBalance(ctx context.Context, account solana.PublicKey, commitment rpc.CommitmentType) (*rpc.GetTokenAccountBalanceResult, error)
+}
+
+
+// internal/bot/runner.go
+package bot
+
+import (
+	"context"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
+
+	"go.uber.org/zap"
+
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
+	"github.com/rovshanmuradov/solana-bot/internal/task"
+	"github.com/rovshanmuradov/solana-bot/internal/wallet"
+)
+
+// Runner represents the main bot process controller
+type Runner struct {
+	logger        *zap.Logger
+	config        *task.Config
+	solClient     *solbc.Client
+	taskManager   *task.Manager
+	wallets       map[string]*wallet.Wallet
+	defaultWallet *wallet.Wallet
+	shutdownCh    chan os.Signal
+}
+
+// NewRunner creates a new bot runner instance
+func NewRunner(logger *zap.Logger) *Runner {
+	return &Runner{
+		logger:     logger,
+		shutdownCh: make(chan os.Signal, 1),
+	}
+}
+
+// Initialize sets up all dependencies
+func (r *Runner) Initialize(configPath string) error {
+	r.logger.Info("Initializing bot runner")
+
+	// Load configuration
+	cfg, err := task.LoadConfig(configPath)
+	if err != nil {
+		return err
+	}
+	r.config = cfg
+	r.logger.Sugar().Infof("Config loaded: %+v", cfg)
+
+	// Load wallets
+	wallets, err := wallet.LoadWallets("configs/wallets.csv")
+	if err != nil {
+		return err
+	}
+	r.wallets = wallets
+	r.logger.Info("Wallets loaded", zap.Int("count", len(wallets)))
+
+	// Pick first wallet as default if needed
+	for _, w := range wallets {
+		r.defaultWallet = w
+		break
+	}
+
+	// Initialize Solana client
+	r.solClient = solbc.NewClient(cfg.RPCList[0], r.logger)
+
+	// Initialize task manager
+	r.taskManager = task.NewManager(r.logger)
+
+	return nil
+}
+
+// Run executes the main bot logic with parallel workers
+func (r *Runner) Run(ctx context.Context) error {
+	// Setup signal handling
+	signal.Notify(r.shutdownCh, syscall.SIGINT, syscall.SIGTERM)
+
+	// Create a context that can be cancelled
+	shutdownCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Setup handler for shutdown signal
+	go func() {
+		sig := <-r.shutdownCh
+		r.logger.Info("Signal received", zap.String("signal", sig.String()))
+		cancel()
+	}()
+
+	// Load task definitions
+	tasks, err := r.taskManager.LoadTasks("configs/tasks.csv")
+	if err != nil {
+		return err
+	}
+	r.logger.Info("Tasks loaded", zap.Int("count", len(tasks)))
+
+	// Create a task channel and add tasks to it
+	taskCh := make(chan *task.Task, len(tasks))
+	for _, t := range tasks {
+		taskCh <- t
+	}
+	close(taskCh)
+
+	// Determine number of workers from config
+	numWorkers := r.config.Workers
+	if numWorkers <= 0 {
+		numWorkers = 1
+	}
+	r.logger.Info("Starting task execution", zap.Int("workers", numWorkers))
+
+	// Create a wait group to track worker completion
+	var wg sync.WaitGroup
+	wg.Add(numWorkers)
+
+	// Start workers
+	for i := 0; i < numWorkers; i++ {
+		workerID := i + 1
+		go func(id int) {
+			defer wg.Done()
+			r.worker(id, shutdownCtx, taskCh)
+		}(workerID)
+	}
+
+	// Wait for workers to complete or context to be cancelled
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	// Wait for workers to finish or context to be cancelled
+	select {
+	case <-done:
+		r.logger.Info("All tasks completed successfully")
+	case <-shutdownCtx.Done():
+		r.logger.Info("Execution interrupted, waiting for workers to finish")
+		// Wait for workers to finish gracefully
+		select {
+		case <-done:
+			r.logger.Info("All workers finished gracefully")
+		case <-time.After(5 * time.Second):
+			r.logger.Warn("Not all workers finished in time")
+		}
+	}
+
+	return nil
+}
+
+// Shutdown performs graceful shutdown
+func (r *Runner) Shutdown() {
+	r.logger.Info("Bot shutting down gracefully")
+	// Здесь может быть код для корректного завершения всех подсистем
+}
+
+// WaitForShutdown blocks until shutdown signal is received
+func (r *Runner) WaitForShutdown() {
+	sig := <-r.shutdownCh
+	r.logger.Info("Signal received", zap.String("signal", sig.String()))
+	r.Shutdown()
+}
+
+
+// internal/bot/tasks.go
+package bot
+
+import (
+	"context"
+	"math"
+	"time"
+
+	"go.uber.org/zap"
+
+	"github.com/rovshanmuradov/solana-bot/internal/dex"
+	"github.com/rovshanmuradov/solana-bot/internal/monitor"
+	"github.com/rovshanmuradov/solana-bot/internal/task"
+)
+
+// handleSnipeTask processes a snipe operation with price monitoring
+func (r *Runner) handleSnipeTask(ctx context.Context, t *task.Task, dexAdapter dex.DEX, dexTask *dex.Task, logger *zap.Logger) {
+	logger.Info("Executing snipe operation with monitoring",
+		zap.String("task", t.TaskName),
+		zap.Duration("monitor_interval", dexTask.MonitorInterval))
+
+	// Execute the snipe operation
+	err := dexAdapter.Execute(ctx, dexTask)
+	if err != nil {
+		logger.Error("Error during snipe operation",
+			zap.String("task", t.TaskName),
+			zap.Error(err))
+		return // Skip monitoring if snipe fails
+	}
+
+	logger.Info("Snipe completed, starting monitoring",
+		zap.String("task", t.TaskName))
+
+	// Get initial token price
+	priceCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	initialPrice, err := dexAdapter.GetTokenPrice(priceCtx, dexTask.TokenMint)
+	cancel()
+
+	if err != nil {
+		logger.Error("Failed to get initial token price",
+			zap.String("task", t.TaskName),
+			zap.Error(err))
+		return
+	}
+
+	// Get actual token balance after purchase
+	balanceCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	tokenBalance, err := dexAdapter.GetTokenBalance(balanceCtx, dexTask.TokenMint)
+	cancel()
+
+	if err != nil {
+		logger.Error("Failed to get token balance",
+			zap.String("task", t.TaskName),
+			zap.Error(err))
+		return
+	}
+
+	// Convert token balance to human-readable format
+	// Assume 6 decimal places for tokens, can be adjusted based on token precision
+	const tokenDecimals = 6
+	tokenAmount := float64(tokenBalance) / math.Pow10(tokenDecimals)
+
+	logger.Info("Token purchase details",
+		zap.String("task", t.TaskName),
+		zap.Float64("initial_price_sol", initialPrice),
+		zap.Uint64("token_balance", tokenBalance),
+		zap.Float64("token_amount", tokenAmount))
+
+	// Create monitor session config with all transaction parameters from the original task
+	monitorConfig := &monitor.SessionConfig{
+		TokenMint:       dexTask.TokenMint,
+		TokenAmount:     tokenAmount,
+		TokenBalance:    tokenBalance,
+		InitialAmount:   dexTask.AmountSol,
+		InitialPrice:    initialPrice,
+		MonitorInterval: r.config.PriceDelay,
+		DEX:             dexAdapter,
+		Logger:          logger.Named("monitor"),
+
+		// Передаем параметры транзакции из оригинальной задачи
+		SlippagePercent: dexTask.SlippagePercent,
+		PriorityFee:     dexTask.PriorityFee,
+		ComputeUnits:    dexTask.ComputeUnits,
+	}
+
+	// Create and start monitoring session
+	session := monitor.NewMonitoringSession(monitorConfig)
+	if err := session.Start(); err != nil {
+		logger.Error("Failed to start monitoring session",
+			zap.String("task", t.TaskName),
+			zap.Error(err))
+		return
+	}
+
+	// Wait for session to complete
+	if err := session.Wait(); err != nil {
+		logger.Error("Error during monitoring session",
+			zap.String("task", t.TaskName),
+			zap.Error(err))
+	} else {
+		logger.Info("Monitoring session completed successfully",
+			zap.String("task", t.TaskName))
+	}
+}
+
+
+// internal/bot/worker.go
+package bot
+
+import (
+	"context"
+
+	"go.uber.org/zap"
+
+	"github.com/rovshanmuradov/solana-bot/internal/dex"
+	"github.com/rovshanmuradov/solana-bot/internal/task"
+)
+
+// worker processes tasks from the task channel
+func (r *Runner) worker(id int, ctx context.Context, taskCh <-chan *task.Task) {
+	logger := r.logger.With(zap.Int("worker_id", id))
+	logger.Debug("Worker started")
+
+	for t := range taskCh {
+		// Check if context is cancelled
+		select {
+		case <-ctx.Done():
+			logger.Debug("Worker shutting down due to context cancellation")
+			return
+		default:
+			// Continue processing
+		}
+
+		logger.Info("Processing task",
+			zap.String("task", t.TaskName),
+			zap.String("operation", string(t.Operation)))
+
+		// Process the task
+		r.processTask(ctx, t, logger)
+	}
+
+	logger.Debug("Worker finished, no more tasks")
+}
+
+// processTask handles a single task execution
+func (r *Runner) processTask(ctx context.Context, t *task.Task, logger *zap.Logger) {
+	// Get wallet for this task
+	w := r.defaultWallet
+	if r.wallets[t.WalletName] != nil {
+		w = r.wallets[t.WalletName]
+	}
+	if w == nil {
+		logger.Warn("Skipping task - no wallet found", zap.String("task", t.TaskName))
+		return
+	}
+
+	// Get DEX adapter
+	dexAdapter, err := dex.GetDEXByName(t.Module, r.solClient, w, logger)
+	if err != nil {
+		logger.Error("DEX adapter init error", zap.String("task", t.TaskName), zap.Error(err))
+		return
+	}
+
+	logger.Info("Executing task",
+		zap.String("task", t.TaskName),
+		zap.String("operation", string(t.Operation)),
+		zap.String("DEX", dexAdapter.GetName()),
+		zap.String("token_mint", t.TokenMint),
+	)
+
+	// Create a time-based monitor interval from config
+	monitorInterval := r.config.PriceDelay
+	dexTask := t.ToDEXTask(monitorInterval)
+
+	// Handle task based on operation type
+	if t.Operation == task.OperationSnipe {
+		r.handleSnipeTask(ctx, t, dexAdapter, dexTask, logger)
+	} else {
+		// Normal execution for sell/swap operations
+		err = dexAdapter.Execute(ctx, dexTask)
+		if err != nil {
+			logger.Error("Error executing operation",
+				zap.String("task", t.TaskName),
+				zap.Error(err),
+			)
+		} else {
+			logger.Info("Operation completed",
+				zap.String("task", t.TaskName))
+		}
+	}
+}
+
+
+// =============================
+// File: internal/dex/base_adapter.go
+// =============================
+package dex
+
+import (
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
+	"github.com/rovshanmuradov/solana-bot/internal/wallet"
+	"go.uber.org/zap"
+	"sync"
+)
+
+// baseDEXAdapter содержит общую логику для всех адаптеров DEX
+type baseDEXAdapter struct {
+	client    *solbc.Client
+	wallet    *wallet.Wallet
+	logger    *zap.Logger
+	name      string
+	tokenMint string
+	initMu    sync.Mutex
+	initDone  bool
+}
+
+// GetName возвращает название биржи
+func (b *baseDEXAdapter) GetName() string {
+	return b.name
+}
+
+
+// =============================
+// File: internal/dex/factory.go
+// =============================
+package dex
+
+import (
+	"fmt"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
+	"github.com/rovshanmuradov/solana-bot/internal/wallet"
+	"go.uber.org/zap"
+	"strings"
+)
+
+// GetDEXByName создаёт адаптер для DEX по имени биржи
+func GetDEXByName(name string, client *solbc.Client, w *wallet.Wallet, logger *zap.Logger) (DEX, error) {
+	if client == nil {
+		return nil, fmt.Errorf("client cannot be nil")
+	}
+	if logger == nil {
+		return nil, fmt.Errorf("logger cannot be nil")
+	}
+	if w == nil {
+		return nil, fmt.Errorf("wallet cannot be nil")
+	}
+
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch name {
+	case "pump.fun":
+		return &pumpfunDEXAdapter{
+			baseDEXAdapter: baseDEXAdapter{
+				client: client,
+				wallet: w,
+				logger: logger,
+				name:   "Pump.fun",
+			},
+		}, nil
+
+	case "pump.swap":
+		return &pumpswapDEXAdapter{
+			baseDEXAdapter: baseDEXAdapter{
+				client: client,
+				wallet: w,
+				logger: logger,
+				name:   "Pump.Swap",
+			},
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("exchange %s is not supported", name)
+	}
+}
+
+
+// =============================
+// File: internal/dex/pumpfun/accounts.go
+// =============================
+package pumpfun
+
+import (
+	"context"
+	"encoding/binary"
+	"fmt"
+	"github.com/gagliardetto/solana-go/rpc"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
+	"math"
+	"strconv"
+
+	"github.com/gagliardetto/solana-go"
+	"go.uber.org/zap"
+)
+
+// deriveBondingCurveAccounts выводит адреса bonding curve и ассоциированного токен-аккаунта
+func (d *DEX) deriveBondingCurveAccounts(_ context.Context) (bondingCurve, associatedBondingCurve solana.PublicKey, err error) {
+	bondingCurve, _, err = solana.FindProgramAddress(
+		[][]byte{[]byte("bonding-curve"), d.config.Mint.Bytes()},
+		d.config.ContractAddress,
+	)
+	if err != nil {
+		return solana.PublicKey{}, solana.PublicKey{}, fmt.Errorf("failed to derive bonding curve: %w", err)
+	}
+	d.logger.Debug("Derived bonding curve", zap.String("address", bondingCurve.String()))
+
+	associatedBondingCurve, _, err = solana.FindAssociatedTokenAddress(bondingCurve, d.config.Mint)
+	if err != nil {
+		return solana.PublicKey{}, solana.PublicKey{}, fmt.Errorf("failed to derive associated bonding curve: %w", err)
+	}
+	d.logger.Debug("Derived bonding curve ATA", zap.String("address", associatedBondingCurve.String()))
+
+	return bondingCurve, associatedBondingCurve, nil
+}
+
+// FetchBondingCurveAccount получает и парсит данные аккаунта bonding curve
+func (d *DEX) FetchBondingCurveAccount(ctx context.Context, bondingCurve solana.PublicKey) (*BondingCurve, error) {
+	accountInfo, err := d.client.GetAccountInfo(ctx, bondingCurve)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get bonding curve account: %w", err)
+	}
+
+	if accountInfo.Value == nil {
+		return nil, fmt.Errorf("bonding curve account not found")
+	}
+
+	data := accountInfo.Value.Data.GetBinary()
+	if len(data) < 16 {
+		return nil, fmt.Errorf("invalid bonding curve data: insufficient length")
+	}
+
+	virtualTokenReserves := binary.LittleEndian.Uint64(data[0:8])
+	virtualSolReserves := binary.LittleEndian.Uint64(data[8:16])
+
+	return &BondingCurve{
+		VirtualTokenReserves: virtualTokenReserves,
+		VirtualSolReserves:   virtualSolReserves,
+	}, nil
+}
+
+// FetchGlobalAccount fetches and parses the global account data
+func FetchGlobalAccount(ctx context.Context, client *solbc.Client, globalAddr solana.PublicKey) (*GlobalAccount, error) {
+	// Get account info from the blockchain
+	accountInfo, err := client.GetAccountInfo(ctx, globalAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get global account: %w", err)
+	}
+
+	if accountInfo == nil || accountInfo.Value == nil {
+		return nil, fmt.Errorf("global account not found: %s", globalAddr.String())
+	}
+
+	// Make sure the account is owned by the PumpFun program
+	if !accountInfo.Value.Owner.Equals(PumpFunProgramID) {
+		return nil, fmt.Errorf("global account has incorrect owner: expected %s, got %s",
+			PumpFunProgramID.String(), accountInfo.Value.Owner.String())
+	}
+
+	// Get binary data
+	data := accountInfo.Value.Data.GetBinary()
+
+	// Need at least the discriminator + initialized flag + two public keys (32 bytes each)
+	if len(data) < 8+1+64 {
+		return nil, fmt.Errorf("global account data too short: %d bytes", len(data))
+	}
+
+	// Deserialize the data
+	account := &GlobalAccount{}
+
+	// Read discriminator (8 bytes)
+	copy(account.Discriminator[:], data[0:8])
+
+	// Read initialized flag (1 byte)
+	account.Initialized = data[8] != 0
+
+	// Read authority public key (32 bytes)
+	authorityBytes := make([]byte, 32)
+	copy(authorityBytes, data[9:41])
+	account.Authority = solana.PublicKeyFromBytes(authorityBytes)
+
+	// Read fee recipient public key (32 bytes)
+	feeRecipientBytes := make([]byte, 32)
+	copy(feeRecipientBytes, data[41:73])
+	account.FeeRecipient = solana.PublicKeyFromBytes(feeRecipientBytes)
+
+	// Read fee basis points (8 bytes)
+	if len(data) >= 81 {
+		account.FeeBasisPoints = binary.LittleEndian.Uint64(data[73:81])
+	}
+
+	return account, nil
+}
+
+// GetTokenPrice возвращает текущую цену токена на основе bonding curve
+func (d *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
+	if d.config.Mint.String() != tokenMint {
+		return 0, fmt.Errorf("token %s not configured in this DEX instance", tokenMint)
+	}
+
+	bondingCurve, _, err := solana.FindProgramAddress(
+		[][]byte{[]byte("bonding-curve"), d.config.Mint.Bytes()},
+		d.config.ContractAddress,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to derive bonding curve: %w", err)
+	}
+
+	bondingCurveData, err := d.FetchBondingCurveAccount(ctx, bondingCurve)
+	if err != nil {
+		return 0, fmt.Errorf("failed to fetch bonding curve data: %w", err)
+	}
+
+	// Проверяем, что резервы токенов не нулевые
+	if bondingCurveData.VirtualTokenReserves == 0 {
+		return 0, fmt.Errorf("virtual token reserves are zero, cannot calculate price")
+	}
+
+	// Рассчитываем цену по формуле из bonding curve
+	// Цена токена = виртуальный SOL резерв / виртуальный токен резерв
+	// Это дает цену за 1 токен в SOL
+	price := float64(bondingCurveData.VirtualSolReserves) / float64(bondingCurveData.VirtualTokenReserves)
+
+	// Округляем до 9 десятичных знаков (точность SOL)
+	price = math.Floor(price*1e9) / 1e9
+
+	d.logger.Debug("Calculated token price",
+		zap.Float64("price", price),
+		zap.Uint64("virtual_sol_reserves", bondingCurveData.VirtualSolReserves),
+		zap.Uint64("virtual_token_reserves", bondingCurveData.VirtualTokenReserves))
+
+	return price, nil
+}
+
+// GetTokenBalance возвращает текущий баланс токена в кошельке пользователя
+func (d *DEX) GetTokenBalance(ctx context.Context, commitment ...rpc.CommitmentType) (uint64, error) {
+	// Находим ATA адрес для токена
+	userATA, _, err := solana.FindAssociatedTokenAddress(d.wallet.PublicKey, d.config.Mint)
+	if err != nil {
+		return 0, fmt.Errorf("failed to derive associated token account: %w", err)
+	}
+
+	// По умолчанию используем CommitmentFinalized,
+	// но позволяем вызывающему коду переопределить это
+	commitmentLevel := rpc.CommitmentFinalized
+	if len(commitment) > 0 && commitment[0] != "" {
+		commitmentLevel = commitment[0]
+	}
+
+	// Получаем баланс токена с указанием уровня подтверждения
+	result, err := d.client.GetTokenAccountBalance(ctx, userATA, commitmentLevel)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get token account balance: %w", err)
+	}
+
+	if result == nil || result.Value.Amount == "" {
+		return 0, fmt.Errorf("no token balance found")
+	}
+
+	// Парсим результат в uint64
+	balance, err := strconv.ParseUint(result.Value.Amount, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse token balance: %w", err)
+	}
+
+	d.logger.Debug("Got token balance",
+		zap.Uint64("balance", balance),
+		zap.String("token_mint", d.config.Mint.String()),
+		zap.String("user_ata", userATA.String()),
+		zap.String("commitment", string(commitmentLevel)))
+
+	return balance, nil
+}
+
+
+// =============================
+// File: internal/dex/pumpfun/config.go
+// =============================
+package pumpfun
+
+import (
+	"fmt"
+
+	"github.com/gagliardetto/solana-go"
+	"go.uber.org/zap"
+)
+
+// Known PumpFun protocol addresses
+
+// Config holds the configuration for the Pump.fun DEX
+type Config struct {
+	// Protocol addresses
+	ContractAddress solana.PublicKey
+	Global          solana.PublicKey
+	FeeRecipient    solana.PublicKey
+	EventAuthority  solana.PublicKey
+
+	// Token specific addresses
+	Mint solana.PublicKey
+
+	// Monitoring configuration
+	MonitorInterval string // Duration string for monitoring intervals
+}
+
+// GetDefaultConfig creates a default configuration for the Pump.fun DEX
+func GetDefaultConfig() *Config {
+	return &Config{
+		ContractAddress: PumpFunProgramID,
+		EventAuthority:  PumpFunEventAuth,
+		MonitorInterval: "5s",
+	}
+}
+
+// SetupForToken configures the Config instance for a specific token
+func (cfg *Config) SetupForToken(tokenMint string, logger *zap.Logger) error {
+	// Validate and set token mint
+	if tokenMint == "" {
+		return fmt.Errorf("token mint address is required")
+	}
+
+	var err error
+	cfg.Mint, err = solana.PublicKeyFromBase58(tokenMint)
+	if err != nil {
+		return fmt.Errorf("invalid token mint address: %w", err)
+	}
+
+	// Set program ID if not already set
+	if cfg.ContractAddress.IsZero() {
+		cfg.ContractAddress = PumpFunProgramID
+	}
+
+	// Derive Global Account PDA
+	cfg.Global, _, err = solana.FindProgramAddress(
+		[][]byte{[]byte("global")},
+		cfg.ContractAddress,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to derive global account: %w", err)
+	}
+
+	// Set event authority if not already set
+	if cfg.EventAuthority.IsZero() {
+		cfg.EventAuthority = PumpFunEventAuth
+	}
+
+	// The fee recipient will be set later when fetching the global account
+
+	logger.Info("PumpFun configuration prepared",
+		zap.String("program_id", cfg.ContractAddress.String()),
+		zap.String("global_account", cfg.Global.String()),
+		zap.String("token_mint", cfg.Mint.String()),
+		zap.String("event_authority", cfg.EventAuthority.String()))
+
+	return nil
+}
+
+
+// internal/dex/pumpfun/discrete_pnl.go
+package pumpfun
+
+import (
+	"context"
+	"fmt"
+	"math"
+
+	"go.uber.org/zap"
+)
+
+// PriceTier представляет собой ценовой уровень на bonding curve
+type PriceTier struct {
+	Price           float64 // Цена в SOL за один токен на этом уровне
+	TokensRemaining float64 // Количество токенов, доступных на этом уровне
+}
+
+// BondingCurveInfo содержит информацию о текущем состоянии bonding curve
+type BondingCurveInfo struct {
+	CurrentTierIndex int         // Индекс текущего ценового уровня
+	CurrentTierPrice float64     // Текущая цена в SOL
+	Tiers            []PriceTier // Ценовые уровни
+	FeePercentage    float64     // Комиссия в процентах
+}
+
+// DiscreteTokenPnL содержит информацию о PnL с учетом дискретной природы токена
+type DiscreteTokenPnL struct {
+	CurrentPrice      float64 // Текущая цена токена
+	TheoreticalValue  float64 // Теоретическая стоимость (цена * количество)
+	SellEstimate      float64 // Оценка реальной выручки при продаже
+	InitialInvestment float64 // Начальная инвестиция
+	NetPnL            float64 // Чистый PnL (SellEstimate - InitialInvestment)
+	PnLPercentage     float64 // Процент PnL
+}
+
+// calculateSellValue рассчитывает фактическую выручку от продажи токенов с учетом
+// ступенчатого падения цены по дискретным уровням bonding curve
+func calculateSellValue(tokenAmount float64, curveInfo *BondingCurveInfo) float64 {
+	remainingTokens := tokenAmount
+	totalSol := 0.0
+
+	// Начинаем с текущего уровня и двигаемся вниз
+	for i := curveInfo.CurrentTierIndex; i >= 0 && remainingTokens > 0; i-- {
+		tier := curveInfo.Tiers[i]
+
+		// Сколько токенов продаем на этом уровне
+		tokensToSellAtTier := math.Min(remainingTokens, tier.TokensRemaining)
+
+		// SOL, полученный от продажи на этом уровне
+		solFromTier := tokensToSellAtTier * tier.Price
+
+		// Вычитаем комиссию
+		netSolFromTier := solFromTier * (1.0 - curveInfo.FeePercentage)
+
+		// Добавляем к общей сумме
+		totalSol += netSolFromTier
+
+		// Уменьшаем количество оставшихся токенов
+		remainingTokens -= tokensToSellAtTier
+	}
+
+	// Округляем до 6 знаков после запятой (микро SOL)
+	totalSol = math.Floor(totalSol*1e6) / 1e6
+
+	return totalSol
+}
+
+// CalculateDiscretePnL вычисляет PnL для дискретной системы Pump.fun
+func (d *DEX) CalculateDiscretePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*DiscreteTokenPnL, error) {
+	// Получить данные о текущем состоянии bonding curve
+	bondingCurve, _, err := d.deriveBondingCurveAccounts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive bonding curve addresses: %w", err)
+	}
+
+	// Получить данные аккаунта
+	bondingCurveData, err := d.FetchBondingCurveAccount(ctx, bondingCurve)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch bonding curve data: %w", err)
+	}
+
+	// Текущая цена токена
+	currentPrice := float64(bondingCurveData.VirtualSolReserves) / float64(bondingCurveData.VirtualTokenReserves)
+	currentPrice = math.Floor(currentPrice*1e9) / 1e9 // Округляем до 9 знаков после запятой
+
+	// TODO: В будущем получать точные параметры ценовых уровней из смарт-контракта:
+	// 1. Точный шаг инкремента цены между уровнями
+	// 2. Точное количество токенов на каждом уровне
+	// 3. Актуальные остатки токенов на каждом уровне
+	// Это потребует дополнительных RPC вызовов к смарт-контракту и декодирования данных аккаунтов
+
+	// Создаем инфо о bonding curve
+	// Определяем текущий уровень и модель ценовых уровней
+	const priceIncrement = 0.001 // Инкремент цены между уровнями, обычно 0.001 SOL
+	currentTierIndex := int(math.Floor(currentPrice / priceIncrement))
+
+	// Создаем массив ценовых уровней от текущего вниз
+	tiers := make([]PriceTier, currentTierIndex+1)
+
+	// Заполняем текущий уровень реальной ценой
+	tiers[currentTierIndex] = PriceTier{
+		Price:           currentPrice,
+		TokensRemaining: 20.0, // Приблизительное количество токенов на уровень
+	}
+
+	// Заполняем все предыдущие уровни с шагом priceIncrement
+	for i := currentTierIndex - 1; i >= 0; i-- {
+		tierPrice := priceIncrement * float64(i+1)
+		tiers[i] = PriceTier{
+			Price:           tierPrice,
+			TokensRemaining: 20.0, // Стандартное количество токенов на уровень в Pump.fun
+		}
+	}
+
+	// Получаем комиссию (по умолчанию 1%)
+	// TODO: Получать точное значение из GlobalAccount.FeeBasisPoints / 10000.0
+	const defaultFeePercentage = 0.01
+
+	// Создаем info о bonding curve
+	curveInfo := &BondingCurveInfo{
+		CurrentTierIndex: currentTierIndex,
+		CurrentTierPrice: currentPrice,
+		Tiers:            tiers,
+		FeePercentage:    defaultFeePercentage,
+	}
+
+	// Расчет теоретической стоимости по текущей цене
+	theoreticalValue := tokenAmount * currentPrice
+
+	// Расчет ожидаемой выручки от продажи с учетом ступенчатого спуска
+	sellEstimate := calculateSellValue(tokenAmount, curveInfo)
+
+	// Расчет чистого PnL
+	netPnL := sellEstimate - initialInvestment
+
+	// Расчет процента PnL
+	pnlPercentage := 0.0
+	if initialInvestment > 0 {
+		pnlPercentage = (netPnL / initialInvestment) * 100
+	}
+
+	d.logger.Debug("Calculated discrete PnL",
+		zap.Float64("current_price", currentPrice),
+		zap.Float64("theoretical_value", theoreticalValue),
+		zap.Float64("sell_estimate", sellEstimate),
+		zap.Float64("net_pnl", netPnL),
+		zap.Float64("pnl_percentage", pnlPercentage))
+
+	return &DiscreteTokenPnL{
+		CurrentPrice:      currentPrice,
+		TheoreticalValue:  theoreticalValue,
+		SellEstimate:      sellEstimate,
+		InitialInvestment: initialInvestment,
+		NetPnL:            netPnL,
+		PnLPercentage:     pnlPercentage,
+	}, nil
+}
+
+// =============================
+// File: internal/dex/pumpfun/instructions.go
+// =============================
+package pumpfun
+
+import (
+	"encoding/binary"
+
+	"github.com/gagliardetto/solana-go"
+)
+
+// Constants for the Pump.fun protocol
+var (
+	sellDiscriminator        = []byte{0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad}
+	PumpFunExactSolProgramID = solana.MustPublicKeyFromBase58("6sbiyZ7mLKmYkES2AKYPHtg4FjQMaqVx3jTHez6ZtfmX")
+	PumpFunProgramID         = solana.MustPublicKeyFromBase58("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+	PumpFunEventAuth         = solana.MustPublicKeyFromBase58("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")
+	AssociatedTokenProgramID = solana.SPLAssociatedTokenAccountProgramID
+	SystemProgramID          = solana.SystemProgramID
+	TokenProgramID           = solana.TokenProgramID
+	SysVarRentPubkey         = solana.SysVarRentPubkey
+)
+
+// createBuyExactSolInstruction creates an instruction for buying with an exact SOL amount
+func createBuyExactSolInstruction(
+	global,
+	feeRecipient,
+	mint,
+	bondingCurve,
+	associatedBondingCurve,
+	userATA,
+	userWallet,
+	eventAuthority solana.PublicKey,
+	solAmountLamports uint64,
+) solana.Instruction {
+	// Create instruction data - only 8 bytes for sol amount in lamports
+	data := make([]byte, 8)
+	binary.LittleEndian.PutUint64(data, solAmountLamports)
+
+	// Account list follows the same order as regular buy instruction
+	accounts := []*solana.AccountMeta{
+		solana.NewAccountMeta(global, false, false),
+		solana.NewAccountMeta(feeRecipient, true, false),
+		solana.NewAccountMeta(mint, false, false),
+		solana.NewAccountMeta(bondingCurve, true, false),
+		solana.NewAccountMeta(associatedBondingCurve, true, false),
+		solana.NewAccountMeta(userATA, true, false),
+		solana.NewAccountMeta(userWallet, true, true),
+		solana.NewAccountMeta(SystemProgramID, false, false),
+		solana.NewAccountMeta(TokenProgramID, false, false),
+		solana.NewAccountMeta(SysVarRentPubkey, false, false),
+		solana.NewAccountMeta(eventAuthority, false, false),
+		solana.NewAccountMeta(PumpFunProgramID, false, false),
+	}
+
+	return solana.NewInstruction(PumpFunExactSolProgramID, accounts, data)
+}
+
+// createSellInstruction creates a sell instruction for the Pump.fun protocol
+func createSellInstruction(
+	programID,
+	global,
+	feeRecipient,
+	mint,
+	bondingCurve,
+	associatedBondingCurve,
+	userATA,
+	userWallet,
+	eventAuthority solana.PublicKey,
+	amount,
+	minSolOutput uint64,
+) solana.Instruction {
+	data := make([]byte, 24)
+	copy(data[0:8], sellDiscriminator)
+	binary.LittleEndian.PutUint64(data[8:16], amount)
+	binary.LittleEndian.PutUint64(data[16:24], minSolOutput)
+
+	// Порядок параметров в NewAccountMeta: pubKey, IsWritable, IsSigner
+	accounts := []*solana.AccountMeta{
+		solana.NewAccountMeta(global, false, false),
+		solana.NewAccountMeta(feeRecipient, true, false),
+		solana.NewAccountMeta(mint, false, false),
+		solana.NewAccountMeta(bondingCurve, true, false),
+		solana.NewAccountMeta(associatedBondingCurve, true, false),
+		solana.NewAccountMeta(userATA, true, false),
+		solana.NewAccountMeta(userWallet, true, true),
+		solana.NewAccountMeta(SystemProgramID, false, false),
+		solana.NewAccountMeta(AssociatedTokenProgramID, false, false),
+		solana.NewAccountMeta(TokenProgramID, false, false),
+		solana.NewAccountMeta(eventAuthority, false, false),
+		solana.NewAccountMeta(programID, false, false),
+	}
+
+	return solana.NewInstruction(programID, accounts, data)
+}
+
+
+// =============================
+// File: internal/dex/pumpfun/pumpfun.go
+// =============================
+package pumpfun
+
+import (
+	"context"
+	"fmt"
+	"github.com/gagliardetto/solana-go/rpc"
+	"math"
+	"time"
+
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
+	"github.com/rovshanmuradov/solana-bot/internal/types"
+	"github.com/rovshanmuradov/solana-bot/internal/wallet"
+	"go.uber.org/zap"
+)
+
+// DEX is the Pump.fun DEX implementation
+type DEX struct {
+	client          *solbc.Client
+	wallet          *wallet.Wallet
+	logger          *zap.Logger
+	config          *Config
+	priorityManager *types.PriorityManager
+}
+
+// NewDEX creates a new instance of the Pump.fun DEX
+func NewDEX(client *solbc.Client, w *wallet.Wallet, logger *zap.Logger, config *Config, _ string) (*DEX, error) {
+	if config.ContractAddress.IsZero() {
+		return nil, fmt.Errorf("pump.fun contract address is required")
+	}
+	if config.Mint.IsZero() {
+		return nil, fmt.Errorf("token mint address is required")
+	}
+
+	logger.Info("Creating PumpFun DEX",
+		zap.String("contract", config.ContractAddress.String()),
+		zap.String("token_mint", config.Mint.String()))
+
+	dex := &DEX{
+		client:          client,
+		wallet:          w,
+		logger:          logger.Named("pumpfun"),
+		config:          config,
+		priorityManager: types.NewPriorityManager(logger.Named("priority")),
+	}
+
+	// Update fee recipient
+	fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	globalAccount, err := FetchGlobalAccount(fetchCtx, client, config.Global)
+	if err != nil {
+		logger.Warn("Failed to fetch global account data, using default fee recipient",
+			zap.Error(err))
+	} else if globalAccount != nil {
+		config.FeeRecipient = globalAccount.FeeRecipient
+		logger.Info("Updated fee recipient", zap.String("address", config.FeeRecipient.String()))
+	}
+
+	return dex, nil
+}
+
+// ExecuteSnipe executes a buy operation using exact-sol program
+func (d *DEX) ExecuteSnipe(ctx context.Context, amountSol float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
+	d.logger.Info("Starting Pump.fun exact-sol buy operation",
+		zap.Float64("amount_sol", amountSol),
+		zap.Float64("slippage_percent", slippagePercent),
+		zap.String("priority_fee_sol", priorityFeeSol),
+		zap.Uint32("compute_units", computeUnits))
+
+	// Create context with timeout
+	opCtx, cancel := d.prepareTransactionContext(ctx, 45*time.Second)
+	defer cancel()
+
+	// Convert SOL amount to lamports
+	solAmountLamports := uint64(amountSol * 1_000_000_000)
+
+	d.logger.Info("Using exact SOL amount",
+		zap.Uint64("sol_amount_lamports", solAmountLamports),
+		zap.String("sol_amount", fmt.Sprintf("%.9f SOL", float64(solAmountLamports)/1_000_000_000)))
+
+	// Prepare buy transaction
+	instructions, err := d.prepareBuyTransaction(opCtx, solAmountLamports, priorityFeeSol, computeUnits)
+	if err != nil {
+		return err
+	}
+
+	// Send and confirm transaction
+	_, err = d.sendAndConfirmTransaction(opCtx, instructions)
+	return err
+}
+
+// ExecuteSell executes a sell operation
+func (d *DEX) ExecuteSell(ctx context.Context, tokenAmount uint64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
+	d.logger.Info("Starting Pump.fun sell operation",
+		zap.Uint64("token_amount", tokenAmount),
+		zap.Float64("slippage_percent", slippagePercent),
+		zap.String("priority_fee_sol", priorityFeeSol),
+		zap.Uint32("compute_units", computeUnits))
+
+	// Create context with timeout
+	opCtx, cancel := d.prepareTransactionContext(ctx, 45*time.Second)
+	defer cancel()
+
+	// Prepare sell transaction
+	instructions, err := d.prepareSellTransaction(opCtx, tokenAmount, slippagePercent, priorityFeeSol, computeUnits)
+	if err != nil {
+		return err
+	}
+
+	// Send and confirm transaction
+	_, err = d.sendAndConfirmTransaction(opCtx, instructions)
+	if err != nil {
+		return d.handleSellError(err)
+	}
+
+	return nil
+}
+
+// SellPercentTokens продает указанный процент доступных токенов
+func (d *DEX) SellPercentTokens(ctx context.Context, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
+	if percentToSell <= 0 || percentToSell > 100 {
+		return fmt.Errorf("percent to sell must be between 0 and 100")
+	}
+
+	// Создаем контекст с увеличенным таймаутом для надежности получения баланса
+	balanceCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	// Получаем актуальный баланс токенов с максимальным уровнем подтверждения
+	tokenBalance, err := d.GetTokenBalance(balanceCtx, rpc.CommitmentFinalized)
+	if err != nil {
+		return fmt.Errorf("failed to get token balance: %w", err)
+	}
+
+	if tokenBalance == 0 {
+		return fmt.Errorf("no tokens to sell")
+	}
+
+	// Получаем количество десятичных знаков токена
+	tokenDecimals := float64(6) // Обычно 6 для токенов PumpFun
+
+	// Просто получаем целое число токенов, отбрасывая дробную часть
+	wholeTokens := tokenBalance / uint64(math.Pow10(int(tokenDecimals)))
+
+	// Преобразуем обратно в сырые единицы
+	tokensToSell := wholeTokens * uint64(math.Pow10(int(tokenDecimals)))
+
+	// Добавляем незначительный запас безопасности для предотвращения ошибок
+	tokensToSell = uint64(float64(tokensToSell) * 0.99)
+
+	d.logger.Info("Selling tokens",
+		zap.String("token_mint", d.config.Mint.String()),
+		zap.Uint64("total_balance", tokenBalance),
+		zap.Uint64("whole_tokens", wholeTokens),
+		zap.Uint64("tokens_to_sell", tokensToSell))
+
+	// Выполняем продажу
+	return d.ExecuteSell(ctx, tokensToSell, slippagePercent, priorityFeeSol, computeUnits)
+}
+
+
+// =============================
+// File: internal/dex/pumpfun/trade.go
+// =============================
+package pumpfun
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/gagliardetto/solana-go"
+	"go.uber.org/zap"
+)
+
+// prepareBuyTransaction подготавливает транзакцию покупки
+func (d *DEX) prepareBuyTransaction(ctx context.Context, solAmountLamports uint64, priorityFeeSol string, computeUnits uint32) ([]solana.Instruction, error) {
+	// Prepare base instructions (priority and ATA)
+	baseInstructions, userATA, err := d.prepareBaseInstructions(ctx, priorityFeeSol, computeUnits)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get bonding curve accounts
+	bondingCurve, associatedBondingCurve, err := d.deriveBondingCurveAccounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create buy instruction
+	buyIx := createBuyExactSolInstruction(
+		d.config.Global,         // Global account
+		d.config.FeeRecipient,   // Fee recipient
+		d.config.Mint,           // Token mint
+		bondingCurve,            // Bonding curve
+		associatedBondingCurve,  // Associated bonding curve ATA
+		userATA,                 // User's associated token account
+		d.wallet.PublicKey,      // User's wallet
+		d.config.EventAuthority, // Event authority
+		solAmountLamports,       // Exact SOL amount in lamports
+	)
+
+	// Add buy instruction to base instructions
+	baseInstructions = append(baseInstructions, buyIx)
+	return baseInstructions, nil
+}
+
+// prepareSellTransaction подготавливает транзакцию продажи
+func (d *DEX) prepareSellTransaction(ctx context.Context, tokenAmount uint64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) ([]solana.Instruction, error) {
+	// Prepare base instructions (priority and ATA)
+	baseInstructions, userATA, err := d.prepareBaseInstructions(ctx, priorityFeeSol, computeUnits)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get bonding curve accounts
+	bondingCurve, associatedBondingCurve, err := d.deriveBondingCurveAccounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get bonding curve data
+	bondingCurveData, err := d.FetchBondingCurveAccount(ctx, bondingCurve)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch bonding curve data: %w", err)
+	}
+
+	// Check if bonding curve is complete
+	if bondingCurveData.VirtualSolReserves < 1000 {
+		return nil, fmt.Errorf("bonding curve has insufficient SOL reserves, possibly complete")
+	}
+
+	// Calculate minimum output with slippage
+	minSolOutput := d.calculateMinSolOutput(tokenAmount, bondingCurveData, slippagePercent)
+
+	d.logger.Info("Calculated sell parameters",
+		zap.Uint64("token_amount", tokenAmount),
+		zap.Uint64("virtual_token_reserves", bondingCurveData.VirtualTokenReserves),
+		zap.Uint64("virtual_sol_reserves", bondingCurveData.VirtualSolReserves),
+		zap.Uint64("min_sol_output_lamports", minSolOutput))
+
+	// Create sell instruction
+	sellIx := createSellInstruction(
+		d.config.ContractAddress, // Program ID
+		d.config.Global,          // Global account
+		d.config.FeeRecipient,    // Fee recipient
+		d.config.Mint,            // Token mint
+		bondingCurve,             // Bonding curve
+		associatedBondingCurve,   // Associated bonding curve ATA
+		userATA,                  // User's associated token account
+		d.wallet.PublicKey,       // User's wallet
+		d.config.EventAuthority,  // Event authority
+		tokenAmount,              // Amount of tokens to sell
+		minSolOutput,             // Minimum SOL output with slippage
+	)
+
+	// Add sell instruction to base instructions
+	baseInstructions = append(baseInstructions, sellIx)
+	return baseInstructions, nil
+}
+
+// calculateMinSolOutput вычисляет минимальный выход SOL с учетом проскальзывания
+func (d *DEX) calculateMinSolOutput(tokenAmount uint64, bondingCurveData *BondingCurve, slippagePercent float64) uint64 {
+	expectedSolValueLamports := (tokenAmount * bondingCurveData.VirtualSolReserves) / bondingCurveData.VirtualTokenReserves
+	return uint64(float64(expectedSolValueLamports) * (1.0 - slippagePercent/100.0))
+}
+
+// handleSellError обрабатывает ошибки при продаже
+func (d *DEX) handleSellError(err error) error {
+	if strings.Contains(err.Error(), "BondingCurveComplete") ||
+		strings.Contains(err.Error(), "0x1775") ||
+		strings.Contains(err.Error(), "6005") {
+		d.logger.Error("Невозможно продать токен через Pump.fun",
+			zap.String("token_mint", d.config.Mint.String()),
+			zap.String("reason", "Токен перенесен на Raydium"))
+		return fmt.Errorf("токен %s перенесен на Raydium и не может быть продан через Pump.fun",
+			d.config.Mint.String())
+	}
+	return fmt.Errorf("failed to send transaction: %w", err)
+}
+
+
+// =============================
+// File: internal/dex/pumpfun/transactions.go
+// =============================
+package pumpfun
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
+	"go.uber.org/zap"
+)
+
+// prepareTransactionContext создает контекст с таймаутом для операции
+func (d *DEX) prepareTransactionContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, timeout)
+}
+
+// prepareBaseInstructions подготавливает базовые инструкции (приоритет и ATA)
+func (d *DEX) prepareBaseInstructions(_ context.Context, priorityFeeSol string, computeUnits uint32) ([]solana.Instruction, solana.PublicKey, error) {
+	// Create priority instructions
+	priorityInstructions, err := d.priorityManager.CreatePriorityInstructions(priorityFeeSol, computeUnits)
+	if err != nil {
+		return nil, solana.PublicKey{}, fmt.Errorf("failed to create priority instructions: %w", err)
+	}
+
+	// Create Associated Token Account
+	userATA, _, err := solana.FindAssociatedTokenAddress(d.wallet.PublicKey, d.config.Mint)
+	if err != nil {
+		return nil, solana.PublicKey{}, fmt.Errorf("failed to derive associated token account: %w", err)
+	}
+	ataInstruction := d.wallet.CreateAssociatedTokenAccountIdempotentInstruction(
+		d.wallet.PublicKey, d.wallet.PublicKey, d.config.Mint)
+
+	var instructions []solana.Instruction
+	instructions = append(instructions, priorityInstructions...)
+	instructions = append(instructions, ataInstruction)
+
+	return instructions, userATA, nil
+}
+
+// sendAndConfirmTransaction создает, подписывает, отправляет и ожидает подтверждения транзакции
+func (d *DEX) sendAndConfirmTransaction(ctx context.Context, instructions []solana.Instruction) (solana.Signature, error) {
+	// Get latest blockhash
+	blockhash, err := d.client.GetRecentBlockhash(ctx)
+	if err != nil {
+		return solana.Signature{}, fmt.Errorf("failed to get recent blockhash: %w", err)
+	}
+	d.logger.Debug("Got blockhash", zap.String("blockhash", blockhash.String()))
+
+	// Create transaction
+	tx, err := solana.NewTransaction(
+		instructions,
+		blockhash,
+		solana.TransactionPayer(d.wallet.PublicKey),
+	)
+	if err != nil {
+		return solana.Signature{}, fmt.Errorf("failed to create transaction: %w", err)
+	}
+
+	// Sign transaction
+	if err := d.wallet.SignTransaction(tx); err != nil {
+		return solana.Signature{}, fmt.Errorf("failed to sign transaction: %w", err)
+	}
+
+	// Simulate transaction
+	simResult, err := d.client.SimulateTransaction(ctx, tx)
+	if err != nil || (simResult != nil && simResult.Err != nil) {
+		d.logger.Warn("Transaction simulation failed",
+			zap.Error(err),
+			zap.Any("sim_error", simResult != nil && simResult.Err != nil))
+		// Continue anyway as simulation can sometimes fail for valid transactions
+	} else {
+		d.logger.Info("Transaction simulation successful",
+			zap.Uint64("compute_units", simResult.UnitsConsumed))
+	}
+
+	// Send transaction
+	txSig, err := d.client.SendTransaction(ctx, tx)
+	if err != nil {
+		return solana.Signature{}, fmt.Errorf("failed to send transaction: %w", err)
+	}
+
+	d.logger.Info("Transaction sent successfully",
+		zap.String("signature", txSig.String()))
+
+	// Wait for confirmation
+	if err := d.client.WaitForTransactionConfirmation(ctx, txSig, rpc.CommitmentConfirmed); err != nil {
+		d.logger.Warn("Failed to confirm transaction",
+			zap.String("signature", txSig.String()),
+			zap.Error(err))
+		return txSig, fmt.Errorf("transaction confirmation failed: %w", err)
+	}
+
+	d.logger.Info("Transaction confirmed",
+		zap.String("signature", txSig.String()))
+	return txSig, nil
+}
+
+
+// =============================
+// File: internal/dex/pumpfun/types.go
+// =============================
+package pumpfun
+
+import (
+	"github.com/gagliardetto/solana-go"
+)
+
+// GlobalAccount represents the structure of the PumpFun global account data
+type GlobalAccount struct {
+	Discriminator  [8]byte
+	Initialized    bool
+	Authority      solana.PublicKey
+	FeeRecipient   solana.PublicKey
+	FeeBasisPoints uint64
+}
+
+type BondingCurve struct {
+	VirtualTokenReserves uint64
+	VirtualSolReserves   uint64
+	// Другие поля могут быть добавлены в зависимости от структуры аккаунта Pump.fun
+}
+
+// =============================
+// File: internal/dex/pumpfun_adapter.go
+// =============================
+package dex
+
+import (
+	"context"
+	"fmt"
+	"github.com/gagliardetto/solana-go/rpc"
+	"github.com/rovshanmuradov/solana-bot/internal/dex/pumpfun"
+	"go.uber.org/zap"
+)
+
+// pumpfunDEXAdapter адаптирует Pump.fun к интерфейсу DEX
+type pumpfunDEXAdapter struct {
+	baseDEXAdapter
+	inner *pumpfun.DEX
+}
+
+// GetName для PumpFun DEX
+func (d *pumpfunDEXAdapter) GetName() string {
+	return "Pump.fun"
+}
+
+// initPumpFun инициализирует Pump.fun DEX если необходимо
+func (d *pumpfunDEXAdapter) initPumpFun(_ context.Context, tokenMint string) error {
+	d.initMu.Lock()
+	defer d.initMu.Unlock()
+
+	if d.initDone && d.tokenMint == tokenMint && d.inner != nil {
+		return nil
+	}
+
+	config := pumpfun.GetDefaultConfig()
+	if err := config.SetupForToken(tokenMint, d.logger); err != nil {
+		return fmt.Errorf("failed to setup Pump.fun configuration: %w", err)
+	}
+
+	var err error
+	d.inner, err = pumpfun.NewDEX(d.client, d.wallet, d.logger, config, config.MonitorInterval)
+	if err != nil {
+		return fmt.Errorf("failed to initialize Pump.fun DEX: %w", err)
+	}
+
+	d.tokenMint = tokenMint
+	d.initDone = true
+	return nil
+}
+
+// Execute выполняет операцию на Pump.fun DEX
+func (d *pumpfunDEXAdapter) Execute(ctx context.Context, task *Task) error {
+	if task.TokenMint == "" {
+		return fmt.Errorf("token mint address is required for Pump.fun")
+	}
+
+	if err := d.initPumpFun(ctx, task.TokenMint); err != nil {
+		return err
+	}
+
+	switch task.Operation {
+	case OperationSnipe:
+		d.logger.Info("Executing snipe on Pump.fun",
+			zap.String("token_mint", task.TokenMint),
+			zap.Float64("sol_amount", task.AmountSol),
+			zap.Float64("slippage_percent", task.SlippagePercent),
+			zap.String("priority_fee", task.PriorityFee),
+			zap.Uint32("compute_units", task.ComputeUnits))
+
+		return d.inner.ExecuteSnipe(ctx, task.AmountSol, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
+
+	case OperationSell:
+		// Получаем текущий баланс токенов для продажи всех имеющихся
+		tokenBalance, err := d.inner.GetTokenBalance(ctx, rpc.CommitmentConfirmed)
+		if err != nil {
+			return fmt.Errorf("failed to get token balance for sell: %w", err)
+		}
+
+		// Если баланс получен успешно, используем его; иначе пытаемся конвертировать AmountSol в токены
+		if tokenBalance > 0 {
+			d.logger.Info("Executing sell on Pump.fun using actual token balance",
+				zap.String("token_mint", task.TokenMint),
+				zap.Uint64("token_balance", tokenBalance),
+				zap.Float64("slippage_percent", task.SlippagePercent),
+				zap.String("priority_fee", task.PriorityFee),
+				zap.Uint32("compute_units", task.ComputeUnits))
+
+			return d.inner.ExecuteSell(ctx, tokenBalance, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
+		} else {
+			// Запасной вариант, если не удалось получить баланс
+			tokenAmount, err := convertToTokenUnits(ctx, d.inner, task.TokenMint, task.AmountSol, 6)
+			if err != nil {
+				return err
+			}
+
+			d.logger.Info("Executing sell on Pump.fun using converted amount",
+				zap.String("token_mint", task.TokenMint),
+				zap.Float64("tokens_to_sell", task.AmountSol),
+				zap.Uint64("token_amount", tokenAmount),
+				zap.Float64("slippage_percent", task.SlippagePercent),
+				zap.String("priority_fee", task.PriorityFee),
+				zap.Uint32("compute_units", task.ComputeUnits))
+
+			return d.inner.ExecuteSell(ctx, tokenAmount, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
+		}
+
+	default:
+		return fmt.Errorf("operation %s is not supported on Pump.fun", task.Operation)
+	}
+}
+
+// GetTokenPrice для Pump.fun DEX
+func (d *pumpfunDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
+	if err := d.initPumpFun(ctx, tokenMint); err != nil {
+		return 0, err
+	}
+	return d.inner.GetTokenPrice(ctx, tokenMint)
+}
+
+// GetTokenBalance возвращает текущий баланс токена
+func (d *pumpfunDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error) {
+	if err := d.initPumpFun(ctx, tokenMint); err != nil {
+		return 0, fmt.Errorf("failed to initialize Pump.fun: %w", err)
+	}
+
+	return d.inner.GetTokenBalance(ctx)
+}
+
+// SellPercentTokens продает указанный процент имеющихся токенов
+func (d *pumpfunDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint string, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
+	if err := d.initPumpFun(ctx, tokenMint); err != nil {
+		return err
+	}
+
+	return d.inner.SellPercentTokens(ctx, percentToSell, slippagePercent, priorityFeeSol, computeUnits)
+}
+
+// CalculateDiscretePnL вычисляет PnL с учетом дискретной структуры Pump.fun
+func (d *pumpfunDEXAdapter) CalculateDiscretePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*DiscreteTokenPnL, error) {
+	if err := d.initPumpFun(ctx, d.tokenMint); err != nil {
+		return nil, fmt.Errorf("failed to initialize Pump.fun: %w", err)
+	}
+
+	// Вызываем внутренний метод из пакета pumpfun
+	result, err := d.inner.CalculateDiscretePnL(ctx, tokenAmount, initialInvestment)
+	if err != nil {
+		return nil, err
+	}
+
+	// Конвертируем тип pumpfun.DiscreteTokenPnL в dex.DiscreteTokenPnL
+	return &DiscreteTokenPnL{
+		CurrentPrice:      result.CurrentPrice,
+		TheoreticalValue:  result.TheoreticalValue,
+		SellEstimate:      result.SellEstimate,
+		InitialInvestment: result.InitialInvestment,
+		NetPnL:            result.NetPnL,
+		PnLPercentage:     result.PnLPercentage,
+	}, nil
+}
+
+// =============================
+// File: internal/dex/pumpswap/calculations.go
+// =============================
+package pumpswap
+
+import (
+	"context"
+	"fmt"
+	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/programs/token"
+	"go.uber.org/zap"
+	"math/big"
+)
+
+// calculateSwapAmounts вычисляет параметры для операции свапа в зависимости от типа операции (покупка/продажа)
+func (d *DEX) calculateSwapAmounts(pool *PoolInfo, isBuy bool, amount uint64, slippage float64) *SwapAmounts {
+	outputAmount, price := d.poolManager.CalculateSwapQuote(pool, amount, false)
+
+	if isBuy {
+		return calculateBuySwap(amount, outputAmount, slippage, price, d.logger)
+	}
+
+	return calculateSellSwap(amount, outputAmount, slippage, price, d.logger)
+}
+
+func calculateBuySwap(input, output uint64, slippage, price float64, logger *zap.Logger) *SwapAmounts {
+	maxAmountWithBuffer := uint64(float64(input) * (1.0 + slippage/100.0))
+	minOut := uint64(float64(output) * (1.0 - slippage/100.0))
+
+	logger.Debug("Buy swap calculation",
+		zap.Uint64("input_amount", input),
+		zap.Uint64("max_amount_with_buffer", maxAmountWithBuffer),
+		zap.Uint64("expected_output", output),
+		zap.Uint64("min_out_amount", minOut),
+		zap.Float64("price", price))
+
+	return &SwapAmounts{BaseAmount: output, QuoteAmount: maxAmountWithBuffer, Price: price}
+}
+
+func calculateSellSwap(input, output uint64, slippage, price float64, logger *zap.Logger) *SwapAmounts {
+	minOut := uint64(float64(output) * (1.0 - slippage/100.0))
+
+	logger.Debug("Sell swap calculation",
+		zap.Uint64("input_amount", input),
+		zap.Uint64("expected_output", output),
+		zap.Uint64("min_out_amount", minOut),
+		zap.Float64("price", price))
+
+	return &SwapAmounts{BaseAmount: input, QuoteAmount: minOut, Price: price}
+}
+
+func calculateOutput(reserves, otherReserves, amount uint64, feeFactor float64) uint64 {
+	x := new(big.Float).SetUint64(reserves)
+	y := new(big.Float).SetUint64(otherReserves)
+	a := new(big.Float).SetUint64(amount)
+
+	// Apply fee to input amount
+	a.Mul(a, big.NewFloat(feeFactor))
+
+	// Formula: outputAmount = y * a / (x + a)
+	numerator := new(big.Float).Mul(y, a)
+	denominator := new(big.Float).Add(x, a)
+	result := new(big.Float).Quo(numerator, denominator)
+
+	output, _ := result.Uint64()
+	return output
+}
+
+// getTokenDecimals получает количество десятичных знаков для токена.
+func (d *DEX) getTokenDecimals(ctx context.Context, mint solana.PublicKey, defaultDec uint8) uint8 {
+	dec, err := d.DetermineTokenPrecision(ctx, mint)
+	if err != nil {
+		d.logger.Warn("Using default decimals", zap.Error(err), zap.String("mint", mint.String()))
+		return defaultDec
+	}
+	return dec
+}
+
+// DetermineTokenPrecision получает количество десятичных знаков для данного токена.
+func (d *DEX) DetermineTokenPrecision(ctx context.Context, mint solana.PublicKey) (uint8, error) {
+	var mintInfo token.Mint
+	err := d.client.GetAccountDataInto(ctx, mint, &mintInfo)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get mint info: %w", err)
+	}
+
+	return mintInfo.Decimals, nil
+}
+
+
+// =============================
+// File: internal/dex/pumpswap/config.go
+// =============================
+package pumpswap
+
+import (
+	"encoding/binary"
+	"fmt"
+
+	"github.com/gagliardetto/solana-go"
+	"go.uber.org/zap"
+)
+
+// Config хранит конфигурацию для взаимодействия с PumpSwap.
+type Config struct {
+	ProgramID      solana.PublicKey
+	GlobalConfig   solana.PublicKey
+	EventAuthority solana.PublicKey
+
+	BaseMint  solana.PublicKey // SOL или стабильная монета
+	QuoteMint solana.PublicKey // Токен, приобретаемый по bonding curve
+
+	PoolAddress solana.PublicKey // Обнаруженный адрес пула
+	LPMint      solana.PublicKey // Токен пула ликвидности
+
+	MonitorInterval string
+}
+
+// GetDefaultConfig возвращает конфигурацию по умолчанию для PumpSwap.
+func GetDefaultConfig() *Config {
+	eventAuthority, _, err := solana.FindProgramAddress(
+		[][]byte{[]byte("__event_authority")},
+		PumpSwapProgramID,
+	)
+	if err != nil {
+		fmt.Printf("Failed to derive event authority: %v\n", err)
+		eventAuthority = solana.PublicKey{}
+	}
+
+	return &Config{
+		ProgramID:       PumpSwapProgramID,
+		EventAuthority:  eventAuthority,
+		MonitorInterval: "5s",
+	}
+}
+
+// SetupForToken настраивает экземпляр PumpSwap для определённого токена.
+func (cfg *Config) SetupForToken(quoteTokenMint string, logger *zap.Logger) error {
+	if quoteTokenMint == "" {
+		return fmt.Errorf("token mint address is required")
+	}
+
+	var err error
+	cfg.QuoteMint, err = solana.PublicKeyFromBase58(quoteTokenMint)
+	if err != nil {
+		return fmt.Errorf("invalid token mint address: %w", err)
+	}
+
+	cfg.BaseMint = solana.SolMint
+
+	globalConfigAddr, _, err := cfg.DeriveGlobalConfigAddress()
+	if err != nil {
+		return fmt.Errorf("failed to derive global config address: %w", err)
+	}
+	cfg.GlobalConfig = globalConfigAddr
+
+	if cfg.EventAuthority.IsZero() {
+		cfg.EventAuthority, _, err = solana.FindProgramAddress(
+			[][]byte{[]byte("__event_authority")},
+			cfg.ProgramID,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to derive event authority: %w", err)
+		}
+	}
+
+	logger.Info("PumpSwap configuration prepared",
+		zap.String("program_id", cfg.ProgramID.String()),
+		zap.String("global_config", cfg.GlobalConfig.String()),
+		zap.String("base_mint", cfg.BaseMint.String()),
+		zap.String("quote_mint", cfg.QuoteMint.String()),
+		zap.String("event_authority", cfg.EventAuthority.String()))
+
+	return nil
+}
+
+// DeriveGlobalConfigAddress вычисляет PDA для глобального аккаунта конфигурации.
+func (cfg *Config) DeriveGlobalConfigAddress() (solana.PublicKey, uint8, error) {
+	return solana.FindProgramAddress(
+		[][]byte{[]byte("global_config")},
+		cfg.ProgramID,
+	)
+}
+
+func ParseGlobalConfig(data []byte) (*GlobalConfig, error) {
+	if len(data) < 8 {
+		return nil, fmt.Errorf("data too short for GlobalConfig")
+	}
+
+	for i := 0; i < 8; i++ {
+		if data[i] != GlobalConfigDiscriminator[i] {
+			return nil, fmt.Errorf("invalid discriminator for GlobalConfig")
+		}
+	}
+
+	pos := 8
+
+	if len(data) < pos+32+8+8+1+(32*8) {
+		return nil, fmt.Errorf("data too short for GlobalConfig content")
+	}
+
+	config := &GlobalConfig{}
+
+	config.Admin = solana.PublicKeyFromBytes(data[pos : pos+32])
+	pos += 32
+
+	config.LPFeeBasisPoints = binary.LittleEndian.Uint64(data[pos : pos+8])
+	pos += 8
+
+	config.ProtocolFeeBasisPoints = binary.LittleEndian.Uint64(data[pos : pos+8])
+	pos += 8
+
+	config.DisableFlags = data[pos]
+	pos++
+
+	for i := 0; i < 8; i++ {
+		config.ProtocolFeeRecipients[i] = solana.PublicKeyFromBytes(data[pos : pos+32])
+		pos += 32
+	}
+
+	return config, nil
+}
+
+
+// =============================
+// File: internal/dex/pumpswap/dex.go
+// =============================
+package pumpswap
+
+import (
+	"context"
+	"fmt"
+	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
+	"github.com/rovshanmuradov/solana-bot/internal/wallet"
+	"go.uber.org/zap"
+	"math"
+	"math/big"
+	"strconv"
+	"time"
+)
+
+// NewDEX создаёт новый экземпляр DEX для PumpSwap.
+func NewDEX(
+	client *solbc.Client,
+	w *wallet.Wallet,
+	logger *zap.Logger,
+	config *Config,
+	poolManager PoolManagerInterface, // теперь передаём интерфейс
+	monitorInterval string,
+) (*DEX, error) {
+	if client == nil || w == nil || logger == nil || config == nil || poolManager == nil {
+		return nil, fmt.Errorf("client, wallet, logger, poolManager и config не могут быть nil")
+	}
+	if monitorInterval != "" {
+		config.MonitorInterval = monitorInterval
+	}
+	return &DEX{
+		client:      client,
+		wallet:      w,
+		logger:      logger,
+		config:      config,
+		poolManager: poolManager,
+	}, nil
+}
+
+// ExecuteSwap выполняет операцию обмена на DEX.
+//
+// Принимает SwapParams, содержащий следующие параметры:
+// - IsBuy: для покупки (true) выполняется инструкция buy, для продажи (false) - sell
+// - Amount: количество токенов в базовых единицах (для продажи) или SOL в лампортах (для покупки)
+// - SlippagePercent: допустимое проскальзывание в процентах (0-100)
+// - PriorityFeeSol: приоритетная комиссия в SOL (строковое представление)
+// - ComputeUnits: лимит вычислительных единиц для транзакции
+//
+// Возвращает ошибку в случае неудачи, включая специализированную SlippageExceededError
+// при превышении допустимого проскальзывания.
+func (d *DEX) ExecuteSwap(ctx context.Context, params SwapParams) error {
+	pool, _, err := d.findAndValidatePool(ctx)
+	if err != nil {
+		return err
+	}
+
+	accounts, err := d.prepareTokenAccounts(ctx, pool)
+	if err != nil {
+		return err
+	}
+
+	// Вычисляем параметры для свапа
+	amounts := d.calculateSwapAmounts(pool, params.IsBuy, params.Amount, params.SlippagePercent)
+
+	// Подготавливаем инструкции для транзакции
+	instructions, err := d.prepareSwapInstructions(pool, accounts, params, amounts)
+	if err != nil {
+		return err
+	}
+
+	sig, err := d.buildAndSubmitTransaction(ctx, instructions)
+	if err != nil {
+		return d.handleSwapError(err, params)
+	}
+
+	d.logger.Info("Swap executed successfully",
+		zap.String("signature", sig.String()),
+		zap.Bool("is_buy", params.IsBuy),
+		zap.Uint64("amount", params.Amount))
+	return nil
+}
+
+// Новый метод для подготовки инструкций
+func (d *DEX) prepareSwapInstructions(pool *PoolInfo, accounts *PreparedTokenAccounts,
+	params SwapParams, amounts *SwapAmounts) ([]solana.Instruction, error) {
+
+	priorityInstructions, err := d.preparePriorityInstructions(params.ComputeUnits, params.PriorityFeeSol)
+	if err != nil {
+		return nil, err
+	}
+
+	return d.buildSwapTransaction(pool, accounts, params.IsBuy, amounts.BaseAmount,
+		amounts.QuoteAmount, priorityInstructions), nil
+}
+
+// ExecuteSell выполняет операцию продажи токена за WSOL
+func (d *DEX) ExecuteSell(ctx context.Context, tokenAmount uint64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
+	params := SwapParams{
+		IsBuy:           false,
+		Amount:          tokenAmount,
+		SlippagePercent: slippagePercent,
+		PriorityFeeSol:  priorityFeeSol,
+		ComputeUnits:    computeUnits,
+	}
+	return d.ExecuteSwap(ctx, params)
+}
+
+// GetTokenPrice вычисляет цену токена по соотношению резервов пула.
+func (d *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
+	// Здесь мы считаем, что tokenMint должен соответствовать effectiveBaseMint.
+	effBase, effQuote := d.effectiveMints()
+	mint, err := solana.PublicKeyFromBase58(tokenMint)
+	if err != nil {
+		return 0, fmt.Errorf("invalid token mint: %w", err)
+	}
+	if !mint.Equals(effBase) {
+		return 0, fmt.Errorf("token mint mismatch: expected %s, got %s", effBase.String(), mint.String())
+	}
+	pool, err := d.poolManager.FindPoolWithRetry(ctx, effBase, effQuote, 3, 1*time.Second)
+	if err != nil {
+		return 0, fmt.Errorf("failed to find pool: %w", err)
+	}
+	var price float64
+	if pool.BaseReserves > 0 && pool.QuoteReserves > 0 {
+		solDecimals := uint8(WSOLDecimals)
+		tokenDecimals := d.getTokenDecimals(ctx, pool.BaseMint, DefaultTokenDecimals)
+		baseReserves := new(big.Float).SetUint64(pool.BaseReserves)
+		quoteReserves := new(big.Float).SetUint64(pool.QuoteReserves)
+		ratio := new(big.Float).Quo(baseReserves, quoteReserves)
+		adjustment := math.Pow10(int(tokenDecimals)) / math.Pow10(int(solDecimals))
+		adjustedRatio := new(big.Float).Mul(ratio, big.NewFloat(adjustment))
+		price, _ = adjustedRatio.Float64()
+	}
+	return price, nil
+}
+
+// GetTokenBalance получает баланс токена в кошельке пользователя
+// Это метод-заглушка, который будет реализован позже
+func (d *DEX) GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error) {
+	// Проверяем соответствие tokenMint
+	mint, err := solana.PublicKeyFromBase58(tokenMint)
+	if err != nil {
+		return 0, fmt.Errorf("invalid token mint: %w", err)
+	}
+
+	effBase, _ := d.effectiveMints()
+	if !mint.Equals(effBase) {
+		return 0, fmt.Errorf("token mint mismatch: expected %s, got %s", effBase.String(), mint.String())
+	}
+
+	// Находим ATA адрес для токена
+	userATA, _, err := solana.FindAssociatedTokenAddress(d.wallet.PublicKey, mint)
+	if err != nil {
+		return 0, fmt.Errorf("failed to derive associated token account: %w", err)
+	}
+
+	// Получаем баланс токена
+	result, err := d.client.GetTokenAccountBalance(ctx, userATA, rpc.CommitmentConfirmed)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get token account balance: %w", err)
+	}
+
+	if result == nil || result.Value.Amount == "" {
+		return 0, fmt.Errorf("no token balance found")
+	}
+
+	// Парсим результат в uint64
+	balance, err := strconv.ParseUint(result.Value.Amount, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse token balance: %w", err)
+	}
+
+	return balance, nil
+}
+
+
+// =============================
+// File: internal/dex/pumpswap/errors.go
+// =============================
+package pumpswap
+
+import (
+	"errors"
+	"fmt"
+	"go.uber.org/zap"
+	"strings"
+)
+
+// Константы для кодов ошибок Solana
+const SlippageExceededErrorCode = 6004
+
+// ErrSlippageExceeded - сентинельная ошибка для проверки через errors.Is
+var ErrSlippageExceeded = errors.New("slippage exceeded")
+
+// SlippageExceededError представляет ошибку превышения проскальзывания
+type SlippageExceededError struct {
+	SlippagePercent float64
+	Amount          uint64
+	OriginalError   error
+}
+
+func (e *SlippageExceededError) Error() string {
+	return fmt.Sprintf("slippage exceeded: transaction requires more funds than maximum specified (%.2f%%): %v",
+		e.SlippagePercent, e.OriginalError)
+}
+
+func (e *SlippageExceededError) Unwrap() error {
+	return e.OriginalError
+}
+
+// Is позволяет использовать errors.Is для проверки типа ошибки
+func (e *SlippageExceededError) Is(target error) bool {
+	return target == ErrSlippageExceeded
+}
+
+// IsSlippageExceededError определяет, является ли ошибка ошибкой превышения проскальзывания
+func IsSlippageExceededError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if errors.Is(err, ErrSlippageExceeded) {
+		return true
+	}
+
+	// Для обратной совместимости проверяем строковое представление
+	errStr := err.Error()
+	return strings.Contains(errStr, "ExceededSlippage") ||
+		strings.Contains(errStr, "0x1774") ||
+		strings.Contains(errStr, fmt.Sprintf("%d", SlippageExceededErrorCode))
+}
+
+// handleSwapError обрабатывает специфичные ошибки операции свапа
+func (d *DEX) handleSwapError(err error, params SwapParams) error {
+	// Проверяем, не является ли уже ошибка типа SlippageExceededError
+	var slippageErr *SlippageExceededError
+	if errors.As(err, &slippageErr) {
+		d.logger.Warn("Slippage error already handled", zap.Error(err))
+		return err
+	}
+
+	if IsSlippageExceededError(err) {
+		d.logger.Warn("Exceeded slippage error - try increasing slippage percentage",
+			zap.Float64("current_slippage_percent", params.SlippagePercent),
+			zap.Uint64("amount", params.Amount),
+			zap.Error(err))
+		return &SlippageExceededError{
+			SlippagePercent: params.SlippagePercent,
+			Amount:          params.Amount,
+			OriginalError:   err,
+		}
+	}
+	return err
+}
+
+
+// =============================
+// File: internal/dex/pumpswap/instructions.go
+// =============================
+package pumpswap
+
+import (
+	"encoding/binary"
+	"github.com/gagliardetto/solana-go"
+)
+
+// Instruction discriminators extracted from the IDL
+var (
+	buyDiscriminator  = []byte{102, 6, 61, 18, 1, 218, 235, 234}
+	sellDiscriminator = []byte{51, 230, 133, 164, 1, 127, 131, 173}
+)
+
+// SwapInstructionParams contains all parameters needed to create a swap instruction
+type SwapInstructionParams struct {
+	// Operation type
+	IsBuy bool
+
+	// Account parameters
+	PoolAddress                      solana.PublicKey
+	User                             solana.PublicKey
+	GlobalConfig                     solana.PublicKey
+	BaseMint                         solana.PublicKey
+	QuoteMint                        solana.PublicKey
+	UserBaseTokenAccount             solana.PublicKey
+	UserQuoteTokenAccount            solana.PublicKey
+	PoolBaseTokenAccount             solana.PublicKey
+	PoolQuoteTokenAccount            solana.PublicKey
+	ProtocolFeeRecipient             solana.PublicKey
+	ProtocolFeeRecipientTokenAccount solana.PublicKey
+	BaseTokenProgram                 solana.PublicKey
+	QuoteTokenProgram                solana.PublicKey
+	EventAuthority                   solana.PublicKey
+	ProgramID                        solana.PublicKey
+
+	// Operation-specific parameters
+	// For buy: Amount1 = baseAmountOut, Amount2 = maxQuoteAmountIn
+	// For sell: Amount1 = baseAmountIn, Amount2 = minQuoteAmountOut
+	Amount1 uint64
+	Amount2 uint64
+}
+
+// createSwapInstruction creates an instruction to buy or sell tokens in PumpSwap
+func createSwapInstruction(params *SwapInstructionParams) solana.Instruction {
+	// Create data buffer with discriminator and parameters
+	data := make([]byte, 8+8+8) // 8 bytes discriminator + 8 bytes amount1 + 8 bytes amount2
+
+	// Choose discriminator based on operation type
+	if params.IsBuy {
+		copy(data[0:8], buyDiscriminator)
+	} else {
+		copy(data[0:8], sellDiscriminator)
+	}
+
+	// Add amount parameters
+	binary.LittleEndian.PutUint64(data[8:16], params.Amount1)
+	binary.LittleEndian.PutUint64(data[16:24], params.Amount2)
+
+	// Create accounts list in the required order
+	accountMetas := []*solana.AccountMeta{
+		solana.NewAccountMeta(params.PoolAddress, false, false),
+		solana.NewAccountMeta(params.User, true, true),
+		solana.NewAccountMeta(params.GlobalConfig, false, false),
+		solana.NewAccountMeta(params.BaseMint, false, false),
+		solana.NewAccountMeta(params.QuoteMint, false, false),
+		solana.NewAccountMeta(params.UserBaseTokenAccount, true, false),
+		solana.NewAccountMeta(params.UserQuoteTokenAccount, true, false),
+		solana.NewAccountMeta(params.PoolBaseTokenAccount, true, false),
+		solana.NewAccountMeta(params.PoolQuoteTokenAccount, true, false),
+		solana.NewAccountMeta(params.ProtocolFeeRecipient, false, false),
+		solana.NewAccountMeta(params.ProtocolFeeRecipientTokenAccount, true, false),
+		solana.NewAccountMeta(params.BaseTokenProgram, false, false),
+		solana.NewAccountMeta(params.QuoteTokenProgram, false, false),
+		solana.NewAccountMeta(SystemProgramID, false, false),
+		solana.NewAccountMeta(AssociatedTokenProgramID, false, false),
+		solana.NewAccountMeta(params.EventAuthority, false, false),
+		solana.NewAccountMeta(params.ProgramID, false, false),
+	}
+
+	return solana.NewInstruction(params.ProgramID, accountMetas, data)
+}
+
+
+// =============================
+// File: internal/dex/pumpswap/pool.go
+// =============================
+package pumpswap
+
+import (
+	"context"
+	"encoding/binary"
+	"fmt"
+	"github.com/cenkalti/backoff/v5"
+	"math"
+	"sync"
+	"time"
+
+	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
+	"go.uber.org/zap"
+
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
+)
+
+const (
+	MinimumLiquidity         uint64 = 1000
+	TokenAccountMintOffset   uint64 = 0
+	TokenAccountOwnerOffset  uint64 = 32
+	TokenAccountAmountOffset uint64 = 64
+	TokenAccountAmountSize   uint64 = 8
+)
+
+type PoolManagerInterface interface {
+	FindPool(ctx context.Context, baseMint, quoteMint solana.PublicKey) (*PoolInfo, error)
+	FindPoolWithRetry(ctx context.Context, baseMint, quoteMint solana.PublicKey, maxRetries int, retryDelay time.Duration) (*PoolInfo, error)
+	CalculateSwapQuote(pool *PoolInfo, inputAmount uint64, isBaseToQuote bool) (uint64, float64)
+	CalculateSlippage(pool *PoolInfo, inputAmount uint64, isBaseToQuote bool) float64
+	FetchPoolInfo(ctx context.Context, poolAddress solana.PublicKey) (*PoolInfo, error)
+}
+
+// PoolManager handles operations with PumpSwap pools
+type PoolManager struct {
+	client     *solbc.Client
+	logger     *zap.Logger
+	cache      *PoolCache
+	programID  solana.PublicKey
+	maxRetries int
+	retryDelay time.Duration
+}
+
+// PoolManagerOptions contains options for creating a PoolManager
+type PoolManagerOptions struct {
+	CacheTTL   time.Duration
+	MaxRetries int
+	RetryDelay time.Duration
+	ProgramID  solana.PublicKey
+}
+
+// PoolCache stores found pools for quick access
+type PoolCache struct {
+	mutex      sync.RWMutex
+	pools      map[string]*PoolInfo // key: hashed pool key
+	expiration map[string]time.Time
+	ttl        time.Duration
+}
+
+// NewPoolCache creates a new pool cache with specified TTL
+func NewPoolCache(ttl time.Duration) *PoolCache {
+	if ttl == 0 {
+		ttl = 5 * time.Minute
+	}
+
+	return &PoolCache{
+		pools:      make(map[string]*PoolInfo),
+		expiration: make(map[string]time.Time),
+		ttl:        ttl,
+	}
+}
+
+// Get retrieves a pool from cache, checking expiration
+func (pc *PoolCache) Get(baseMint, quoteMint solana.PublicKey) (*PoolInfo, bool) {
+	pc.mutex.RLock()
+	defer pc.mutex.RUnlock()
+
+	key := makePoolCacheKey(baseMint, quoteMint)
+	pool, exists := pc.pools[key]
+
+	if !exists {
+		return nil, false
+	}
+
+	expiry, hasExpiry := pc.expiration[key]
+	if hasExpiry && time.Now().After(expiry) {
+		return nil, false
+	}
+
+	return pool, true
+}
+
+// Set adds a pool to the cache with expiration time
+func (pc *PoolCache) Set(baseMint, quoteMint solana.PublicKey, pool *PoolInfo) {
+	pc.mutex.Lock()
+	defer pc.mutex.Unlock()
+
+	pc.cleanExpired()
+
+	key := makePoolCacheKey(baseMint, quoteMint)
+	pc.pools[key] = pool
+	pc.expiration[key] = time.Now().Add(pc.ttl)
+}
+
+// cleanExpired removes expired entries from cache
+func (pc *PoolCache) cleanExpired() {
+	now := time.Now()
+	for key, expiry := range pc.expiration {
+		if now.After(expiry) {
+			delete(pc.pools, key)
+			delete(pc.expiration, key)
+		}
+	}
+}
+
+func makePoolCacheKey(baseMint, quoteMint solana.PublicKey) string {
+	// Sort mints for consistent key regardless of order
+	if baseMint.String() < quoteMint.String() {
+		return fmt.Sprintf("%s:%s", baseMint, quoteMint)
+	}
+	return fmt.Sprintf("%s:%s", quoteMint, baseMint)
+}
+
+// DefaultPoolManagerOptions returns default options for PoolManager
+func DefaultPoolManagerOptions() PoolManagerOptions {
+	return PoolManagerOptions{
+		CacheTTL:   5 * time.Minute,
+		MaxRetries: 3,
+		RetryDelay: time.Second,
+		ProgramID:  PumpSwapProgramID,
+	}
+}
+
+// NewPoolManager creates a new pool manager with options
+func NewPoolManager(client *solbc.Client, logger *zap.Logger, opts ...PoolManagerOptions) *PoolManager {
+	defaultOpts := DefaultPoolManagerOptions()
+
+	var options PoolManagerOptions
+	if len(opts) > 0 {
+		options = opts[0]
+	} else {
+		options = defaultOpts
+	}
+
+	return &PoolManager{
+		client:     client,
+		logger:     logger.Named("pool_manager"),
+		cache:      NewPoolCache(options.CacheTTL),
+		programID:  options.ProgramID,
+		maxRetries: options.MaxRetries,
+		retryDelay: options.RetryDelay,
+	}
+}
+
+// FindPool finds a pool for the given token pair
+func (pm *PoolManager) FindPool(
+	ctx context.Context,
+	baseMint, quoteMint solana.PublicKey,
+) (*PoolInfo, error) {
+	if pool, found := pm.cache.Get(baseMint, quoteMint); found {
+		pm.logger.Debug("Found pool in cache",
+			zap.String("base_mint", baseMint.String()),
+			zap.String("quote_mint", quoteMint.String()))
+		return pool, nil
+	}
+
+	if pool, found := pm.cache.Get(quoteMint, baseMint); found {
+		pm.logger.Debug("Found pool in cache (reversed order)",
+			zap.String("base_mint", quoteMint.String()),
+			zap.String("quote_mint", baseMint.String()))
+
+		pool.BaseMint, pool.QuoteMint = pool.QuoteMint, pool.BaseMint
+		pool.BaseReserves, pool.QuoteReserves = pool.QuoteReserves, pool.BaseReserves
+		pool.PoolBaseTokenAccount, pool.PoolQuoteTokenAccount = pool.PoolQuoteTokenAccount, pool.PoolBaseTokenAccount
+		return pool, nil
+	}
+
+	pool, err := pm.findPoolByProgramAccounts(ctx, baseMint, quoteMint)
+	if err == nil && pool != nil {
+		pm.cache.Set(baseMint, quoteMint, pool)
+		return pool, nil
+	}
+
+	pool, err = pm.findPoolByProgramAccounts(ctx, quoteMint, baseMint)
+	if err == nil && pool != nil {
+		pool.BaseMint, pool.QuoteMint = pool.QuoteMint, pool.BaseMint
+		pool.BaseReserves, pool.QuoteReserves = pool.QuoteReserves, pool.BaseReserves
+		pool.PoolBaseTokenAccount, pool.PoolQuoteTokenAccount = pool.PoolQuoteTokenAccount, pool.PoolBaseTokenAccount
+
+		pm.cache.Set(baseMint, quoteMint, pool)
+		return pool, nil
+	}
+
+	return nil, fmt.Errorf("no pool found for base mint %s and quote mint %s",
+		baseMint.String(), quoteMint.String())
+}
+
+func (pm *PoolManager) findPoolByProgramAccounts(
+	ctx context.Context,
+	baseMint, quoteMint solana.PublicKey,
+) (*PoolInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	opts := &rpc.GetProgramAccountsOpts{
+		Commitment: rpc.CommitmentConfirmed,
+		Encoding:   solana.EncodingBase64,
+		Filters: []rpc.RPCFilter{
+			{
+				Memcmp: &rpc.RPCFilterMemcmp{
+					Offset: 0,
+					Bytes:  PoolDiscriminator,
+				},
+			},
+			{
+				Memcmp: &rpc.RPCFilterMemcmp{
+					Offset: 8 + 1 + 2 + 32,
+					Bytes:  baseMint.Bytes(),
+				},
+			},
+		},
+	}
+
+	accounts, err := pm.client.GetProgramAccountsWithOpts(ctx, pm.programID, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get program accounts: %w", err)
+	}
+
+	for _, account := range accounts {
+		poolData := account.Account.Data.GetBinary()
+		pool, err := ParsePool(poolData)
+		if err != nil {
+			continue
+		}
+
+		// Check if pool matches our token pair
+		isMatch := (pool.BaseMint.Equals(baseMint) && pool.QuoteMint.Equals(quoteMint)) ||
+			(pool.BaseMint.Equals(quoteMint) && pool.QuoteMint.Equals(baseMint))
+
+		if !isMatch {
+			continue
+		}
+
+		poolInfo, err := pm.FetchPoolInfo(ctx, account.Pubkey)
+		if err != nil {
+			continue
+		}
+
+		if poolInfo.BaseReserves == 0 || poolInfo.QuoteReserves == 0 {
+			continue
+		}
+
+		pm.logger.Info("Found PumpSwap pool",
+			zap.String("pool_address", account.Pubkey.String()),
+			zap.String("base_mint", pool.BaseMint.String()),
+			zap.String("quote_mint", pool.QuoteMint.String()))
+
+		return poolInfo, nil
+	}
+
+	return nil, fmt.Errorf("no matching pool found for %s/%s",
+		baseMint.String(), quoteMint.String())
+}
+
+func (pm *PoolManager) fetchGlobalConfig(ctx context.Context) (*GlobalConfig, error) {
+	globalConfig, _, err := solana.FindProgramAddress(
+		[][]byte{[]byte("global_config")},
+		pm.programID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive global config address: %w", err)
+	}
+	accountInfo, err := pm.client.GetAccountInfo(ctx, globalConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get global config account: %w", err)
+	}
+	if accountInfo == nil || accountInfo.Value == nil {
+		return nil, fmt.Errorf("global config account not found: %s", globalConfig.String())
+	}
+	globalData := accountInfo.Value.Data.GetBinary()
+	config, err := ParseGlobalConfig(globalData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse global config: %w", err)
+	}
+	return config, nil
+}
+
+func parseTokenAccounts(baseData, quoteData []byte) (uint64, uint64) {
+	var baseReserves, quoteReserves uint64
+	if len(baseData) >= int(TokenAccountAmountOffset+TokenAccountAmountSize) {
+		baseReserves = binary.LittleEndian.Uint64(baseData[TokenAccountAmountOffset : TokenAccountAmountOffset+TokenAccountAmountSize])
+	}
+	if len(quoteData) >= int(TokenAccountAmountOffset+TokenAccountAmountSize) {
+		quoteReserves = binary.LittleEndian.Uint64(quoteData[TokenAccountAmountOffset : TokenAccountAmountOffset+TokenAccountAmountSize])
+	}
+	return baseReserves, quoteReserves
+}
+
+// getPool извлекает и парсит данные пула по адресу.
+func (pm *PoolManager) getPool(ctx context.Context, poolAddress solana.PublicKey) (*Pool, error) {
+	accountInfo, err := pm.client.GetAccountInfo(ctx, poolAddress)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pool account: %w", err)
+	}
+	if accountInfo == nil || accountInfo.Value == nil {
+		return nil, fmt.Errorf("pool account not found: %s", poolAddress.String())
+	}
+	return ParsePool(accountInfo.Value.Data.GetBinary())
+}
+
+// getTokenAccountsData получает бинарные данные для заданных аккаунтов.
+func (pm *PoolManager) getTokenAccountsData(
+	ctx context.Context, accounts []solana.PublicKey,
+) ([][]byte, error) {
+	accountsInfo, err := pm.client.GetMultipleAccounts(ctx, accounts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get accounts info: %w", err)
+	}
+	if accountsInfo == nil || accountsInfo.Value == nil || len(accountsInfo.Value) < len(accounts) {
+		return nil, fmt.Errorf("failed to get required token accounts")
+	}
+
+	data := make([][]byte, len(accounts))
+	for i, info := range accountsInfo.Value {
+		if info != nil {
+			data[i] = info.Data.GetBinary()
+		}
+	}
+	return data, nil
+}
+
+func (pm *PoolManager) FetchPoolInfo(
+	ctx context.Context,
+	poolAddress solana.PublicKey,
+) (*PoolInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	pool, err := pm.getPool(ctx, poolAddress)
+	if err != nil {
+		return nil, err
+	}
+
+	config, err := pm.fetchGlobalConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	accounts := []solana.PublicKey{
+		pool.PoolBaseTokenAccount,
+		pool.PoolQuoteTokenAccount,
+	}
+
+	accountsData, err := pm.getTokenAccountsData(ctx, accounts)
+	if err != nil {
+		return nil, err
+	}
+
+	var baseData, quoteData []byte
+	if len(accountsData) > 0 {
+		baseData = accountsData[0]
+	}
+	if len(accountsData) > 1 {
+		quoteData = accountsData[1]
+	}
+	baseReserves, quoteReserves := parseTokenAccounts(baseData, quoteData)
+
+	return &PoolInfo{
+		Address:               poolAddress,
+		BaseMint:              pool.BaseMint,
+		QuoteMint:             pool.QuoteMint,
+		BaseReserves:          baseReserves,
+		QuoteReserves:         quoteReserves,
+		LPSupply:              pool.LPSupply,
+		FeesBasisPoints:       config.LPFeeBasisPoints,
+		ProtocolFeeBPS:        config.ProtocolFeeBasisPoints,
+		LPMint:                pool.LPMint,
+		PoolBaseTokenAccount:  pool.PoolBaseTokenAccount,
+		PoolQuoteTokenAccount: pool.PoolQuoteTokenAccount,
+	}, nil
+}
+
+func (pm *PoolManager) CalculateSwapQuote(pool *PoolInfo, inputAmount uint64, isBaseToQuote bool) (uint64, float64) {
+	feeFactor := 1.0 - (float64(pool.FeesBasisPoints) / 10000.0)
+
+	if isBaseToQuote {
+		output := calculateOutput(pool.BaseReserves, pool.QuoteReserves, inputAmount, feeFactor)
+		price := float64(0)
+		if inputAmount > 0 {
+			price = float64(output) / float64(inputAmount)
+		}
+		return output, price
+	}
+
+	output := calculateOutput(pool.QuoteReserves, pool.BaseReserves, inputAmount, feeFactor)
+	price := float64(0)
+	if output > 0 {
+		price = float64(inputAmount) / float64(output)
+	}
+	return output, price
+}
+
+func (pm *PoolManager) CalculateSlippage(
+	pool *PoolInfo,
+	inputAmount uint64,
+	isBaseToQuote bool,
+) float64 {
+	var initialPrice, finalPrice float64
+
+	if isBaseToQuote {
+		initialPrice = float64(pool.QuoteReserves) / float64(pool.BaseReserves)
+		outputAmount, _ := pm.CalculateSwapQuote(pool, inputAmount, true)
+		finalPrice = float64(pool.QuoteReserves-outputAmount) /
+			float64(pool.BaseReserves+inputAmount)
+	} else {
+		initialPrice = float64(pool.BaseReserves) / float64(pool.QuoteReserves)
+		outputAmount, _ := pm.CalculateSwapQuote(pool, inputAmount, false)
+		finalPrice = float64(pool.BaseReserves-outputAmount) /
+			float64(pool.QuoteReserves+inputAmount)
+	}
+
+	slippage := math.Abs(finalPrice-initialPrice) / initialPrice * 100
+
+	return slippage
+}
+
+func (pm *PoolManager) FindPoolWithRetry(
+	ctx context.Context,
+	baseMint, quoteMint solana.PublicKey,
+	maxRetries int,
+	retryDelay time.Duration,
+) (*PoolInfo, error) {
+	if maxRetries <= 0 {
+		maxRetries = pm.maxRetries
+	}
+	if retryDelay <= 0 {
+		retryDelay = pm.retryDelay
+	}
+
+	backoffPolicy := backoff.NewExponentialBackOff()
+	backoffPolicy.InitialInterval = retryDelay
+	backoffPolicy.MaxInterval = retryDelay * 10
+
+	// Create a properly typed operation function
+	operation := func() (*PoolInfo, error) {
+		pool, err := pm.FindPool(ctx, baseMint, quoteMint)
+		if err != nil {
+			pm.logger.Debug("Failed to find pool, retrying",
+				zap.String("base", baseMint.String()),
+				zap.String("quote", quoteMint.String()),
+				zap.Error(err))
+			return nil, err
+		}
+		return pool, nil
+	}
+
+	// Create a notify function
+	notify := func(err error, duration time.Duration) {
+		pm.logger.Debug("Retry after error",
+			zap.Error(err),
+			zap.Duration("backoff", duration))
+	}
+
+	// Use the proper option functions
+	var maxTriesUint uint = 1
+	if maxRetries > 0 {
+		maxTriesUint = uint(maxRetries)
+	}
+
+	// Use the Retry function with correct options
+	return backoff.Retry(
+		ctx,
+		operation,
+		backoff.WithBackOff(backoffPolicy),
+		backoff.WithMaxTries(maxTriesUint),
+		backoff.WithNotify(notify),
+	)
+}
+
+func (cfg *Config) DerivePoolAddress(index uint16, creator solana.PublicKey) (solana.PublicKey, uint8, error) {
+	indexBytes := make([]byte, 2)
+	indexBytes[0] = byte(index)
+	indexBytes[1] = byte(index >> 8)
+
+	return solana.FindProgramAddress(
+		[][]byte{
+			[]byte("pool"),
+			indexBytes,
+			creator.Bytes(),
+			cfg.BaseMint.Bytes(),
+			cfg.QuoteMint.Bytes(),
+		},
+		cfg.ProgramID,
+	)
+}
+
+func (dex *DEX) findAndValidatePool(ctx context.Context) (*PoolInfo, bool, error) {
+	effBase, effQuote := dex.effectiveMints()
+
+	pool, err := dex.poolManager.FindPoolWithRetry(ctx, effBase, effQuote, 5, 2*time.Second)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to find pool: %w", err)
+	}
+
+	dex.config.PoolAddress = pool.Address
+	dex.config.LPMint = pool.LPMint
+
+	dex.logger.Debug("Found pool details",
+		zap.String("pool_address", pool.Address.String()),
+		zap.String("base_mint", pool.BaseMint.String()),
+		zap.String("quote_mint", pool.QuoteMint.String()))
+
+	poolMintReversed := !pool.BaseMint.Equals(effBase)
+
+	return pool, poolMintReversed, nil
+}
+
+func ParsePool(data []byte) (*Pool, error) {
+	if len(data) < 8 {
+		return nil, fmt.Errorf("data too short for Pool")
+	}
+
+	for i := 0; i < 8; i++ {
+		if data[i] != PoolDiscriminator[i] {
+			return nil, fmt.Errorf("invalid discriminator for Pool")
+		}
+	}
+
+	pos := 8
+
+	if len(data) < pos+1+2+32+32+32+32+32+32+8 {
+		return nil, fmt.Errorf("data too short for Pool content")
+	}
+
+	pool := &Pool{}
+
+	pool.PoolBump = data[pos]
+	pos++
+
+	pool.Index = uint16(data[pos]) | (uint16(data[pos+1]) << 8)
+	pos += 2
+
+	pool.Creator = solana.PublicKeyFromBytes(data[pos : pos+32])
+	pos += 32
+
+	pool.BaseMint = solana.PublicKeyFromBytes(data[pos : pos+32])
+	pos += 32
+
+	pool.QuoteMint = solana.PublicKeyFromBytes(data[pos : pos+32])
+	pos += 32
+
+	pool.LPMint = solana.PublicKeyFromBytes(data[pos : pos+32])
+	pos += 32
+
+	pool.PoolBaseTokenAccount = solana.PublicKeyFromBytes(data[pos : pos+32])
+	pos += 32
+
+	pool.PoolQuoteTokenAccount = solana.PublicKeyFromBytes(data[pos : pos+32])
+	pos += 32
+
+	pool.LPSupply = binary.LittleEndian.Uint64(data[pos : pos+8])
+
+	return pool, nil
+}
+
+
+// =============================
+// File: internal/dex/pumpswap/pumpswap.go
+// =============================
+package pumpswap
+
+import (
+	"context"
+	"fmt"
+	"github.com/gagliardetto/solana-go"
+)
+
+// effectiveMints возвращает эффективные значения базового и квотного минтов для свапа.
+// Для операции swap WSOL→токен мы хотим, чтобы базовый токен был именно токеном (покупаемым),
+// а квотный – WSOL. Если в конфигурации указано обратное (base = WSOL, quote = токен),
+// то мы инвертируем их.
+func (d *DEX) effectiveMints() (baseMint, quoteMint solana.PublicKey) {
+	wsol := solana.SolMint
+	// Если конфигурация указана как base = WSOL, а quote = токен,
+	// то для свапа effectiveBaseMint = токен, effectiveQuoteMint = WSOL.
+	if d.config.BaseMint.Equals(wsol) && !d.config.QuoteMint.Equals(wsol) {
+		return d.config.QuoteMint, d.config.BaseMint
+	}
+	return d.config.BaseMint, d.config.QuoteMint
+}
+
+// В pumpswap.go:
+func (d *DEX) getGlobalConfig(ctx context.Context) (*GlobalConfig, error) {
+	d.configMutex.RLock()
+	config := d.globalConfig
+	d.configMutex.RUnlock()
+
+	if config != nil {
+		return config, nil
+	}
+
+	// Если кэша нет, получаем данные с блокировкой записи
+	d.configMutex.Lock()
+	defer d.configMutex.Unlock()
+
+	// Повторная проверка после получения блокировки
+	if d.globalConfig != nil {
+		return d.globalConfig, nil
+	}
+
+	config, err := d.fetchGlobalConfigFromChain(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	d.globalConfig = config
+	return config, nil
+}
+
+// Выделение получения данных в отдельный метод
+func (d *DEX) fetchGlobalConfigFromChain(ctx context.Context) (*GlobalConfig, error) {
+	globalConfigAddr, _, err := d.config.DeriveGlobalConfigAddress()
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive global config address: %w", err)
+	}
+
+	accountInfo, err := d.client.GetAccountInfo(ctx, globalConfigAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get global config: %w", err)
+	}
+
+	if accountInfo == nil || accountInfo.Value == nil {
+		return nil, fmt.Errorf("global config account not found")
+	}
+
+	return ParseGlobalConfig(accountInfo.Value.Data.GetBinary())
+}
+
+
+// =============================
+// File: internal/dex/pumpswap/transaction.go
+// =============================
+package pumpswap
+
+import (
+	"context"
+	"fmt"
+	"github.com/cenkalti/backoff/v5"
+	"github.com/gagliardetto/solana-go"
+	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
+	"github.com/gagliardetto/solana-go/rpc"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// buildAndSubmitTransaction строит, подписывает и отправляет транзакцию.
+func (d *DEX) buildAndSubmitTransaction(ctx context.Context, instructions []solana.Instruction) (solana.Signature, error) {
+	op := func() (solana.Signature, error) {
+		tx, err := d.createSignedTransaction(ctx, instructions)
+		if err != nil {
+			return solana.Signature{}, err
+		}
+
+		return d.submitAndConfirmTransaction(ctx, tx)
+	}
+
+	return backoff.Retry(
+		ctx,
+		op,
+		backoff.WithBackOff(backoff.NewExponentialBackOff()),
+		backoff.WithMaxElapsedTime(15*time.Second),
+	)
+}
+
+func (d *DEX) createSignedTransaction(ctx context.Context, instructions []solana.Instruction) (*solana.Transaction, error) {
+	blockhash, err := d.client.GetRecentBlockhash(ctx)
+	if err != nil {
+		return nil, backoff.Permanent(fmt.Errorf("failed to get recent blockhash: %w", err))
+	}
+
+	tx, err := solana.NewTransaction(instructions, blockhash, solana.TransactionPayer(d.wallet.PublicKey))
+	if err != nil {
+		return nil, backoff.Permanent(fmt.Errorf("failed to create transaction: %w", err))
+	}
+
+	if err := d.wallet.SignTransaction(tx); err != nil {
+		return nil, backoff.Permanent(fmt.Errorf("failed to sign transaction: %w", err))
+	}
+
+	return tx, nil
+}
+
+// В transaction.go:
+func (d *DEX) submitAndConfirmTransaction(ctx context.Context, tx *solana.Transaction) (solana.Signature, error) {
+	sig, err := d.client.SendTransaction(ctx, tx)
+	if err != nil {
+		if strings.Contains(err.Error(), "BlockhashNotFound") {
+			return solana.Signature{}, err // Временная ошибка для retry
+		}
+
+		// Проверка на известные ошибки
+		if IsSlippageExceededError(err) {
+			return solana.Signature{}, &SlippageExceededError{
+				OriginalError: err,
+			}
+		}
+
+		// Постоянная ошибка
+		return solana.Signature{}, backoff.Permanent(fmt.Errorf("transaction failed: %w", err))
+	}
+
+	err = d.client.WaitForTransactionConfirmation(ctx, sig, rpc.CommitmentConfirmed)
+	if err != nil {
+		return sig, fmt.Errorf("transaction confirmed but with error: %w", err)
+	}
+
+	return sig, nil
+}
+
+// preparePriorityInstructions подготавливает инструкции для установки лимита и цены вычислительных единиц.
+func (d *DEX) preparePriorityInstructions(computeUnits uint32, priorityFeeSol string) ([]solana.Instruction, error) {
+	var instructions []solana.Instruction
+	if computeUnits > 0 {
+		instructions = append(instructions,
+			computebudget.NewSetComputeUnitLimitInstruction(computeUnits).Build())
+	}
+	if priorityFeeSol != "" {
+		fee, err := strconv.ParseFloat(priorityFeeSol, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid priority fee: %w", err)
+		}
+		// Перевод SOL в лампорты (1 SOL = 1e9 лампортов)
+		feeLamports := uint64(fee * 1e9)
+		if feeLamports > 0 {
+			instructions = append(instructions,
+				computebudget.NewSetComputeUnitPriceInstruction(feeLamports).Build())
+		}
+	}
+	return instructions, nil
+}
+
+// prepareSwapParams создает структуру параметров для инструкции свапа
+func (d *DEX) prepareSwapParams(
+	pool *PoolInfo,
+	accounts *PreparedTokenAccounts,
+	isBuy bool,
+	baseAmount uint64,
+	quoteAmount uint64,
+) *SwapInstructionParams {
+	return &SwapInstructionParams{
+		IsBuy:                            isBuy,
+		PoolAddress:                      pool.Address,
+		User:                             d.wallet.PublicKey,
+		GlobalConfig:                     d.config.GlobalConfig,
+		BaseMint:                         pool.BaseMint,
+		QuoteMint:                        pool.QuoteMint,
+		UserBaseTokenAccount:             accounts.UserBaseATA,
+		UserQuoteTokenAccount:            accounts.UserQuoteATA,
+		PoolBaseTokenAccount:             pool.PoolBaseTokenAccount,
+		PoolQuoteTokenAccount:            pool.PoolQuoteTokenAccount,
+		ProtocolFeeRecipient:             accounts.ProtocolFeeRecipient,
+		ProtocolFeeRecipientTokenAccount: accounts.ProtocolFeeRecipientATA,
+		BaseTokenProgram:                 TokenProgramID,
+		QuoteTokenProgram:                TokenProgramID,
+		EventAuthority:                   d.config.EventAuthority,
+		ProgramID:                        d.config.ProgramID,
+		Amount1:                          baseAmount,
+		Amount2:                          quoteAmount,
+	}
+}
+
+// buildSwapTransaction создает полный список инструкций для транзакции свапа
+func (d *DEX) buildSwapTransaction(
+	pool *PoolInfo,
+	accounts *PreparedTokenAccounts,
+	isBuy bool,
+	baseAmount, quoteAmount uint64,
+	priorityInstructions []solana.Instruction,
+) []solana.Instruction {
+	var instructions []solana.Instruction
+	instructions = append(instructions, priorityInstructions...)
+	instructions = append(instructions, accounts.CreateBaseATAIx, accounts.CreateQuoteATAIx)
+
+	swapParams := d.prepareSwapParams(pool, accounts, isBuy, baseAmount, quoteAmount)
+	swapIx := createSwapInstruction(swapParams)
+	instructions = append(instructions, swapIx)
+
+	return instructions
+}
+
+// prepareTokenAccounts подготавливает ATA пользователя и инструкции для их создания.
+func (d *DEX) prepareTokenAccounts(ctx context.Context, pool *PoolInfo) (*PreparedTokenAccounts, error) {
+	userBaseATA, _, err := solana.FindAssociatedTokenAddress(d.wallet.PublicKey, pool.BaseMint)
+	if err != nil {
+		return nil, err
+	}
+
+	userQuoteATA, _, err := solana.FindAssociatedTokenAddress(d.wallet.PublicKey, pool.QuoteMint)
+	if err != nil {
+		return nil, err
+	}
+
+	createBaseATAIx := d.wallet.CreateAssociatedTokenAccountIdempotentInstruction(
+		d.wallet.PublicKey, d.wallet.PublicKey, pool.BaseMint)
+	createQuoteATAIx := d.wallet.CreateAssociatedTokenAccountIdempotentInstruction(
+		d.wallet.PublicKey, d.wallet.PublicKey, pool.QuoteMint)
+
+	globalConfig, err := d.getGlobalConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Initialize with zero key and check if first recipient is non-zero
+	protocolFeeRecipient := solana.PublicKeyFromBytes(make([]byte, 32))
+	if !globalConfig.ProtocolFeeRecipients[0].IsZero() {
+		protocolFeeRecipient = globalConfig.ProtocolFeeRecipients[0]
+	}
+
+	protocolFeeRecipientATA, _, err := solana.FindAssociatedTokenAddress(
+		protocolFeeRecipient,
+		pool.QuoteMint,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &PreparedTokenAccounts{
+		UserBaseATA:             userBaseATA,
+		UserQuoteATA:            userQuoteATA,
+		ProtocolFeeRecipientATA: protocolFeeRecipientATA,
+		ProtocolFeeRecipient:    protocolFeeRecipient,
+		CreateBaseATAIx:         createBaseATAIx,
+		CreateQuoteATAIx:        createQuoteATAIx,
+	}, nil
+}
+
+
+// =============================
+// File: internal/dex/pumpswap/types.go
+// =============================
+package pumpswap
+
+import (
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
+	"github.com/rovshanmuradov/solana-bot/internal/wallet"
+
+	"go.uber.org/zap"
+	"sync"
+
+	"github.com/gagliardetto/solana-go"
+)
+
+const (
+	// Decimals по умолчанию
+	DefaultTokenDecimals = 6
+	WSOLDecimals         = 9
+)
+
+var (
+	GlobalConfigDiscriminator = []byte{149, 8, 156, 202, 160, 252, 176, 217}
+	PoolDiscriminator         = []byte{241, 154, 109, 4, 17, 177, 109, 188}
+)
+var (
+	// PumpSwapProgramID – адрес программы PumpSwap.
+	PumpSwapProgramID = solana.MustPublicKeyFromBase58("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA")
+	// SystemProgramID – ID системной программы Solana.
+	SystemProgramID = solana.SystemProgramID
+	// TokenProgramID – ID программы токенов Solana.
+	TokenProgramID = solana.TokenProgramID
+	// AssociatedTokenProgramID – ID ассоциированной токенной программы.
+	AssociatedTokenProgramID = solana.SPLAssociatedTokenAccountProgramID
+)
+
+type GlobalConfig struct {
+	Admin                  solana.PublicKey
+	LPFeeBasisPoints       uint64
+	ProtocolFeeBasisPoints uint64
+	DisableFlags           uint8
+	ProtocolFeeRecipients  [8]solana.PublicKey
+}
+
+type Pool struct {
+	PoolBump              uint8
+	Index                 uint16
+	Creator               solana.PublicKey
+	BaseMint              solana.PublicKey
+	QuoteMint             solana.PublicKey
+	LPMint                solana.PublicKey
+	PoolBaseTokenAccount  solana.PublicKey
+	PoolQuoteTokenAccount solana.PublicKey
+	LPSupply              uint64
+}
+
+type PoolInfo struct {
+	Address               solana.PublicKey
+	BaseMint              solana.PublicKey
+	QuoteMint             solana.PublicKey
+	BaseReserves          uint64
+	QuoteReserves         uint64
+	LPSupply              uint64
+	FeesBasisPoints       uint64
+	ProtocolFeeBPS        uint64
+	LPMint                solana.PublicKey
+	PoolBaseTokenAccount  solana.PublicKey
+	PoolQuoteTokenAccount solana.PublicKey
+}
+
+type PreparedTokenAccounts struct {
+	UserBaseATA             solana.PublicKey
+	UserQuoteATA            solana.PublicKey
+	ProtocolFeeRecipientATA solana.PublicKey
+	ProtocolFeeRecipient    solana.PublicKey
+	CreateBaseATAIx         solana.Instruction
+	CreateQuoteATAIx        solana.Instruction
+}
+
+// DEX реализует операции для PumpSwap.
+type DEX struct {
+	client      *solbc.Client
+	wallet      *wallet.Wallet
+	logger      *zap.Logger
+	config      *Config
+	poolManager PoolManagerInterface
+
+	// Новые поля
+	globalConfig *GlobalConfig
+	configMutex  sync.RWMutex
+}
+
+// SwapAmounts содержит результаты расчёта параметров свапа
+type SwapAmounts struct {
+	BaseAmount  uint64  // Сумма базовой валюты
+	QuoteAmount uint64  // Сумма котируемой валюты
+	Price       float64 // Расчётная цена
+}
+
+// Определяем SwapParams локально в пакете pumpswap
+type SwapParams struct {
+	IsBuy           bool
+	Amount          uint64
+	SlippagePercent float64
+	PriorityFeeSol  string
+	ComputeUnits    uint32
+}
+
+
+// =============================
+// File: internal/dex/pumpswap_adapter.go
+// =============================
+package dex
+
+import (
+	"context"
+	"fmt"
+	"github.com/gagliardetto/solana-go"
+	"github.com/rovshanmuradov/solana-bot/internal/dex/pumpswap"
+	"go.uber.org/zap"
+	"math"
+)
+
+// GetName для PumpSwap DEX
+func (d *pumpswapDEXAdapter) GetName() string {
+	return "Pump.Swap"
+}
+
+// GetTokenPrice для Pump.swap DEX
+func (d *pumpswapDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
+	if err := d.initPumpSwap(ctx, tokenMint); err != nil {
+		return 0, err
+	}
+	return d.inner.GetTokenPrice(ctx, tokenMint)
+}
+
+// Execute выполняет операцию на Pump.swap DEX
+func (d *pumpswapDEXAdapter) Execute(ctx context.Context, task *Task) error {
+	if task.TokenMint == "" {
+		return fmt.Errorf("token mint address is required for Pump.swap")
+	}
+
+	if err := d.initPumpSwap(ctx, task.TokenMint); err != nil {
+		return err
+	}
+
+	switch task.Operation {
+	case OperationSwap:
+		d.logger.Info("Executing swap on Pump.swap",
+			zap.String("token_mint", task.TokenMint),
+			zap.Float64("amount_sol", task.AmountSol),
+			zap.Float64("slippage_percent", task.SlippagePercent),
+			zap.String("priority_fee", task.PriorityFee),
+			zap.Uint32("compute_units", task.ComputeUnits))
+
+		amountLamports := uint64(task.AmountSol * 1e9)
+
+		return d.inner.ExecuteSwap(ctx, pumpswap.SwapParams{
+			IsBuy:           true,
+			Amount:          amountLamports,
+			SlippagePercent: task.SlippagePercent,
+			PriorityFeeSol:  task.PriorityFee,
+			ComputeUnits:    task.ComputeUnits,
+		})
+
+	case OperationSell:
+		tokenMintPubkey, err := solana.PublicKeyFromBase58(task.TokenMint)
+		if err != nil {
+			return fmt.Errorf("invalid token mint address: %w", err)
+		}
+
+		precision, err := d.inner.DetermineTokenPrecision(ctx, tokenMintPubkey)
+		if err != nil {
+			precision = 6
+			d.logger.Warn("Could not determine token precision, using default",
+				zap.Uint8("default_precision", precision))
+		}
+
+		tokenAmount := uint64(task.AmountSol * math.Pow(10, float64(precision)))
+
+		d.logger.Info("Executing sell on Pump.swap",
+			zap.String("token_mint", task.TokenMint),
+			zap.Float64("tokens_to_sell", task.AmountSol),
+			zap.Uint64("token_amount", tokenAmount),
+			zap.Float64("slippage_percent", task.SlippagePercent),
+			zap.String("priority_fee", task.PriorityFee),
+			zap.Uint32("compute_units", task.ComputeUnits))
+
+		return d.inner.ExecuteSell(ctx, tokenAmount, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
+
+	default:
+		return fmt.Errorf("operation %s is not supported on Pump.swap", task.Operation)
+	}
+}
+
+// initPumpSwap инициализирует Pump.swap DEX если необходимо
+func (d *pumpswapDEXAdapter) initPumpSwap(_ context.Context, tokenMint string) error {
+	d.initMu.Lock()
+	defer d.initMu.Unlock()
+
+	if d.initDone && d.tokenMint == tokenMint && d.inner != nil {
+		return nil
+	}
+
+	config := pumpswap.GetDefaultConfig()
+	if err := config.SetupForToken(tokenMint, d.logger); err != nil {
+		return fmt.Errorf("failed to setup Pump.swap configuration: %w", err)
+	}
+
+	poolManager := pumpswap.NewPoolManager(d.client, d.logger)
+
+	var err error
+	d.inner, err = pumpswap.NewDEX(d.client, d.wallet, d.logger, config, poolManager, config.MonitorInterval)
+	if err != nil {
+		return fmt.Errorf("failed to initialize Pump.swap DEX: %w", err)
+	}
+
+	d.tokenMint = tokenMint
+	d.initDone = true
+	return nil
+}
+
+// GetTokenBalance возвращает текущий баланс токена
+// Placeholder для совместимости с интерфейсом DEX
+func (d *pumpswapDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error) {
+	// В будущем здесь можно реализовать настоящую логику получения баланса
+	d.logger.Debug("GetTokenBalance called on PumpSwap (not fully implemented)",
+		zap.String("token_mint", tokenMint))
+
+	// Возможно реализовать в будущем, сейчас просто возвращаем ошибку
+	return 0, fmt.Errorf("GetTokenBalance not fully implemented for Pump.Swap DEX")
+}
+
+// SellPercentTokens продает указанный процент имеющихся токенов
+func (d *pumpswapDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint string, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
+	if err := d.initPumpSwap(ctx, tokenMint); err != nil {
+		return err
+	}
+
+	d.logger.Warn("SellPercentTokens is not fully implemented for PumpSwap",
+		zap.String("token_mint", tokenMint),
+		zap.Float64("percent_to_sell", percentToSell))
+
+	// Получаем баланс токена (в настоящее время не реализовано полностью)
+	balance, err := d.inner.GetTokenBalance(ctx, tokenMint)
+	if err != nil {
+		return fmt.Errorf("failed to get token balance: %w", err)
+	}
+
+	// Рассчитываем количество токенов для продажи
+	tokensToSell := uint64(float64(balance) * percentToSell / 100.0)
+
+	// Выполняем стандартную операцию продажи
+	return d.inner.ExecuteSell(ctx, tokensToSell, slippagePercent, priorityFeeSol, computeUnits)
+}
+
+// CalculateDiscretePnL реализация для Pump.swap (заглушка)
+func (d *pumpswapDEXAdapter) CalculateDiscretePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*DiscreteTokenPnL, error) {
+	// PumpSwap не использует дискретную bonding curve, поэтому
+	// возвращаем стандартный PnL для совместимости с интерфейсом
+	price, err := d.GetTokenPrice(ctx, d.tokenMint)
+	if err != nil {
+		return nil, err
+	}
+
+	theoreticalValue := tokenAmount * price
+
+	return &DiscreteTokenPnL{
+		CurrentPrice:      price,
+		TheoreticalValue:  theoreticalValue,
+		SellEstimate:      theoreticalValue, // Для не-дискретной кривой оценка равна теоретической стоимости
+		InitialInvestment: initialInvestment,
+		NetPnL:            theoreticalValue - initialInvestment,
+		PnLPercentage:     ((theoreticalValue - initialInvestment) / initialInvestment) * 100,
+	}, nil
+}
+
+// =============================
+// File: internal/dex/types.go
+// =============================
+
+package dex
+
+import (
+	"context"
+	"github.com/rovshanmuradov/solana-bot/internal/dex/pumpswap"
+	"time"
+)
+
+const (
+	OperationSnipe OperationType = "snipe"
+	OperationSell  OperationType = "sell"
+	OperationSwap  OperationType = "swap"
+)
+
+// OperationType defines a DEX operation type.
+type OperationType string
+
+// Task represents an operation request for DEX.
+type Task struct {
+	Operation       OperationType
+	AmountSol       float64       // Amount in SOL the user wants to spend (buy) or sell
+	SlippagePercent float64       // Slippage tolerance in percent (0-100)
+	TokenMint       string        // Token mint address
+	PriorityFee     string        // Priority fee in SOL (string format, e.g. "0.000001")
+	ComputeUnits    uint32        // Compute units for the transaction
+	MonitorInterval time.Duration // Интервал обновления цены при мониторинге
+}
+
+// pumpswapDEXAdapter адаптирует Pump.swap к интерфейсу DEX
+type pumpswapDEXAdapter struct {
+	baseDEXAdapter
+	inner *pumpswap.DEX
+}
+
+// DEX — единый интерфейс для работы с различными DEX.
+type DEX interface {
+	// GetName возвращает название биржи.
+	GetName() string
+	// Execute выполняет операцию, описанную в задаче.
+	Execute(ctx context.Context, task *Task) error
+	// GetTokenPrice возвращает текущую цену токена
+	GetTokenPrice(ctx context.Context, tokenMint string) (float64, error)
+	// GetTokenBalance возвращает текущий баланс токена в кошельке пользователя
+	GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error)
+	// SellPercentTokens продает указанный процент имеющихся токенов
+	SellPercentTokens(ctx context.Context, tokenMint string, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error
+	// CalculateDiscretePnL вычисляет PnL с учетом дискретной структуры Pump.fun
+	CalculateDiscretePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*DiscreteTokenPnL, error)
+}
+
+// DiscreteTokenPnL содержит информацию о PnL с учетом дискретной природы токена
+type DiscreteTokenPnL struct {
+	CurrentPrice      float64 // Текущая цена токена
+	TheoreticalValue  float64 // Теоретическая стоимость (цена * количество)
+	SellEstimate      float64 // Оценка реальной выручки при продаже
+	InitialInvestment float64 // Начальная инвестиция
+	NetPnL            float64 // Чистый PnL (SellEstimate - InitialInvestment)
+	PnLPercentage     float64 // Процент PnL
+}
+
+// =============================
+// File: internal/dex/utils.go
+// =============================
+package dex
+
+import (
+	"context"
+	"github.com/gagliardetto/solana-go"
+	"math"
+)
+
+// convertToTokenUnits конвертирует человекочитаемое представление в базовые единицы токена
+func convertToTokenUnits(ctx context.Context, dex interface{}, tokenMint string, amount float64, defaultDecimals uint8) (uint64, error) {
+	decimals := float64(defaultDecimals)
+
+	// Пытаемся определить точность токена, если доступно
+	if precisionProvider, ok := dex.(interface {
+		DetermineTokenPrecision(ctx context.Context, mint solana.PublicKey) (uint8, error)
+	}); ok {
+		mint, err := solana.PublicKeyFromBase58(tokenMint)
+		if err == nil {
+			precision, err := precisionProvider.DetermineTokenPrecision(ctx, mint)
+			if err == nil {
+				decimals = float64(precision)
+			}
+		}
+	}
+
+	// Конвертируем в базовые единицы токена
+	return uint64(amount * math.Pow(10, decimals)), nil
+}
+
+package monitor
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"os"
+	"strings"
+
+	"go.uber.org/zap"
+)
+
+// CommandCallback is a function called when a command is entered
+type CommandCallback func(command string) error
+
+// InputHandler handles user input for the monitoring session
+type InputHandler struct {
+	callbacks map[string]CommandCallback // Map of command -> callback
+	logger    *zap.Logger                // Logger
+	ctx       context.Context            // Context for cancellation
+	cancel    context.CancelFunc         // Cancel function
+}
+
+// NewInputHandler creates a new input handler
+func NewInputHandler(logger *zap.Logger) *InputHandler {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &InputHandler{
+		callbacks: make(map[string]CommandCallback),
+		logger:    logger,
+		ctx:       ctx,
+		cancel:    cancel,
+	}
+}
+
+// RegisterCommand registers a callback for a specific command
+func (ih *InputHandler) RegisterCommand(command string, callback CommandCallback) {
+	ih.callbacks[command] = callback
+}
+
+// Start begins the input handling process
+func (ih *InputHandler) Start() {
+	ih.logger.Debug("Starting input handler")
+
+	go func() {
+		reader := bufio.NewReader(os.Stdin)
+
+		for {
+			select {
+			case <-ih.ctx.Done():
+				ih.logger.Debug("Input handler stopped")
+				return
+			default:
+				// Read a line non-blocking
+				line, err := reader.ReadString('\n')
+				if err != nil {
+					if ih.ctx.Err() == nil { // Only log if not canceled
+						ih.logger.Error("Error reading input", zap.Error(err))
+					}
+					// Short sleep to prevent CPU spin
+					continue
+				}
+
+				// Process the command
+				command := strings.TrimSpace(line)
+
+				// Empty command is Enter key
+				if command == "" {
+					if callback, ok := ih.callbacks[""]; ok {
+						if err := callback(command); err != nil {
+							ih.logger.Error("Error executing command", zap.Error(err))
+						}
+					}
+					continue
+				}
+
+				// Check for registered commands
+				if callback, ok := ih.callbacks[command]; ok {
+					if err := callback(command); err != nil {
+						ih.logger.Error("Error executing command", zap.Error(err))
+					}
+				} else {
+					fmt.Println("Unknown command. Press Enter to sell tokens or 'q' to exit.")
+				}
+			}
+		}
+	}()
+}
+
+// Stop stops the input handler
+func (ih *InputHandler) Stop() {
+	if ih.cancel != nil {
+		ih.cancel()
+	}
+}
+
+
+package monitor
+
+import (
+	"context"
+	"math"
+	"time"
+
+	"github.com/rovshanmuradov/solana-bot/internal/dex"
+	"go.uber.org/zap"
+)
+
+// PriceUpdateCallback is a function called when price updates
+type PriceUpdateCallback func(currentPriceSol float64, initialPriceSol float64, percentChange float64, tokenAmount float64)
+
+// PriceMonitor monitors token price changes
+type PriceMonitor struct {
+	dex           dex.DEX             // DEX interface for price retrieval
+	interval      time.Duration       // Interval between price checks
+	initialPrice  float64             // Initial token price when monitoring started
+	tokenAmount   float64             // Amount of tokens purchased
+	tokenMint     string              // Token mint address
+	initialAmount float64             // Initial SOL amount spent
+	logger        *zap.Logger         // Logger
+	callback      PriceUpdateCallback // Callback for price updates
+	ctx           context.Context     // Context for cancellation
+	cancel        context.CancelFunc  // Cancel function
+}
+
+// NewPriceMonitor creates a new price monitor
+func NewPriceMonitor(dex dex.DEX, tokenMint string, initialPrice float64,
+	tokenAmount float64, initialAmount float64,
+	interval time.Duration, logger *zap.Logger,
+	callback PriceUpdateCallback) *PriceMonitor {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &PriceMonitor{
+		dex:           dex,
+		interval:      interval,
+		initialPrice:  initialPrice,
+		tokenAmount:   tokenAmount,
+		tokenMint:     tokenMint,
+		initialAmount: initialAmount,
+		logger:        logger,
+		callback:      callback,
+		ctx:           ctx,
+		cancel:        cancel,
+	}
+}
+
+// Start begins the price monitoring process
+func (pm *PriceMonitor) Start() {
+	pm.logger.Info("Starting price monitor",
+		zap.String("token_mint", pm.tokenMint),
+		zap.Float64("initial_price", pm.initialPrice),
+		zap.Duration("interval", pm.interval))
+
+	// Run the first update immediately
+	pm.updatePrice()
+
+	// Start the ticker for periodic updates
+	ticker := time.NewTicker(pm.interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			pm.updatePrice()
+		case <-pm.ctx.Done():
+			pm.logger.Debug("Price monitor stopped")
+			return
+		}
+	}
+}
+
+// Stop stops the price monitoring
+func (pm *PriceMonitor) Stop() {
+	if pm.cancel != nil {
+		pm.cancel()
+	}
+}
+
+// updatePrice fetches the current price and calls the callback
+func (pm *PriceMonitor) updatePrice() {
+	ctx, cancel := context.WithTimeout(pm.ctx, 10*time.Second)
+	defer cancel()
+
+	currentPrice, err := pm.dex.GetTokenPrice(ctx, pm.tokenMint)
+	if err != nil {
+		pm.logger.Error("Failed to get token price", zap.Error(err))
+		return
+	}
+
+	// Calculate percent change
+	percentChange := 0.0
+	if pm.initialPrice > 0 {
+		percentChange = ((currentPrice - pm.initialPrice) / pm.initialPrice) * 100
+	}
+
+	// Format to 2 decimal places
+	percentChange = math.Floor(percentChange*100) / 100
+
+	// Call the callback with price information
+	if pm.callback != nil {
+		pm.callback(currentPrice, pm.initialPrice, percentChange, pm.tokenAmount)
+	}
+}
+
+func (pm *PriceMonitor) SetCallback(callback PriceUpdateCallback) {
+	pm.callback = callback
+}
+
+
+package monitor
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/rovshanmuradov/solana-bot/internal/dex"
+	"go.uber.org/zap"
+)
+
+// SessionConfig contains configuration for a monitoring session
+type SessionConfig struct {
+	TokenMint       string        // Token mint address
+	TokenAmount     float64       // Human-readable amount of tokens purchased
+	TokenBalance    uint64        // Raw token balance in smallest units
+	InitialAmount   float64       // Initial SOL amount spent
+	InitialPrice    float64       // Initial token price
+	MonitorInterval time.Duration // Interval for price updates
+	DEX             dex.DEX       // DEX interface
+	Logger          *zap.Logger   // Logger
+
+	// Transaction parameters from the original task
+	SlippagePercent float64 // Slippage percentage for transactions
+	PriorityFee     string  // Priority fee for transactions
+	ComputeUnits    uint32  // Compute units for transactions
+}
+
+// MonitoringSession manages a token monitoring session
+type MonitoringSession struct {
+	config       *SessionConfig
+	priceMonitor *PriceMonitor
+	inputHandler *InputHandler
+	wg           sync.WaitGroup
+	ctx          context.Context
+	cancel       context.CancelFunc
+	logger       *zap.Logger
+}
+
+// NewMonitoringSession creates a new monitoring session
+func NewMonitoringSession(config *SessionConfig) *MonitoringSession {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &MonitoringSession{
+		config: config,
+		logger: config.Logger,
+		ctx:    ctx,
+		cancel: cancel,
+	}
+}
+
+// Start begins the monitoring session
+func (ms *MonitoringSession) Start() error {
+	// Create a price monitor
+	ms.priceMonitor = NewPriceMonitor(
+		ms.config.DEX,
+		ms.config.TokenMint,
+		ms.config.InitialPrice,
+		ms.config.TokenAmount,
+		ms.config.InitialAmount,
+		ms.config.MonitorInterval,
+		ms.logger.Named("price"),
+		ms.onPriceUpdate,
+	)
+
+	// Create an input handler
+	ms.inputHandler = NewInputHandler(ms.logger.Named("input"))
+
+	// Register commands
+	ms.inputHandler.RegisterCommand("", ms.onEnterPressed) // Empty command (Enter key)
+	ms.inputHandler.RegisterCommand("q", ms.onExitCommand)
+	ms.inputHandler.RegisterCommand("exit", ms.onExitCommand)
+
+	// Start the components
+	ms.wg.Add(1)
+	go func() {
+		defer ms.wg.Done()
+		ms.priceMonitor.Start()
+	}()
+
+	ms.inputHandler.Start()
+
+	// Clear screen and show initial message
+	fmt.Print("\033[H\033[2J") // Clear screen
+	fmt.Println("\n🚀 Monitoring started. Press Enter to sell tokens or 'q' to exit.")
+	return nil
+}
+
+// Wait waits for the session to complete
+func (ms *MonitoringSession) Wait() error {
+	ms.wg.Wait()
+	return nil
+}
+
+// Stop stops the monitoring session
+func (ms *MonitoringSession) Stop() {
+	// Stop the input handler
+	if ms.inputHandler != nil {
+		ms.inputHandler.Stop()
+	}
+
+	// Stop the price monitor
+	if ms.priceMonitor != nil {
+		ms.priceMonitor.Stop()
+	}
+
+	// Cancel the context
+	if ms.cancel != nil {
+		ms.cancel()
+	}
+}
+
+// UpdateWithDiscretePnL обновляет сессию мониторинга с учетом дискретного расчета PnL
+func (ms *MonitoringSession) UpdateWithDiscretePnL() error {
+	// Меняем callback для обработки обновлений цены
+	ms.priceMonitor.SetCallback(func(currentPrice, initialPrice, percentChange, tokenAmount float64) {
+		// Используем измененную функцию onPriceUpdate
+		ms.onPriceUpdate(currentPrice, initialPrice, percentChange, tokenAmount)
+	})
+
+	return nil
+}
+
+// printColoredText выводит текст с цветом в зависимости от значения
+func printColoredText(format string, value float64, isPositive bool, args ...interface{}) {
+	var colorCode string
+	
+	if value == 0 {
+		colorCode = "\033[0m" // Default color
+	} else if isPositive {
+		colorCode = "\033[32m" // Green
+	} else {
+		colorCode = "\033[31m" // Red
+	}
+	
+	allArgs := append([]interface{}{value}, args...)
+	fmt.Printf(colorCode+format+"\033[0m", allArgs...)
+}
+
+// onPriceUpdate is called when the price is updated
+func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentChange, tokenAmount float64) {
+	// Clear screen for each update
+	fmt.Print("\033[H\033[2J")
+	
+	// Стандартный расчет PnL
+	currentValue := currentPrice * tokenAmount
+	profit := currentValue - ms.config.InitialAmount
+	profitPercent := 0.0
+	if ms.config.InitialAmount > 0 {
+		profitPercent = (profit / ms.config.InitialAmount) * 100
+	}
+
+	// Пытаемся вычислить более точный PnL для Pump.fun
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	discretePnL, err := ms.config.DEX.CalculateDiscretePnL(ctx, tokenAmount, ms.config.InitialAmount)
+	fmt.Println("\n")
+	fmt.Println("┌─────────────────────────────────────────────────────────────────┐")
+	fmt.Printf("│ \033[1;36m%-63s\033[0m │\n", "SOLANA TRADING BOT - PRICE MONITOR")
+	fmt.Println("├─────────────────────────────────────────────────────────────────┤")
+	fmt.Printf("│ \033[1;33m%-20s\033[0m %-41s │\n", "Exchange:", ms.config.DEX.GetName())
+	fmt.Printf("│ \033[1;33m%-20s\033[0m %-41s │\n", "Token:", shortenAddress(ms.config.TokenMint))
+	fmt.Println("├─────────────────────────────────────────────────────────────────┤")
+	
+	if err == nil && discretePnL != nil {
+		// Используем дискретный расчет
+		fmt.Printf("│ \033[1;37m%-20s\033[0m %.9f SOL                    │\n", "Entry Price:", initialPrice)
+		fmt.Printf("│ \033[1;37m%-20s\033[0m %.9f SOL                    │\n", "Current Price:", discretePnL.CurrentPrice)
+		
+		// Price change with color
+		fmt.Printf("│ \033[1;37m%-20s\033[0m ", "Price Change:")
+		printColoredText("%.2f%%%-39s │\n", percentChange, percentChange > 0, "")
+		
+		fmt.Printf("│ \033[1;37m%-20s\033[0m %.6f                          │\n", "Token Amount:", tokenAmount)
+		fmt.Println("├─────────────────────────────────────────────────────────────────┤")
+		fmt.Printf("│ \033[1;37m%-20s\033[0m %.6f SOL                      │\n", "Initial Investment:", discretePnL.InitialInvestment)
+		fmt.Printf("│ \033[1;37m%-20s\033[0m %.6f SOL                      │\n", "Theoretical Value:", discretePnL.TheoreticalValue)
+		fmt.Printf("│ \033[1;37m%-20s\033[0m %.6f SOL                      │\n", "Sell Estimate:", discretePnL.SellEstimate)
+		
+		// Print Net PnL with color
+		fmt.Printf("│ \033[1;37m%-20s\033[0m ", "Net PnL:")
+		printColoredText("%.6f SOL%-29s │\n", discretePnL.NetPnL, discretePnL.NetPnL > 0, "")
+		
+		// Print PnL percentage with color
+		fmt.Printf("│ \033[1;37m%-20s\033[0m ", "ROI:")
+		printColoredText("%.2f%%%-39s │\n", discretePnL.PnLPercentage, discretePnL.PnLPercentage > 0, "")
+	} else {
+		// Используем стандартный расчет
+		fmt.Printf("│ \033[1;37m%-20s\033[0m %.9f SOL                    │\n", "Entry Price:", initialPrice)
+		fmt.Printf("│ \033[1;37m%-20s\033[0m %.9f SOL                    │\n", "Current Price:", currentPrice)
+		
+		// Price change with color
+		fmt.Printf("│ \033[1;37m%-20s\033[0m ", "Price Change:")
+		printColoredText("%.2f%%%-39s │\n", percentChange, percentChange > 0, "")
+		
+		fmt.Printf("│ \033[1;37m%-20s\033[0m %.6f                          │\n", "Token Amount:", tokenAmount)
+		fmt.Println("├─────────────────────────────────────────────────────────────────┤")
+		fmt.Printf("│ \033[1;37m%-20s\033[0m %.6f SOL                      │\n", "Initial Investment:", ms.config.InitialAmount)
+		fmt.Printf("│ \033[1;37m%-20s\033[0m %.6f SOL                      │\n", "Current Value:", currentValue)
+		
+		// Print Net PnL with color
+		fmt.Printf("│ \033[1;37m%-20s\033[0m ", "Net PnL:")
+		printColoredText("%.6f SOL%-29s │\n", profit, profit > 0, "")
+		
+		// Print PnL percentage with color
+		fmt.Printf("│ \033[1;37m%-20s\033[0m ", "ROI:")
+		printColoredText("%.2f%%%-39s │\n", profitPercent, profitPercent > 0, "")
+	}
+	
+	fmt.Println("├─────────────────────────────────────────────────────────────────┤")
+	fmt.Printf("│ \033[1;32m%-63s\033[0m │\n", "Press Enter to sell tokens or 'q' to exit")
+	fmt.Println("└─────────────────────────────────────────────────────────────────┘")
+	
+	// Add update timestamp at the bottom
+	fmt.Printf("\n\033[90mLast update: %s\033[0m\n", time.Now().Format("15:04:05"))
+}
+
+// shortenAddress сокращает адрес, показывая только начало и конец
+func shortenAddress(address string) string {
+	if len(address) > 12 {
+		return address[:6] + "..." + address[len(address)-4:]
+	}
+	return address
+}
+
+// onEnterPressed is called when Enter is pressed
+func (ms *MonitoringSession) onEnterPressed(_ string) error {
+	// Clear screen
+	fmt.Print("\033[H\033[2J")
+	fmt.Println("\n🚀 Selling tokens...")
+
+	// Stop the monitoring session
+	ms.Stop()
+
+	// Процент токенов для продажи (99%)
+	percentToSell := 99.0
+
+	ms.logger.Info("Executing sell operation",
+		zap.String("token_mint", ms.config.TokenMint),
+		zap.Float64("percent_to_sell", percentToSell),
+		zap.Float64("slippage_percent", ms.config.SlippagePercent),
+		zap.String("priority_fee", ms.config.PriorityFee),
+		zap.Uint32("compute_units", ms.config.ComputeUnits))
+
+	// Продаем указанный процент токенов
+	err := ms.config.DEX.SellPercentTokens(
+		context.Background(),
+		ms.config.TokenMint,
+		percentToSell,
+		ms.config.SlippagePercent,
+		ms.config.PriorityFee,
+		ms.config.ComputeUnits,
+	)
+
+	if err != nil {
+		fmt.Printf("\n\033[31mError selling tokens: %v\033[0m\n", err)
+		return err
+	}
+
+	fmt.Println("\n\033[32m✅ Tokens sold successfully!\033[0m")
+	return nil
+}
+
+// onExitCommand is called when exit command is entered
+func (ms *MonitoringSession) onExitCommand(_ string) error {
+	// Clear screen
+	fmt.Print("\033[H\033[2J")
+	fmt.Println("\n\033[33mExiting monitor mode without selling tokens.\033[0m")
+	ms.Stop()
+	return nil
+}
+
+// internal/storage/models/pool.go
+package models
+
+import "time"
+
+type PoolInfo struct {
+	BaseModel
+	PoolID     string    `gorm:"unique;not null;type:varchar(44)"`
+	DexName    string    `gorm:"not null;type:varchar(50)"`
+	TokenA     string    `gorm:"index;not null;type:varchar(44)"`
+	TokenB     string    `gorm:"index;not null;type:varchar(44)"`
+	Liquidity  float64   `gorm:"type:decimal(20,9)"`
+	Price      float64   `gorm:"type:decimal(20,9)"`
+	LastUpdate time.Time `gorm:"index;not null"`
+}
+
+
+// internal/storage/models/task.go
+package models
+
+import "time"
+
+type TaskHistory struct {
+	BaseModel
+	TaskName             string `gorm:"not null;type:varchar(100)"`
+	Status               string `gorm:"not null;type:varchar(20)"`
+	StartedAt            *time.Time
+	CompletedAt          *time.Time
+	SuccessCount         int     `gorm:"default:0"`
+	ErrorCount           int     `gorm:"default:0"`
+	TotalVolume          float64 `gorm:"type:decimal(20,9);default:0"`
+	AverageExecutionTime float64 `gorm:"type:decimal(10,3)"`
+}
+
+
+// internal/storage/models/transaction.go
+package models
+
+import "time"
+
+type Transaction struct {
+	BaseModel
+	Signature     string     `gorm:"unique;not null;type:varchar(88)"`
+	WalletAddress string     `gorm:"index;not null;type:varchar(44)"`
+	TaskName      string     `gorm:"not null;type:varchar(100)"`
+	DexName       string     `gorm:"not null;type:varchar(50)"`
+	AmountIn      float64    `gorm:"type:decimal(20,9);not null"`
+	AmountOut     float64    `gorm:"type:decimal(20,9)"`
+	TokenIn       string     `gorm:"not null;type:varchar(44)"`
+	TokenOut      string     `gorm:"not null;type:varchar(44)"`
+	Status        string     `gorm:"not null;type:varchar(20)"`
+	ErrorMessage  string     `gorm:"type:text"`
+	PriorityFee   float64    `gorm:"type:decimal(20,9);not null"`
+	ExecutionTime float64    `gorm:"type:decimal(10,3)"`
+	BlockTime     *time.Time `gorm:"index"`
+}
+
+
+// =============================================
+// File: internal/task/config.go
+// =============================================
+package task
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/spf13/viper"
+)
+
+// Config defines complete application configuration with all fields from config.json
+type Config struct {
+	License        string        `mapstructure:"license"`
+	RPCList        []string      `mapstructure:"rpc_list"`
+	WebSocketURL   string        `mapstructure:"websocket_url"`
+	MonitorDelay   time.Duration `mapstructure:"-"` // Converted from milliseconds
+	MonitorDelayMS int           `mapstructure:"monitor_delay"`
+	RPCDelay       time.Duration `mapstructure:"-"` // Converted from milliseconds
+	RPCDelayMS     int           `mapstructure:"rpc_delay"`
+	PriceDelay     time.Duration `mapstructure:"-"` // Converted from milliseconds
+	PriceDelayMS   int           `mapstructure:"price_delay"`
+	DebugLogging   bool          `mapstructure:"debug_logging"`
+	TPSLogging     bool          `mapstructure:"tps_logging"`
+	Retries        int           `mapstructure:"retries"`
+	WebhookURL     string        `mapstructure:"webhook_url"`
+	Workers        int           `mapstructure:"workers"`
+}
+
+// LoadConfig reads and validates configuration from the provided path
+func LoadConfig(path string) (*Config, error) {
+	v := viper.New()
+	v.SetConfigFile(path)
+
+	// Set defaults
+	v.SetDefault("debug_logging", true)
+	v.SetDefault("tps_logging", false)
+	v.SetDefault("price_delay", 500)
+	v.SetDefault("monitor_delay", 1000)
+	v.SetDefault("rpc_delay", 100)
+	v.SetDefault("retries", 3)
+	v.SetDefault("workers", 1)
+
+	if err := v.ReadInConfig(); err != nil {
+		return nil, fmt.Errorf("read config error: %w", err)
+	}
+
+	var cfg Config
+	if err := v.Unmarshal(&cfg); err != nil {
+		return nil, fmt.Errorf("unmarshal error: %w", err)
+	}
+
+	// Convert milliseconds to durations
+	cfg.MonitorDelay = time.Duration(cfg.MonitorDelayMS) * time.Millisecond
+	cfg.RPCDelay = time.Duration(cfg.RPCDelayMS) * time.Millisecond
+	cfg.PriceDelay = time.Duration(cfg.PriceDelayMS) * time.Millisecond
+
+	// Basic validation
+	if len(cfg.RPCList) == 0 {
+		return nil, fmt.Errorf("rpc_list is empty")
+	}
+
+	if cfg.License == "" {
+		return nil, fmt.Errorf("license is required")
+	}
+
+	if cfg.WebSocketURL == "" {
+		return nil, fmt.Errorf("websocket_url is required")
+	}
+
+	if cfg.Workers <= 0 {
+		cfg.Workers = 1
+	}
+
+	if cfg.Retries <= 0 {
+		cfg.Retries = 3
+	}
+
+	return &cfg, nil
+}
+
+// ValidateLicense is a placeholder for license validation
+func ValidateLicense(license string) bool {
+	// Placeholder for license validation logic
+	return license != ""
+}
+
+
+// =============================================
+// File: internal/task/models.go
+// =============================================
+package task
+
+import (
+	"encoding/csv"
+	"fmt"
+	"os"
+	"strconv"
+
+	"go.uber.org/zap"
+)
+
+// Manager handles task loading and processing
+type Manager struct {
+	logger *zap.Logger
+}
+
+// NewManager creates a new task manager
+func NewManager(logger *zap.Logger) *Manager {
+	return &Manager{logger: logger}
+}
+
+// LoadTasks reads tasks from CSV file
+// CSV format: task_name,module,wallet,operation,amount,slippage_percent,priority_fee_sol,token_mint,compute_units
+func (m *Manager) LoadTasks(path string) ([]*Task, error) {
+	m.logger.Debug("Loading tasks", zap.String("path", path))
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open file error: %w", err)
+	}
+	defer file.Close()
+
+	records, err := csv.NewReader(file).ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("read CSV error: %w", err)
+	}
+
+	if len(records) < 2 {
+		return nil, fmt.Errorf("no tasks found (need header + at least one task)")
+	}
+
+	// Process records (skip header)
+	tasks := make([]*Task, 0, len(records)-1)
+
+	for i, row := range records[1:] {
+		if len(row) < 8 {
+			m.logger.Warn("Skipping row with insufficient columns",
+				zap.Int("row", i+2),
+				zap.Int("columns", len(row)))
+			continue
+		}
+
+		task, err := m.parseTaskRow(row, i)
+		if err != nil {
+			m.logger.Warn("Skipping invalid task row",
+				zap.Int("row", i+2),
+				zap.Error(err))
+			continue
+		}
+
+		tasks = append(tasks, task)
+	}
+
+	m.logger.Info("Tasks loaded successfully", zap.Int("count", len(tasks)))
+	return tasks, nil
+}
+
+// parseTaskRow parses a single row from the CSV into a Task object
+func (m *Manager) parseTaskRow(row []string, index int) (*Task, error) {
+	// Parse operation
+	op := OperationType(row[3])
+	switch op {
+	case OperationSnipe, OperationSell, OperationSwap:
+		// Valid operations
+	default:
+		return nil, fmt.Errorf("invalid operation: %s", op)
+	}
+
+	// Parse amount
+	amountSol, err := strconv.ParseFloat(row[4], 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid amount_sol value: %w", err)
+	}
+
+	// Parse slippage
+	slippagePercent, err := strconv.ParseFloat(row[5], 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid slippage_percent value: %w", err)
+	}
+
+	// Validate slippage
+	const MinSlippage = 0.5
+	if slippagePercent < MinSlippage || slippagePercent > 100 {
+		m.logger.Warn("Slippage percent out of range, using default",
+			zap.Float64("provided", slippagePercent),
+			zap.Float64("min_allowed", MinSlippage))
+		slippagePercent = 1.0
+	}
+
+	// Parse priority fee (use default if empty)
+	priorityFeeSol := row[6]
+	if priorityFeeSol == "" {
+		priorityFeeSol = "default"
+	}
+
+	// Parse compute units (default is 0 which means use default value)
+	var computeUnits uint32
+	if len(row) > 8 && row[8] != "" {
+		computeUnitsUint64, err := strconv.ParseUint(row[8], 10, 32)
+		if err != nil {
+			m.logger.Warn("Invalid compute_units value, using default",
+				zap.String("value", row[8]),
+				zap.Error(err))
+		} else {
+			computeUnits = uint32(computeUnitsUint64)
+		}
+	}
+
+	return &Task{
+		ID:              index + 1,
+		TaskName:        row[0],
+		Module:          row[1],
+		WalletName:      row[2],
+		Operation:       op,
+		AmountSol:       amountSol,
+		SlippagePercent: slippagePercent,
+		PriorityFeeSol:  priorityFeeSol,
+		ComputeUnits:    computeUnits,
+		TokenMint:       row[7],
+	}, nil
+}
+
+
+// =============================================
+// File: internal/task/task.go
+// =============================================
+package task
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/rovshanmuradov/solana-bot/internal/dex"
+)
+
+// Constants
+const LamportsPerSOL = 1_000_000_000
+
+// OperationType defines the supported operation types
+type OperationType string
+
+const (
+	OperationSnipe OperationType = "snipe"
+	OperationSell  OperationType = "sell"
+	OperationSwap  OperationType = "swap"
+)
+
+// Task represents a trading task from CSV configuration
+type Task struct {
+	ID              int
+	TaskName        string
+	Module          string
+	WalletName      string
+	Operation       OperationType
+	AmountSol       float64 // For buy: Amount in SOL to spend. For sell: Number of tokens to sell
+	SlippagePercent float64 // Slippage tolerance in percent (0-100)
+	PriorityFeeSol  string  // Priority fee in SOL (string format, e.g. "0.000001")
+	ComputeUnits    uint32  // Compute units for the transaction
+	TokenMint       string  // Token mint address
+	CreatedAt       time.Time
+}
+
+// NewTask creates a properly initialized task
+func NewTask(name, module, wallet string, op OperationType, amount, slippage float64,
+	priority string, compute uint32, tokenMint string) *Task {
+	return &Task{
+		TaskName:        name,
+		Module:          module,
+		WalletName:      wallet,
+		Operation:       op,
+		AmountSol:       amount,
+		SlippagePercent: slippage,
+		PriorityFeeSol:  priority,
+		ComputeUnits:    compute,
+		TokenMint:       tokenMint,
+		CreatedAt:       time.Now(),
+	}
+}
+
+// Validate checks if the task has valid parameters
+func (t *Task) Validate() error {
+	if t.TaskName == "" {
+		return fmt.Errorf("task name cannot be empty")
+	}
+
+	if t.Module == "" {
+		return fmt.Errorf("module cannot be empty")
+	}
+
+	if t.WalletName == "" {
+		return fmt.Errorf("wallet name cannot be empty")
+	}
+
+	if t.TokenMint == "" {
+		return fmt.Errorf("token mint cannot be empty")
+	}
+
+	// Validate operation
+	switch t.Operation {
+	case OperationSnipe, OperationSell, OperationSwap:
+		// Valid operations
+	default:
+		return fmt.Errorf("invalid operation: %s", t.Operation)
+	}
+
+	// Validate numeric values
+	if t.AmountSol <= 0 {
+		return fmt.Errorf("amount must be greater than zero")
+	}
+
+	const MinSlippage = 0.1
+	if t.SlippagePercent < MinSlippage || t.SlippagePercent > 100 {
+		return fmt.Errorf("slippage must be between %.1f and 100", MinSlippage)
+	}
+
+	return nil
+}
+
+// ToDEXTask converts Task to dex.Task format
+func (t *Task) ToDEXTask(monitorInterval time.Duration) *dex.Task {
+	return &dex.Task{
+		Operation:       dex.OperationType(t.Operation),
+		AmountSol:       t.AmountSol,
+		SlippagePercent: t.SlippagePercent,
+		TokenMint:       t.TokenMint,
+		PriorityFee:     t.PriorityFeeSol,
+		ComputeUnits:    t.ComputeUnits,
+		MonitorInterval: monitorInterval,
+	}
+}
+
+
+package types
+
+import (
+	"fmt"
+
+	"github.com/gagliardetto/solana-go"
+	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
+	"go.uber.org/zap"
+)
+
+// PriorityManager handles transaction priority fee calculation and formatting
+type PriorityManager struct {
+	logger *zap.Logger
+}
+
+// Conversion constants
+const (
+	LamportsPerSol      = 1_000_000_000     // 1 SOL = 10^9 lamports
+	MicroLamportsPerSol = 1_000_000_000_000 // 1 SOL = 10^12 micro-lamports
+	DefaultPriorityFee  = 5_000             // Default priority fee in micro-lamports
+	DefaultComputeUnits = 200_000           // Default compute units
+	DefaultHeapSize     = 0                 // Default additional heap size
+)
+
+// NewPriorityManager creates a new priority manager
+func NewPriorityManager(logger *zap.Logger) *PriorityManager {
+	return &PriorityManager{
+		logger: logger,
+	}
+}
+
+// SolToLamports converts SOL to lamports
+func (pm *PriorityManager) SolToLamports(sol float64) uint64 {
+	return uint64(sol * LamportsPerSol)
+}
+
+// LamportsToSol converts lamports to SOL
+func (pm *PriorityManager) LamportsToSol(lamports uint64) float64 {
+	return float64(lamports) / LamportsPerSol
+}
+
+// SolToMicroLamports converts SOL to micro-lamports
+func (pm *PriorityManager) SolToMicroLamports(sol float64) uint64 {
+	return uint64(sol * MicroLamportsPerSol)
+}
+
+// MicroLamportsToSol converts micro-lamports to SOL
+func (pm *PriorityManager) MicroLamportsToSol(microLamports uint64) float64 {
+	return float64(microLamports) / MicroLamportsPerSol
+}
+
+// FormatLamports formats lamports as SOL with proper decimal places
+func (pm *PriorityManager) FormatLamports(lamports uint64) string {
+	return fmt.Sprintf("%.9f SOL", pm.LamportsToSol(lamports))
+}
+
+// FormatMicroLamports formats micro-lamports as SOL with proper decimal places
+func (pm *PriorityManager) FormatMicroLamports(microLamports uint64) string {
+	return fmt.Sprintf("%.12f SOL", pm.MicroLamportsToSol(microLamports))
+}
+
+// CreatePriorityInstructions creates compute budget instructions with custom priority fee
+// If priorityFeeSol is "default", it uses the default fee value
+func (pm *PriorityManager) CreatePriorityInstructions(priorityFeeSol string, computeUnits uint32) ([]solana.Instruction, error) {
+	var priorityFee uint64
+
+	// Handle default value
+	if priorityFeeSol == "default" {
+		priorityFee = DefaultPriorityFee
+		pm.logger.Debug("Using default priority fee",
+			zap.Uint64("micro_lamports", priorityFee),
+			zap.String("sol", pm.FormatMicroLamports(priorityFee)))
+	} else {
+		// Parse SOL value from string and convert to micro-lamports
+		var solValue float64
+		_, err := fmt.Sscanf(priorityFeeSol, "%f", &solValue)
+		if err != nil {
+			return nil, fmt.Errorf("invalid priority fee format: %w", err)
+		}
+
+		priorityFee = pm.SolToMicroLamports(solValue)
+		pm.logger.Debug("Custom priority fee",
+			zap.Float64("sol_input", solValue),
+			zap.Uint64("micro_lamports", priorityFee))
+	}
+
+	// Use default compute units if not specified
+	if computeUnits == 0 {
+		computeUnits = DefaultComputeUnits
+	}
+
+	return pm.createInstructions(priorityFee, computeUnits, DefaultHeapSize)
+}
+
+// createInstructions creates compute budget instructions with the specified parameters
+func (pm *PriorityManager) createInstructions(priorityFee uint64, computeUnits uint32, heapSize uint32) ([]solana.Instruction, error) {
+	var instructions []solana.Instruction
+
+	// Set compute unit limit
+	if computeUnits > 0 {
+		inst := computebudget.NewSetComputeUnitLimitInstruction(computeUnits).Build()
+		instructions = append(instructions, inst)
+		pm.logger.Debug("Added compute unit limit instruction", zap.Uint32("units", computeUnits))
+	}
+
+	// Set compute unit price (priority fee)
+	if priorityFee > 0 {
+		inst := computebudget.NewSetComputeUnitPriceInstruction(priorityFee).Build()
+		instructions = append(instructions, inst)
+		pm.logger.Debug("Added priority fee instruction",
+			zap.Uint64("micro_lamports", priorityFee),
+			zap.String("sol", pm.FormatMicroLamports(priorityFee)))
+	}
+
+	// Request heap frame (if needed)
+	if heapSize > 0 {
+		inst := computebudget.NewRequestHeapFrameInstruction(heapSize).Build()
+		instructions = append(instructions, inst)
+		pm.logger.Debug("Added heap frame instruction", zap.Uint32("size", heapSize))
+	}
+
+	return instructions, nil
+}
+
+
+// internal/types/slippage.go
+package types
+
+import (
+	"fmt"
+	"math"
+	"strconv"
+	"strings"
+)
+
+// SlippageType определяет тип политики проскальзывания
+type SlippageType string
+
+const (
+	// SlippageFixed использует фиксированное значение minAmountOut
+	SlippageFixed SlippageType = "fixed"
+	// SlippagePercent использует процент от ожидаемого выхода
+	SlippagePercent SlippageType = "percent"
+	// SlippageNone не использует ограничение minAmountOut
+	SlippageNone SlippageType = "none"
+)
+
+// SlippageConfig конфигурирует политику проскальзывания
+type SlippageConfig struct {
+	Type  SlippageType `json:"type"`
+	Value float64      `json:"value"`
+}
+
+// NewSlippageConfig создает новую конфигурацию слиппажа из строки
+func NewSlippageConfig(value string) (SlippageConfig, error) {
+	// Если значение пустое, используем процентный слиппаж 1%
+	if value == "" {
+		return SlippageConfig{
+			Type:  SlippagePercent,
+			Value: 1.0,
+		}, nil
+	}
+
+	// Проверяем специальные значения
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "none" {
+		return SlippageConfig{
+			Type:  SlippageNone,
+			Value: 0,
+		}, nil
+	}
+
+	// Проверяем фиксированное значение
+	if strings.HasPrefix(value, "fixed:") {
+		fixedValue, err := strconv.ParseFloat(strings.TrimPrefix(value, "fixed:"), 64)
+		if err != nil {
+			return SlippageConfig{}, fmt.Errorf("invalid fixed slippage value: %w", err)
+		}
+		if fixedValue <= 0 {
+			return SlippageConfig{}, fmt.Errorf("fixed slippage value must be positive")
+		}
+		return SlippageConfig{
+			Type:  SlippageFixed,
+			Value: fixedValue,
+		}, nil
+	}
+
+	// Парсим процентное значение
+	percentValue, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return SlippageConfig{}, fmt.Errorf("invalid slippage percentage: %w", err)
+	}
+	if percentValue <= 0 || percentValue > 100 {
+		return SlippageConfig{}, fmt.Errorf("slippage percentage must be between 0 and 100")
+	}
+
+	return SlippageConfig{
+		Type:  SlippagePercent,
+		Value: percentValue,
+	}, nil
+}
+
+// Validate проверяет корректность конфигурации
+func (c SlippageConfig) Validate() error {
+	switch c.Type {
+	case SlippageFixed:
+		if c.Value <= 0 {
+			return fmt.Errorf("fixed slippage value must be positive")
+		}
+	case SlippagePercent:
+		if c.Value <= 0 || c.Value > 100 {
+			return fmt.Errorf("slippage percentage must be between 0 and 100")
+		}
+	case SlippageNone:
+		// Для SlippageNone значение не важно
+	default:
+		return fmt.Errorf("invalid slippage type: %s", c.Type)
+	}
+	return nil
+}
+
+// CalculateMinAmountOut вычисляет minAmountOut на основе политики проскальзывания
+func CalculateMinAmountOut(expectedAmount float64, config SlippageConfig) uint64 {
+	if err := config.Validate(); err != nil {
+		// В случае ошибки возвращаем безопасное значение
+		return 1
+	}
+
+	switch config.Type {
+	case SlippageFixed:
+		return uint64(config.Value)
+	case SlippagePercent:
+		// Вычисляем минимальный выход с учетом процента проскальзывания
+		multiplier := 1.0 - (config.Value / 100.0)
+		return uint64(math.Floor(expectedAmount * multiplier))
+	case SlippageNone:
+		return 1
+	default:
+		return 1
+	}
+}
+
+// String возвращает строковое представление конфигурации
+func (c SlippageConfig) String() string {
+	switch c.Type {
+	case SlippageFixed:
+		return fmt.Sprintf("fixed:%.6f", c.Value)
+	case SlippagePercent:
+		return fmt.Sprintf("%.2f%%", c.Value)
+	case SlippageNone:
+		return "none"
+	default:
+		return "invalid"
+	}
+}
+
+
+// internal/types/types.go
+package types
+
+import (
+	"context"
+
+	"github.com/gagliardetto/solana-go"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+	"github.com/rovshanmuradov/solana-bot/internal/wallet"
+)
+
+type Task struct {
+	TaskName                    string
+	Module                      string
+	Workers                     int
+	WalletName                  string
+	Delta                       int
+	PriorityFee                 float64
+	SourceToken                 string
+	TargetToken                 string
+	AmountIn                    float64
+	AutosellPercent             float64
+	AutosellDelay               int
+	AutosellAmount              float64
+	TransactionDelay            int
+	AutosellPriorityFee         float64
+	UserSourceTokenAccount      solana.PublicKey
+	UserDestinationTokenAccount solana.PublicKey
+	SourceTokenDecimals         int
+	TargetTokenDecimals         int
+	DEXName                     string
+	SlippageConfig              SlippageConfig
+}
+
+type DEX interface {
+	// Возвращает имя DEX
+	GetName() string
+	// Возвращает базовый клиент для работы с блокчейном
+	GetClient() blockchain.Client
+	// Возвращает конфигурацию DEX
+	GetConfig() interface{}
+	// Выполняет свап (новый метод)
+	ExecuteSwap(ctx context.Context, task *Task, wallet *wallet.Wallet) error
+}
+
+type Blockchain interface {
+	Name() string
+	SendTransaction(ctx context.Context, tx interface{}) (string, error)
+}
+
+
+// internal/utils/binary/binary.go
+package binary
+
+import (
+	"encoding/binary"
+
+	"github.com/gagliardetto/solana-go"
+)
+
+// ReadUint64LittleEndian reads a uint64 from a byte slice in little-endian format
+func ReadUint64LittleEndian(data []byte, offset int) uint64 {
+	return binary.LittleEndian.Uint64(data[offset : offset+8])
+}
+
+// ReadUint32LittleEndian reads a uint32 from a byte slice in little-endian format
+func ReadUint32LittleEndian(data []byte, offset int) uint32 {
+	return binary.LittleEndian.Uint32(data[offset : offset+4])
+}
+
+// ReadUint16LittleEndian reads a uint16 from a byte slice in little-endian format
+func ReadUint16LittleEndian(data []byte, offset int) uint16 {
+	return binary.LittleEndian.Uint16(data[offset : offset+2])
+}
+
+// ReadUint8 reads a uint8 (byte) from a byte slice
+func ReadUint8(data []byte, offset int) uint8 {
+	return data[offset]
+}
+
+// ReadBool reads a boolean from a byte slice (0 = false, non-zero = true)
+func ReadBool(data []byte, offset int) bool {
+	return data[offset] != 0
+}
+
+// ReadPubKey reads a Solana public key from a byte slice
+func ReadPubKey(data []byte, offset int) solana.PublicKey {
+	keyBytes := make([]byte, 32)
+	copy(keyBytes, data[offset:offset+32])
+	return solana.PublicKeyFromBytes(keyBytes)
+}
+
+// WriteUint64LittleEndian writes a uint64 to a byte slice in little-endian format
+func WriteUint64LittleEndian(val uint64, data []byte, offset int) {
+	binary.LittleEndian.PutUint64(data[offset:offset+8], val)
+}
+
+// WriteUint32LittleEndian writes a uint32 to a byte slice in little-endian format
+func WriteUint32LittleEndian(val uint32, data []byte, offset int) {
+	binary.LittleEndian.PutUint32(data[offset:offset+4], val)
+}
+
+// WriteUint16LittleEndian writes a uint16 to a byte slice in little-endian format
+func WriteUint16LittleEndian(val uint16, data []byte, offset int) {
+	binary.LittleEndian.PutUint16(data[offset:offset+2], val)
+}
+
+// WriteUint8 writes a uint8 (byte) to a byte slice
+func WriteUint8(val uint8, data []byte, offset int) {
+	data[offset] = val
+}
+
+// WriteBool writes a boolean to a byte slice (false = 0, true = 1)
+func WriteBool(val bool, data []byte, offset int) {
+	if val {
+		data[offset] = 1
+	} else {
+		data[offset] = 0
+	}
+}
+
+// WritePubKey writes a Solana public key to a byte slice
+func WritePubKey(key solana.PublicKey, data []byte, offset int) {
+	copy(data[offset:offset+32], key[:])
+}
+
+
+// internal/utils/error_handler.go
+package utils
+
+import (
+	"fmt"
+
+	"go.uber.org/zap"
+)
+
+func HandleError(logger *zap.Logger, err error, message string) {
+	if err != nil {
+		logger.Error(message, zap.Error(err))
+	}
+}
+
+func WrapError(err error, message string) error {
+	return fmt.Errorf("%s: %w", message, err)
+}
+
+
+// internal/utils/logger/config.go
+package logger
+
+type Config struct {
+	LogFile     string
+	MaxSize     int  // мегабайты
+	MaxAge      int  // дни
+	MaxBackups  int  // количество файлов
+	Compress    bool // сжимать ротированные файлы
+	Development bool
+}
+
+// DefaultConfig возвращает конфигурацию по умолчанию
+func DefaultConfig() *Config {
+	return &Config{
+		LogFile:     "bot.log",
+		MaxSize:     100,  // 100 MB
+		MaxAge:      7,    // 7 дней
+		MaxBackups:  3,    // 3 файла
+		Compress:    true, // сжимать старые логи
+		Development: false,
+	}
+}
+
+
+// internal/utils/logger/logger.go
+package logger
+
+import (
+	"os"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/rovshanmuradov/solana-bot/internal/types"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"gopkg.in/natefinch/lumberjack.v2"
+)
+
+// Logger расширяет функционал zap.Logger
+type Logger struct {
+	*zap.Logger
+	config *Config
+}
+
+// Для удобства добавим константы статусов трейда
+const (
+	TradePending   = "pending"
+	TradeCompleted = "completed"
+	TradeFailed    = "failed"
+	TradeCancelled = "cancelled"
+)
+
+// New создает новый логгер с расширенной функциональностью
+func New(cfg *Config) (*Logger, error) {
+	if cfg == nil {
+		cfg = DefaultConfig()
+	}
+
+	// Настройка ротации логов
+	logRotator := &lumberjack.Logger{
+		Filename:   cfg.LogFile,
+		MaxSize:    cfg.MaxSize,
+		MaxBackups: cfg.MaxBackups,
+		MaxAge:     cfg.MaxAge,
+		Compress:   cfg.Compress,
+	}
+
+	// Базовая конфигурация энкодера
+	encoderConfig := zap.NewProductionEncoderConfig()
+	if cfg.Development {
+		encoderConfig = zap.NewDevelopmentEncoderConfig()
+	}
+
+	// Улучшаем конфигурацию энкодера
+	encoderConfig.TimeKey = "timestamp"
+	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	encoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
+	encoderConfig.EncodeDuration = zapcore.StringDurationEncoder
+	encoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
+
+	// Создаем энкодеры для консоли и файла
+	consoleEncoder := zapcore.NewConsoleEncoder(encoderConfig)
+	fileEncoder := zapcore.NewJSONEncoder(encoderConfig)
+
+	// Определяем уровень логирования
+	var level zapcore.Level
+	if cfg.Development {
+		level = zapcore.DebugLevel
+	} else {
+		level = zapcore.InfoLevel
+	}
+
+	// Создаем core с поддержкой нескольких writers
+	core := zapcore.NewTee(
+		zapcore.NewCore(consoleEncoder, zapcore.AddSync(os.Stdout), level),
+		zapcore.NewCore(fileEncoder, zapcore.AddSync(logRotator), level),
+	)
+
+	// Создаем логгер с дополнительными опциями
+	logger := &Logger{
+		Logger: zap.New(core,
+			zap.AddCaller(),
+			zap.AddStacktrace(zapcore.ErrorLevel),
+			zap.AddCallerSkip(1),
+		),
+		config: cfg,
+	}
+
+	return logger, nil
+}
+
+// WithTransaction добавляет контекст транзакции к логам
+func (l *Logger) WithTransaction(txHash string) *zap.Logger {
+	return l.With(
+		zap.String("tx_hash", txHash),
+		zap.Time("tx_time", time.Now().UTC()),
+	)
+}
+
+// WithOperation создает логгер для конкретной операции
+func (l *Logger) WithOperation(operation string) *zap.Logger {
+	return l.With(
+		zap.String("operation", operation),
+		zap.String("correlation_id", uuid.New().String()),
+		zap.Time("start_time", time.Now().UTC()),
+	)
+}
+
+// WithComponent добавляет информацию о компоненте системы
+func (l *Logger) WithComponent(component string) *zap.Logger {
+	return l.With(zap.String("component", component))
+}
+
+// WithUser добавляет информацию о пользователе/wallet
+func (l *Logger) WithUser(userID string) *zap.Logger {
+	return l.With(zap.String("user_id", userID))
+}
+
+// LogError логирует ошибку с дополнительным контекстом
+func (l *Logger) LogError(msg string, err error, fields ...zap.Field) {
+	if err != nil {
+		fields = append(fields, zap.Error(err))
+	}
+	l.Error(msg, fields...)
+}
+
+// Sync реализует безопасный вызов Sync
+func (l *Logger) Sync() error {
+	err := l.Logger.Sync()
+	if err != nil && err.Error() == "sync /dev/stdout: invalid argument" {
+		return nil
+	}
+	return err
+}
+
+// WithTask логирует информацию о задаче
+func (l *Logger) WithTask(task *types.Task) *zap.Logger {
+	return l.With(
+		zap.String("task_name", task.TaskName),
+		zap.String("dex", task.DEXName),
+		zap.String("source_token", task.SourceToken),
+		zap.String("target_token", task.TargetToken),
+		zap.Float64("amount_in", task.AmountIn),
+		zap.String("slippage_type", string(task.SlippageConfig.Type)),
+		zap.Float64("slippage_value", task.SlippageConfig.Value),
+		zap.Float64("priority_fee", task.PriorityFee),
+	)
+}
+
+// // WithPool логирует информацию о пуле
+// func (l *Logger) WithPool(pool *raydium.Pool) *zap.Logger {
+// 	return l.With(
+// 		zap.String("pool_id", pool.AmmID),
+// 		zap.String("program_id", pool.AmmProgramID),
+// 		zap.String("pool_token_a", pool.PoolCoinTokenAccount),
+// 		zap.String("pool_token_b", pool.PoolPcTokenAccount),
+// 	)
+// }
+
+// TrackPerformance отслеживает производительность операции
+func (l *Logger) TrackPerformance(operation string) (end func()) {
+	start := time.Now()
+	opLogger := l.WithOperation(operation)
+
+	opLogger.Debug("Starting operation")
+
+	return func() {
+		duration := time.Since(start)
+		opLogger.Debug("Operation completed",
+			zap.Duration("duration", duration),
+			zap.Float64("duration_ms", float64(duration.Microseconds())/1000),
+		)
+	}
+}
+
+
+// internal/utils/logger.go
+package utils
+
+import (
+	"os"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+)
+
+func InitLogger(debug bool, logFile string) (*zap.Logger, error) {
+	config := zap.NewProductionConfig()
+	if debug {
+		config = zap.NewDevelopmentConfig()
+	}
+
+	// Настройка вывода в консоль и файл
+	consoleEncoder := zapcore.NewConsoleEncoder(config.EncoderConfig)
+	fileEncoder := zapcore.NewJSONEncoder(config.EncoderConfig)
+
+	// Открытие файла для логирования
+	logFileHandle, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, err
+	}
+
+	core := zapcore.NewTee(
+		zapcore.NewCore(consoleEncoder, zapcore.AddSync(os.Stdout), config.Level),
+		zapcore.NewCore(fileEncoder, zapcore.AddSync(logFileHandle), config.Level),
+	)
+
+	logger := zap.New(core)
+	return logger, nil
+}
+
+
+// ==================================
+// File: internal/wallet/wallet.go
+// ==================================
+package wallet
+
+import (
+	"encoding/csv"
+	"fmt"
+	"os"
+
+	"github.com/gagliardetto/solana-go"
+)
+
+// Wallet представляет кошелёк Solana.
+type Wallet struct {
+	PrivateKey solana.PrivateKey
+	PublicKey  solana.PublicKey
+	ATACache   map[string]solana.PublicKey // Кеш для ассоциированных адресов токен-аккаунтов (ATA)
+}
+
+// NewWallet создаёт новый кошелёк из base58-encoded приватного ключа.
+func NewWallet(privateKeyBase58 string) (*Wallet, error) {
+	privateKey, err := solana.PrivateKeyFromBase58(privateKeyBase58)
+	if err != nil {
+		return nil, fmt.Errorf("invalid private key: %w", err)
+	}
+
+	publicKey := privateKey.PublicKey()
+
+	return &Wallet{
+		PrivateKey: privateKey,
+		PublicKey:  publicKey,
+		ATACache:   make(map[string]solana.PublicKey),
+	}, nil
+}
+
+// LoadWallets загружает кошельки из CSV-файла с колонками: [Name, PrivateKeyBase58].
+func LoadWallets(path string) (map[string]*Wallet, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	records, err := reader.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read CSV: %w", err)
+	}
+	if len(records) < 2 {
+		return nil, fmt.Errorf("CSV file is empty or missing data")
+	}
+
+	wallets := make(map[string]*Wallet)
+	for _, record := range records[1:] {
+		if len(record) != 2 {
+			continue
+		}
+		name := record[0]
+		w, err := NewWallet(record[1])
+		if err != nil {
+			continue
+		}
+		wallets[name] = w
+	}
+	return wallets, nil
+}
+
+// SignTransaction подписывает транзакцию с помощью приватного ключа кошелька.
+func (w *Wallet) SignTransaction(tx *solana.Transaction) error {
+	_, err := tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+		if key.Equals(w.PublicKey) {
+			return &w.PrivateKey
+		}
+		return nil
+	})
+	return err
+}
+
+// GetATA возвращает адрес ассоциированного токен-аккаунта (ATA) для заданного токена (mint).
+// Если адрес уже был вычислен ранее, возвращается значение из кеша.
+func (w *Wallet) GetATA(mint solana.PublicKey) (solana.PublicKey, error) {
+	mintStr := mint.String()
+	if ata, ok := w.ATACache[mintStr]; ok {
+		return ata, nil
+	}
+	ata, _, err := solana.FindAssociatedTokenAddress(w.PublicKey, mint)
+	if err != nil {
+		return solana.PublicKey{}, err
+	}
+	// Сохраняем вычисленный ATA в кеш
+	w.ATACache[mintStr] = ata
+	return ata, nil
+}
+
+// PrecomputeATAs позволяет заранее рассчитать ATA для списка токенов.
+// Эту функцию можно вызвать при запуске бота, чтобы все ATA были рассчитаны сразу.
+func (w *Wallet) PrecomputeATAs(mints []solana.PublicKey) error {
+	for _, mint := range mints {
+		if _, err := w.GetATA(mint); err != nil {
+			return fmt.Errorf("failed to precompute ATA for mint %s: %w", mint.String(), err)
+		}
+	}
+	return nil
+}
+
+// CreateAssociatedTokenAccountIdempotentInstruction создает инструкцию для создания ассоциированного токен-аккаунта
+func (w *Wallet) CreateAssociatedTokenAccountIdempotentInstruction(payer, wallet, mint solana.PublicKey) solana.Instruction {
+	ata, _, err := solana.FindAssociatedTokenAddress(wallet, mint)
+	if err != nil {
+		panic(fmt.Sprintf("failed to find associated token address: %v", err))
+	}
+
+	return solana.NewInstruction(
+		solana.SPLAssociatedTokenAccountProgramID,
+		[]*solana.AccountMeta{
+			solana.Meta(payer).WRITE().SIGNER(),
+			solana.Meta(ata).WRITE(),
+			solana.Meta(wallet),
+			solana.Meta(mint),
+			solana.Meta(solana.SystemProgramID),
+			solana.Meta(solana.TokenProgramID),
+			solana.Meta(solana.SysVarRentPubkey),
+		},
+		[]byte{1}, // 1 = create_idempotent
+	)
+}
+
+// String возвращает строковое представление кошелька (его публичный ключ).
+func (w *Wallet) String() string {
+	return w.PublicKey.String()
+}
+

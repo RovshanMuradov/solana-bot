@@ -25,12 +25,13 @@ func main() {
 	// Only show Info level and above (no Debug logs)
 	logConfig.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
 	logger, _ := logConfig.Build()
-	
+
 	defer func() {
 		// Правильная обработка ошибки Sync
 		if err := logger.Sync(); err != nil {
-			// Игнорируем ошибку "sync /dev/stdout: invalid argument"
-			if !strings.Contains(err.Error(), "invalid argument") {
+			// Игнорируем стандартные ошибки при синхронизации логгера
+			if !strings.Contains(err.Error(), "invalid argument") &&
+				!strings.Contains(err.Error(), "inappropriate ioctl for device") {
 				fmt.Fprintf(os.Stderr, "failed to sync logger: %v\n", err)
 			}
 		}
