@@ -140,5 +140,19 @@ func (d *pumpfunDEXAdapter) CalculateDiscretePnL(ctx context.Context, tokenAmoun
 		return nil, fmt.Errorf("failed to initialize Pump.fun: %w", err)
 	}
 
-	return d.inner.CalculateDiscretePnL(ctx, tokenAmount, initialInvestment)
+	// Вызываем внутренний метод из пакета pumpfun
+	result, err := d.inner.CalculateDiscretePnL(ctx, tokenAmount, initialInvestment)
+	if err != nil {
+		return nil, err
+	}
+
+	// Конвертируем тип pumpfun.DiscreteTokenPnL в dex.DiscreteTokenPnL
+	return &DiscreteTokenPnL{
+		CurrentPrice:      result.CurrentPrice,
+		TheoreticalValue:  result.TheoreticalValue,
+		SellEstimate:      result.SellEstimate,
+		InitialInvestment: result.InitialInvestment,
+		NetPnL:            result.NetPnL,
+		PnLPercentage:     result.PnLPercentage,
+	}, nil
 }

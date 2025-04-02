@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/rovshanmuradov/solana-bot/internal/dex"
 	"go.uber.org/zap"
 )
 
@@ -16,12 +15,14 @@ type PriceTier struct {
 	TokensRemaining float64 // Количество токенов, доступных на этом уровне
 }
 
-// BondingCurveInfo содержит информацию о текущем состоянии bonding curve
-type BondingCurveInfo struct {
-	CurrentTierIndex int         // Индекс текущего ценового уровня
-	CurrentTierPrice float64     // Текущая цена в SOL
-	Tiers            []PriceTier // Ценовые уровни
-	FeePercentage    float64     // Комиссия в процентах
+// DiscreteTokenPnL содержит информацию о PnL с учетом дискретной природы токена
+type DiscreteTokenPnL struct {
+	CurrentPrice      float64 // Текущая цена токена
+	TheoreticalValue  float64 // Теоретическая стоимость (цена * количество)
+	SellEstimate      float64 // Оценка реальной выручки при продаже
+	InitialInvestment float64 // Начальная инвестиция
+	NetPnL            float64 // Чистый PnL (SellEstimate - InitialInvestment)
+	PnLPercentage     float64 // Процент PnL
 }
 
 // calculateSellValue рассчитывает фактическую выручку от продажи токенов с учетом
@@ -57,7 +58,7 @@ func calculateSellValue(tokenAmount float64, curveInfo *BondingCurveInfo) float6
 }
 
 // CalculateDiscretePnL вычисляет PnL для дискретной системы Pump.fun
-func (d *DEX) CalculateDiscretePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*dex.DiscreteTokenPnL, error) {
+func (d *DEX) CalculateDiscretePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*DiscreteTokenPnL, error) {
 	// Получить данные о текущем состоянии bonding curve
 	bondingCurve, _, err := d.deriveBondingCurveAccounts(ctx)
 	if err != nil {
@@ -130,7 +131,7 @@ func (d *DEX) CalculateDiscretePnL(ctx context.Context, tokenAmount float64, ini
 		zap.Float64("net_pnl", netPnL),
 		zap.Float64("pnl_percentage", pnlPercentage))
 
-	return &dex.DiscreteTokenPnL{
+	return &DiscreteTokenPnL{
 		CurrentPrice:      currentPrice,
 		TheoreticalValue:  theoreticalValue,
 		SellEstimate:      sellEstimate,
