@@ -263,10 +263,21 @@ func (c *Client) WaitForTransactionConfirmation(ctx context.Context, signature s
 	}
 }
 
-// GetTokenAccountBalance получает баланс токенного аккаунта
-func (c *Client) GetTokenAccountBalance(ctx context.Context, account solana.PublicKey) (*rpc.GetTokenAccountBalanceResult, error) {
-	// Передаем rpc.CommitmentConfirmed в качестве уровня комитмента
-	return c.rpc.GetTokenAccountBalance(ctx, account, rpc.CommitmentConfirmed)
+// GetTokenAccountBalance получает баланс токенного аккаунта с указанным уровнем подтверждения.
+func (c *Client) GetTokenAccountBalance(ctx context.Context, account solana.PublicKey, commitment rpc.CommitmentType) (*rpc.GetTokenAccountBalanceResult, error) {
+	// Если commitment не указан, используем CommitmentConfirmed
+	if commitment == "" {
+		commitment = rpc.CommitmentConfirmed
+	}
+
+	result, err := c.rpc.GetTokenAccountBalance(ctx, account, commitment)
+	if err != nil {
+		c.logger.Debug("GetTokenAccountBalance error",
+			zap.String("account", account.String()),
+			zap.Error(err))
+		return nil, err
+	}
+	return result, nil
 }
 
 // Гарантируем, что Client реализует интерфейс blockchain.Client.

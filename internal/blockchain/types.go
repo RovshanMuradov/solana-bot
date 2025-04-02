@@ -53,5 +53,5 @@ type Client interface {
 	WaitForTransactionConfirmation(ctx context.Context, signature solana.Signature, commitment rpc.CommitmentType) error
 
 	// Получить баланс токенного аккаунта.
-	GetTokenAccountBalance(ctx context.Context, account solana.PublicKey) (*rpc.GetTokenAccountBalanceResult, error)
+	GetTokenAccountBalance(ctx context.Context, account solana.PublicKey, commitment rpc.CommitmentType) (*rpc.GetTokenAccountBalanceResult, error)
 }
