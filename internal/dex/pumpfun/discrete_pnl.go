@@ -15,6 +15,14 @@ type PriceTier struct {
 	TokensRemaining float64 // Количество токенов, доступных на этом уровне
 }
 
+// BondingCurveInfo содержит информацию о текущем состоянии bonding curve
+type BondingCurveInfo struct {
+	CurrentTierIndex int         // Индекс текущего ценового уровня
+	CurrentTierPrice float64     // Текущая цена в SOL
+	Tiers            []PriceTier // Ценовые уровни
+	FeePercentage    float64     // Комиссия в процентах
+}
+
 // DiscreteTokenPnL содержит информацию о PnL с учетом дискретной природы токена
 type DiscreteTokenPnL struct {
 	CurrentPrice      float64 // Текущая цена токена
