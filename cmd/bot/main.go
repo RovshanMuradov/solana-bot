@@ -20,7 +20,12 @@ func main() {
 	defer cancel()
 
 	// Initialize logger
-	logger, _ := zap.NewDevelopment()
+	// Create a production logger to reduce debug logs
+	logConfig := zap.NewProductionConfig()
+	// Only show Info level and above (no Debug logs)
+	logConfig.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
+	logger, _ := logConfig.Build()
+	
 	defer func() {
 		// Правильная обработка ошибки Sync
 		if err := logger.Sync(); err != nil {
