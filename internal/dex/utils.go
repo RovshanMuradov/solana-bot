@@ -11,7 +11,7 @@ import (
 
 // convertToTokenUnits конвертирует человекочитаемое представление в базовые единицы токена
 func convertToTokenUnits(ctx context.Context, dex interface{}, tokenMint string, amount float64, defaultDecimals uint8) (uint64, error) {
-	var decimals float64 = float64(defaultDecimals)
+	decimals := float64(defaultDecimals)
 
 	// Пытаемся определить точность токена, если доступно
 	if precisionProvider, ok := dex.(interface {
