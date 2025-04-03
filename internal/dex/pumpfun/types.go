@@ -19,5 +19,4 @@ type GlobalAccount struct {
 type BondingCurve struct {
 	VirtualTokenReserves uint64
 	VirtualSolReserves   uint64
-	// Другие поля могут быть добавлены в зависимости от структуры аккаунта Pump.fun
 }

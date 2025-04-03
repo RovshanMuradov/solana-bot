@@ -21,7 +21,11 @@ var (
 	SysVarRentPubkey         = solana.SysVarRentPubkey
 )
 
-// createBuyExactSolInstruction creates an instruction for buying with an exact SOL amount
+// createBuyExactSolInstruction создает инструкцию для покупки токена с фиксированным количеством SOL.
+//
+// Эта функция формирует инструкцию для смарт-контракта Pump.fun, которая выполняет покупку
+// токенов с точно указанным количеством SOL. Система автоматически рассчитает количество
+// токенов на основе текущей цены на bonding curve.
 func createBuyExactSolInstruction(
 	global,
 	feeRecipient,
@@ -33,30 +37,37 @@ func createBuyExactSolInstruction(
 	eventAuthority solana.PublicKey,
 	solAmountLamports uint64,
 ) solana.Instruction {
-	// Create instruction data - only 8 bytes for sol amount in lamports
+	// Создаем данные инструкции - 8 байт для количества SOL в ламппортах
+	// ExactSol программа требует только параметр количества SOL
 	data := make([]byte, 8)
 	binary.LittleEndian.PutUint64(data, solAmountLamports)
 
-	// Account list follows the same order as regular buy instruction
+	// Формируем список аккаунтов, участвующих в инструкции.
+	// Порядок аккаунтов строго соответствует ожидаемому смарт-контрактом.
+	// Параметры для каждого аккаунта: адрес, можно ли изменять (writable), является ли подписывающим (signer)
 	accounts := []*solana.AccountMeta{
-		solana.NewAccountMeta(global, false, false),
-		solana.NewAccountMeta(feeRecipient, true, false),
-		solana.NewAccountMeta(mint, false, false),
-		solana.NewAccountMeta(bondingCurve, true, false),
-		solana.NewAccountMeta(associatedBondingCurve, true, false),
-		solana.NewAccountMeta(userATA, true, false),
-		solana.NewAccountMeta(userWallet, true, true),
-		solana.NewAccountMeta(SystemProgramID, false, false),
-		solana.NewAccountMeta(TokenProgramID, false, false),
-		solana.NewAccountMeta(SysVarRentPubkey, false, false),
-		solana.NewAccountMeta(eventAuthority, false, false),
-		solana.NewAccountMeta(PumpFunProgramID, false, false),
+		solana.NewAccountMeta(global, false, false),                // Глобальный конфиг (только чтение)
+		solana.NewAccountMeta(feeRecipient, true, false),           // Получатель комиссии (запись)
+		solana.NewAccountMeta(mint, false, false),                  // Токен минт (только чтение)
+		solana.NewAccountMeta(bondingCurve, true, false),           // Bonding curve (запись)
+		solana.NewAccountMeta(associatedBondingCurve, true, false), // ATA bonding curve (запись)
+		solana.NewAccountMeta(userATA, true, false),                // ATA пользователя (запись)
+		solana.NewAccountMeta(userWallet, true, true),              // Кошелек пользователя (запись + подписант)
+		solana.NewAccountMeta(SystemProgramID, false, false),       // System Program (только чтение)
+		solana.NewAccountMeta(TokenProgramID, false, false),        // Token Program (только чтение)
+		solana.NewAccountMeta(SysVarRentPubkey, false, false),      // Rent Sysvar (только чтение)
+		solana.NewAccountMeta(eventAuthority, false, false),        // Event Authority (только чтение)
+		solana.NewAccountMeta(PumpFunProgramID, false, false),      // PumpFun Program ID (только чтение)
 	}
 
+	// Возвращаем готовую инструкцию, указывая программу ExactSol, список аккаунтов и данные
 	return solana.NewInstruction(PumpFunExactSolProgramID, accounts, data)
 }
 
-// createSellInstruction creates a sell instruction for the Pump.fun protocol
+// createSellInstruction создает инструкцию для продажи токенов в протоколе Pump.fun.
+//
+// Эта функция формирует инструкцию для продажи указанного количества токенов
+// с защитой от проскальзывания через параметр minSolOutput.
 func createSellInstruction(
 	programID,
 	global,
@@ -70,26 +81,38 @@ func createSellInstruction(
 	amount,
 	minSolOutput uint64,
 ) solana.Instruction {
+	// Создаем данные инструкции:
+	// - 8 байт дискриминатор (идентификатор функции sell)
+	// - 8 байт количество токенов для продажи
+	// - 8 байт минимальный выход SOL для защиты от проскальзывания
 	data := make([]byte, 24)
+
+	// Копируем дискриминатор в начало данных
 	copy(data[0:8], sellDiscriminator)
+
+	// Записываем количество токенов в формате little-endian
 	binary.LittleEndian.PutUint64(data[8:16], amount)
+
+	// Записываем минимальный выход SOL в формате little-endian
 	binary.LittleEndian.PutUint64(data[16:24], minSolOutput)
 
+	// Формируем список аккаунтов, необходимых для выполнения инструкции
 	// Порядок параметров в NewAccountMeta: pubKey, IsWritable, IsSigner
 	accounts := []*solana.AccountMeta{
-		solana.NewAccountMeta(global, false, false),
-		solana.NewAccountMeta(feeRecipient, true, false),
-		solana.NewAccountMeta(mint, false, false),
-		solana.NewAccountMeta(bondingCurve, true, false),
-		solana.NewAccountMeta(associatedBondingCurve, true, false),
-		solana.NewAccountMeta(userATA, true, false),
-		solana.NewAccountMeta(userWallet, true, true),
-		solana.NewAccountMeta(SystemProgramID, false, false),
-		solana.NewAccountMeta(AssociatedTokenProgramID, false, false),
-		solana.NewAccountMeta(TokenProgramID, false, false),
-		solana.NewAccountMeta(eventAuthority, false, false),
-		solana.NewAccountMeta(programID, false, false),
+		solana.NewAccountMeta(global, false, false),                   // Глобальный конфиг (только чтение)
+		solana.NewAccountMeta(feeRecipient, true, false),              // Получатель комиссии (запись)
+		solana.NewAccountMeta(mint, false, false),                     // Токен минт (только чтение)
+		solana.NewAccountMeta(bondingCurve, true, false),              // Bonding curve (запись)
+		solana.NewAccountMeta(associatedBondingCurve, true, false),    // ATA bonding curve (запись)
+		solana.NewAccountMeta(userATA, true, false),                   // ATA пользователя (запись)
+		solana.NewAccountMeta(userWallet, true, true),                 // Кошелек пользователя (запись + подписант)
+		solana.NewAccountMeta(SystemProgramID, false, false),          // System Program (только чтение)
+		solana.NewAccountMeta(AssociatedTokenProgramID, false, false), // Associated Token Program (только чтение)
+		solana.NewAccountMeta(TokenProgramID, false, false),           // Token Program (только чтение)
+		solana.NewAccountMeta(eventAuthority, false, false),           // Event Authority (только чтение)
+		solana.NewAccountMeta(programID, false, false),                // Program ID (только чтение)
 	}
 
+	// Возвращаем готовую инструкцию с указанной программой, списком аккаунтов и данными
 	return solana.NewInstruction(programID, accounts, data)
 }

@@ -16,110 +16,166 @@ import (
 	"go.uber.org/zap"
 )
 
-// deriveBondingCurveAccounts выводит адреса bonding curve и ассоциированного токен-аккаунта
+// deriveBondingCurveAccounts вычисляет необходимые адреса для взаимодействия
+// с bonding curve токена в протоколе Pump.fun.
+//
+// Метод выполняет два ключевых вычисления:
+// 1. Определение PDA (Program Derived Address) для bonding curve смарт-контракта
+// 2. Определение ассоциированного токен-аккаунта (ATA) для хранения токенов bonding curve
 func (d *DEX) deriveBondingCurveAccounts(_ context.Context) (bondingCurve, associatedBondingCurve solana.PublicKey, err error) {
+	// Шаг 1: Вычисление Program Derived Address (PDA) для bonding curve
+	// Используем "bonding-curve" как seed и адрес токена для получения детерминированного адреса
+	// Третий возвращаемый параметр (bump) игнорируется, так как он не нужен для наших операций
 	bondingCurve, _, err = solana.FindProgramAddress(
 		[][]byte{[]byte("bonding-curve"), d.config.Mint.Bytes()},
 		d.config.ContractAddress,
 	)
+
+	// Шаг 2: Проверка на ошибки при вычислении PDA
+	// Если произошла ошибка, возвращаем пустые адреса и информативное сообщение об ошибке
 	if err != nil {
 		return solana.PublicKey{}, solana.PublicKey{}, fmt.Errorf("failed to derive bonding curve: %w", err)
 	}
+
+	// Шаг 3: Логирование успешного вычисления адреса bonding curve для отладки
 	d.logger.Debug("Derived bonding curve", zap.String("address", bondingCurve.String()))
 
+	// Шаг 4: Вычисление ассоциированного токен-аккаунта (ATA) для bonding curve
+	// ATA - это стандартизированный адрес для хранения токенов, уникальный для каждой
+	// пары (владелец, минт). В данном случае владельцем является сама bonding curve
 	associatedBondingCurve, _, err = solana.FindAssociatedTokenAddress(bondingCurve, d.config.Mint)
+
+	// Шаг 5: Проверка на ошибки при вычислении ATA
 	if err != nil {
 		return solana.PublicKey{}, solana.PublicKey{}, fmt.Errorf("failed to derive associated bonding curve: %w", err)
 	}
+
+	// Шаг 6: Логирование успешного вычисления адреса ATA для отладки
 	d.logger.Debug("Derived bonding curve ATA", zap.String("address", associatedBondingCurve.String()))
 
+	// Шаг 7: Возврат вычисленных адресов
 	return bondingCurve, associatedBondingCurve, nil
 }
 
-// FetchBondingCurveAccount получает и парсит данные аккаунта bonding curve
+// FetchBondingCurveAccount получает и парсит данные аккаунта bonding curve.
+// Этот метод извлекает данные о виртуальных резервах токена и SOL,
+// которые определяют параметры кривой привязки для ценообразования.
 func (d *DEX) FetchBondingCurveAccount(ctx context.Context, bondingCurve solana.PublicKey) (*BondingCurve, error) {
+	// Шаг 1: Получение информации об аккаунте с блокчейна
+	// Выполняем RPC-запрос к ноде Solana для получения данных аккаунта по его адресу
 	accountInfo, err := d.client.GetAccountInfo(ctx, bondingCurve)
 	if err != nil {
+		// Шаг 2: Обработка ошибки при неудачном запросе
+		// Возвращаем информативное сообщение, включающее исходную ошибку
 		return nil, fmt.Errorf("failed to get bonding curve account: %w", err)
 	}
 
+	// Шаг 3: Проверка существования аккаунта
+	// Проверяем, что Value не nil, что означало бы отсутствие аккаунта
 	if accountInfo.Value == nil {
 		return nil, fmt.Errorf("bonding curve account not found")
 	}
 
+	// Шаг 4: Извлечение бинарных данных из аккаунта
+	// GetBinary() преобразует Base64-закодированные данные в []byte
 	data := accountInfo.Value.Data.GetBinary()
+
+	// Шаг 5: Проверка минимальной длины данных
+	// Для корректных данных bonding curve требуется минимум 16 байт
+	// (8 байт для virtualTokenReserves и 8 байт для virtualSolReserves)
 	if len(data) < 16 {
 		return nil, fmt.Errorf("invalid bonding curve data: insufficient length")
 	}
 
+	// Шаг 6: Чтение виртуальных резервов токенов (первые 8 байт)
+	// Используем binary.LittleEndian для правильного порядка байтов
 	virtualTokenReserves := binary.LittleEndian.Uint64(data[0:8])
+
+	// Шаг 7: Чтение виртуальных резервов SOL (следующие 8 байт)
 	virtualSolReserves := binary.LittleEndian.Uint64(data[8:16])
 
+	// Шаг 8: Создание и возврат структуры с данными
+	// Заполняем структуру BondingCurve полученными значениями
 	return &BondingCurve{
 		VirtualTokenReserves: virtualTokenReserves,
 		VirtualSolReserves:   virtualSolReserves,
 	}, nil
 }
 
-// FetchGlobalAccount fetches and parses the global account data
+// FetchGlobalAccount получает и парсит данные глобального аккаунта Pump.fun.
+// Глобальный аккаунт содержит общие настройки протокола, такие как
+// администратор, получатель комиссий и размер комиссий.
 func FetchGlobalAccount(ctx context.Context, client *solbc.Client, globalAddr solana.PublicKey) (*GlobalAccount, error) {
-	// Get account info from the blockchain
+	// Шаг 1: Получение информации об аккаунте с блокчейна
 	accountInfo, err := client.GetAccountInfo(ctx, globalAddr)
 	if err != nil {
+		// Шаг 2: Обработка ошибки при неудачном запросе
 		return nil, fmt.Errorf("failed to get global account: %w", err)
 	}
 
+	// Шаг 3: Проверка существования аккаунта
+	// Убеждаемся, что аккаунт существует и содержит данные
 	if accountInfo == nil || accountInfo.Value == nil {
 		return nil, fmt.Errorf("global account not found: %s", globalAddr.String())
 	}
 
-	// Make sure the account is owned by the PumpFun program
+	// Шаг 4: Проверка владельца аккаунта
+	// Глобальный аккаунт должен принадлежать программе Pump.fun
 	if !accountInfo.Value.Owner.Equals(PumpFunProgramID) {
 		return nil, fmt.Errorf("global account has incorrect owner: expected %s, got %s",
 			PumpFunProgramID.String(), accountInfo.Value.Owner.String())
 	}
 
-	// Get binary data
+	// Шаг 5: Извлечение бинарных данных из аккаунта
 	data := accountInfo.Value.Data.GetBinary()
 
-	// Need at least the discriminator + initialized flag + two public keys (32 bytes each)
+	// Шаг 6: Проверка достаточности данных
+	// Минимальная длина: 8 (дискриминатор) + 1 (флаг) + 64 (два публичных ключа)
 	if len(data) < 8+1+64 {
 		return nil, fmt.Errorf("global account data too short: %d bytes", len(data))
 	}
 
-	// Deserialize the data
+	// Шаг 7: Начало десериализации - создание структуры
 	account := &GlobalAccount{}
 
-	// Read discriminator (8 bytes)
+	// Шаг 8: Чтение дискриминатора (8 байт)
+	// Дискриминатор идентифицирует тип аккаунта
 	copy(account.Discriminator[:], data[0:8])
 
-	// Read initialized flag (1 byte)
+	// Шаг 9: Чтение флага инициализации (1 байт)
 	account.Initialized = data[8] != 0
 
-	// Read authority public key (32 bytes)
+	// Шаг 10: Чтение публичного ключа администратора (32 байта)
 	authorityBytes := make([]byte, 32)
 	copy(authorityBytes, data[9:41])
 	account.Authority = solana.PublicKeyFromBytes(authorityBytes)
 
-	// Read fee recipient public key (32 bytes)
+	// Шаг 11: Чтение публичного ключа получателя комиссий (32 байта)
 	feeRecipientBytes := make([]byte, 32)
 	copy(feeRecipientBytes, data[41:73])
 	account.FeeRecipient = solana.PublicKeyFromBytes(feeRecipientBytes)
 
-	// Read fee basis points (8 bytes)
+	// Шаг 12: Чтение размера комиссии в базовых пунктах (8 байт)
+	// Проверяем, есть ли достаточно данных для чтения
 	if len(data) >= 81 {
 		account.FeeBasisPoints = binary.LittleEndian.Uint64(data[73:81])
 	}
 
+	// Шаг 13: Возврат заполненной структуры
 	return account, nil
 }
 
-// GetTokenPrice возвращает текущую цену токена на основе bonding curve
+// GetTokenPrice возвращает текущую цену токена на основе bonding curve.
+// Цена вычисляется как отношение виртуальных резервов SOL к виртуальным резервам токена.
 func (d *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
+	// Шаг 1: Проверка соответствия запрашиваемого токена настроенному в DEX
+	// Это предотвращает неправильное использование экземпляра DEX
 	if d.config.Mint.String() != tokenMint {
 		return 0, fmt.Errorf("token %s not configured in this DEX instance", tokenMint)
 	}
 
+	// Шаг 2: Вычисление адреса bonding curve для токена
+	// Используем тот же алгоритм, что и в deriveBondingCurveAccounts
 	bondingCurve, _, err := solana.FindProgramAddress(
 		[][]byte{[]byte("bonding-curve"), d.config.Mint.Bytes()},
 		d.config.ContractAddress,
@@ -128,68 +184,81 @@ func (d *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, err
 		return 0, fmt.Errorf("failed to derive bonding curve: %w", err)
 	}
 
+	// Шаг 3: Получение данных аккаунта bonding curve
 	bondingCurveData, err := d.FetchBondingCurveAccount(ctx, bondingCurve)
 	if err != nil {
 		return 0, fmt.Errorf("failed to fetch bonding curve data: %w", err)
 	}
 
-	// Проверяем, что резервы токенов не нулевые
+	// Шаг 4: Проверка деления на ноль
+	// Если виртуальные резервы токена равны нулю, цену невозможно вычислить
 	if bondingCurveData.VirtualTokenReserves == 0 {
 		return 0, fmt.Errorf("virtual token reserves are zero, cannot calculate price")
 	}
 
-	// Рассчитываем цену по формуле из bonding curve
-	// Цена токена = виртуальный SOL резерв / виртуальный токен резерв
-	// Это дает цену за 1 токен в SOL
+	// Шаг 5: Расчет цены по формуле Pump.fun
+	// Цена токена = виртуальный резерв SOL / виртуальный резерв токена
 	price := float64(bondingCurveData.VirtualSolReserves) / float64(bondingCurveData.VirtualTokenReserves)
 
-	// Округляем до 9 десятичных знаков (точность SOL)
+	// Шаг 6: Округление цены до 9 десятичных знаков
+	// Соответствует точности SOL (1 SOL = 10^9 lamports)
 	price = math.Floor(price*1e9) / 1e9
 
+	// Шаг 7: Логирование для отладки
 	d.logger.Debug("Calculated token price",
 		zap.Float64("price", price),
 		zap.Uint64("virtual_sol_reserves", bondingCurveData.VirtualSolReserves),
 		zap.Uint64("virtual_token_reserves", bondingCurveData.VirtualTokenReserves))
 
+	// Шаг 8: Возврат рассчитанной цены
 	return price, nil
 }
 
-// GetTokenBalance возвращает текущий баланс токена в кошельке пользователя
+// GetTokenBalance возвращает текущий баланс токена в кошельке пользователя.
+// Метод определяет ассоциированный токен-аккаунт для кошелька и запрашивает его баланс.
 func (d *DEX) GetTokenBalance(ctx context.Context, commitment ...rpc.CommitmentType) (uint64, error) {
-	// Находим ATA адрес для токена
+	// Шаг 1: Вычисление адреса ассоциированного токен-аккаунта (ATA)
+	// ATA - стандартизированный адрес для хранения SPL-токенов, уникальный для пары (владелец, минт)
 	userATA, _, err := solana.FindAssociatedTokenAddress(d.wallet.PublicKey, d.config.Mint)
 	if err != nil {
 		return 0, fmt.Errorf("failed to derive associated token account: %w", err)
 	}
 
-	// По умолчанию используем CommitmentFinalized,
-	// но позволяем вызывающему коду переопределить это
+	// Шаг 2: Определение уровня подтверждения (commitment level)
+	// По умолчанию используем Finalized - самый надежный уровень
+	// Можно переопределить через вариативный параметр
 	commitmentLevel := rpc.CommitmentFinalized
 	if len(commitment) > 0 && commitment[0] != "" {
 		commitmentLevel = commitment[0]
 	}
 
-	// Получаем баланс токена с указанием уровня подтверждения
+	// Шаг 3: Запрос баланса токена
+	// Передаем адрес ATA и выбранный уровень подтверждения
 	result, err := d.client.GetTokenAccountBalance(ctx, userATA, commitmentLevel)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get token account balance: %w", err)
 	}
 
+	// Шаг 4: Проверка результата на пустоту
+	// Убеждаемся, что получены корректные данные
 	if result == nil || result.Value.Amount == "" {
 		return 0, fmt.Errorf("no token balance found")
 	}
 
-	// Парсим результат в uint64
+	// Шаг 5: Преобразование строкового представления баланса в uint64
+	// SPL-токены в Solana представлены как строки для поддержки больших чисел
 	balance, err := strconv.ParseUint(result.Value.Amount, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("failed to parse token balance: %w", err)
 	}
 
+	// Шаг 6: Логирование для отладки
 	d.logger.Debug("Got token balance",
 		zap.Uint64("balance", balance),
 		zap.String("token_mint", d.config.Mint.String()),
 		zap.String("user_ata", userATA.String()),
 		zap.String("commitment", string(commitmentLevel)))
 
+	// Шаг 7: Возврат полученного баланса
 	return balance, nil
 }

@@ -1,4 +1,5 @@
 // internal/dex/pumpfun/discrete_pnl.go
+// Package pumpfun реализует взаимодействие с Pump.fun DEX на базе Solana.
 package pumpfun
 
 import (
@@ -9,101 +10,155 @@ import (
 	"go.uber.org/zap"
 )
 
-// PriceTier представляет собой ценовой уровень на bonding curve
+// PriceTier представляет собой ценовой уровень на bonding curve Pump.fun.
+// Каждый тир содержит информацию о цене токена на этом уровне и
+// количестве оставшихся токенов, доступных по этой цене.
 type PriceTier struct {
-	Price           float64 // Цена в SOL за один токен на этом уровне
-	TokensRemaining float64 // Количество токенов, доступных на этом уровне
+	// Price - цена в SOL за один токен на данном уровне
+	Price float64
+
+	// TokensRemaining - количество токенов, доступных для продажи на данном уровне
+	TokensRemaining float64
 }
 
-// BondingCurveInfo содержит информацию о текущем состоянии bonding curve
+// BondingCurveInfo содержит структурированную информацию о текущем состоянии
+// bonding curve, включая иерархию ценовых уровней и их параметры.
 type BondingCurveInfo struct {
-	CurrentTierIndex int         // Индекс текущего ценового уровня
-	CurrentTierPrice float64     // Текущая цена в SOL
-	Tiers            []PriceTier // Ценовые уровни
-	FeePercentage    float64     // Комиссия в процентах
+	// CurrentTierIndex - индекс текущего активного ценового уровня в массиве Tiers
+	CurrentTierIndex int
+
+	// CurrentTierPrice - текущая цена в SOL на активном уровне
+	CurrentTierPrice float64
+
+	// Tiers - массив всех ценовых уровней от минимального (индекс 0) до текущего
+	Tiers []PriceTier
+
+	// FeePercentage - процент комиссии от объема торгов, взимаемый протоколом (от 0 до 1)
+	FeePercentage float64
 }
 
-// DiscreteTokenPnL содержит информацию о PnL с учетом дискретной природы токена
+// DiscreteTokenPnL содержит информацию о прибыли и убытках (PnL) токена
+// с учетом дискретной природы Pump.fun bonding curve. В отличие от постоянной
+// функции ликвидности, здесь продажа токенов осуществляется ступенчато.
 type DiscreteTokenPnL struct {
-	CurrentPrice      float64 // Текущая цена токена
-	TheoreticalValue  float64 // Теоретическая стоимость (цена * количество)
-	SellEstimate      float64 // Оценка реальной выручки при продаже
-	InitialInvestment float64 // Начальная инвестиция
-	NetPnL            float64 // Чистый PnL (SellEstimate - InitialInvestment)
-	PnLPercentage     float64 // Процент PnL
+	// CurrentPrice - текущая рыночная цена токена в SOL
+	CurrentPrice float64
+
+	// TheoreticalValue - теоретическая стоимость токенов при текущей рыночной цене
+	// Рассчитывается как TokenAmount * CurrentPrice
+	TheoreticalValue float64
+
+	// SellEstimate - оценка реальной выручки при продаже всех токенов
+	// Учитывает ступенчатую структуру цены и комиссии
+	SellEstimate float64
+
+	// InitialInvestment - первоначальная инвестиция в SOL
+	InitialInvestment float64
+
+	// NetPnL - чистая прибыль/убыток: SellEstimate - InitialInvestment
+	NetPnL float64
+
+	// PnLPercentage - процент прибыли/убытка относительно начальной инвестиции
+	PnLPercentage float64
 }
 
 // calculateSellValue рассчитывает фактическую выручку от продажи токенов с учетом
-// ступенчатого падения цены по дискретным уровням bonding curve
+// ступенчатого падения цены по дискретным уровням bonding curve.
+//
+// Аргументы:
+//   - tokenAmount: общее количество токенов для продажи
+//   - curveInfo: информация о текущем состоянии bonding curve
+//
+// Возвращает:
+//   - предполагаемую выручку в SOL после вычета комиссий
 func calculateSellValue(tokenAmount float64, curveInfo *BondingCurveInfo) float64 {
+	// Инициализируем оставшееся количество токенов для продажи
 	remainingTokens := tokenAmount
+
+	// Инициализируем общую сумму SOL, которую получим от продажи
 	totalSol := 0.0
 
-	// Начинаем с текущего уровня и двигаемся вниз
+	// Начинаем с текущего уровня и двигаемся вниз по уровням
+	// Продажа начинается с высшего уровня цены и продолжается на более низких уровнях
 	for i := curveInfo.CurrentTierIndex; i >= 0 && remainingTokens > 0; i-- {
 		tier := curveInfo.Tiers[i]
 
-		// Сколько токенов продаем на этом уровне
+		// Определяем сколько токенов будет продано на текущем уровне цены
+		// Берем минимум между оставшимися токенами и емкостью текущего уровня
 		tokensToSellAtTier := math.Min(remainingTokens, tier.TokensRemaining)
 
-		// SOL, полученный от продажи на этом уровне
+		// Рассчитываем сумму SOL, которую получим от продажи на этом уровне
+		// до вычета комиссий
 		solFromTier := tokensToSellAtTier * tier.Price
 
-		// Вычитаем комиссию
+		// Вычитаем комиссию протокола
 		netSolFromTier := solFromTier * (1.0 - curveInfo.FeePercentage)
 
-		// Добавляем к общей сумме
+		// Добавляем чистую выручку с этого уровня к общей сумме
 		totalSol += netSolFromTier
 
-		// Уменьшаем количество оставшихся токенов
+		// Уменьшаем количество оставшихся для продажи токенов
 		remainingTokens -= tokensToSellAtTier
 	}
 
-	// Округляем до 6 знаков после запятой (микро SOL)
+	// Округляем результат до 6 знаков после запятой (микро SOL)
+	// для обеспечения точности финансовых расчетов
 	totalSol = math.Floor(totalSol*1e6) / 1e6
 
 	return totalSol
 }
 
-// CalculateDiscretePnL вычисляет PnL для дискретной системы Pump.fun
+// CalculateDiscretePnL вычисляет детальный анализ прибыли и убытков для токенов
+// в экосистеме Pump.fun с учетом ступенчатой структуры bonding curve.
+//
+// Метод выполняет точную оценку потенциальной выручки от продажи токенов,
+// учитывая дискретную природу цен Pump.fun, где продажа токенов осуществляется
+// последовательно по нисходящим ценовым уровням.
+//
+// Аргументы:
+//   - ctx: контекст выполнения операции
+//   - tokenAmount: количество токенов для анализа
+//   - initialInvestment: начальная инвестиция в SOL
+//
+// Возвращает:
+//   - *DiscreteTokenPnL: структуру с детальной информацией о PnL
+//   - error: ошибку, если не удалось получить данные из блокчейна
 func (d *DEX) CalculateDiscretePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*DiscreteTokenPnL, error) {
-	// Получить данные о текущем состоянии bonding curve
+	// Шаг 1: Получаем адреса аккаунтов bonding curve для токена
 	bondingCurve, _, err := d.deriveBondingCurveAccounts(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to derive bonding curve addresses: %w", err)
 	}
 
-	// Получить данные аккаунта
+	// Шаг 2: Загружаем данные аккаунта из блокчейна
 	bondingCurveData, err := d.FetchBondingCurveAccount(ctx, bondingCurve)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch bonding curve data: %w", err)
 	}
 
-	// Текущая цена токена
+	// Шаг 3: Вычисляем текущую цену токена на основе соотношения резервов
+	// В Pump.fun цена определяется отношением виртуальных SOL резервов к токеновым
 	currentPrice := float64(bondingCurveData.VirtualSolReserves) / float64(bondingCurveData.VirtualTokenReserves)
-	currentPrice = math.Floor(currentPrice*1e9) / 1e9 // Округляем до 9 знаков после запятой
 
-	// TODO: В будущем получать точные параметры ценовых уровней из смарт-контракта:
-	// 1. Точный шаг инкремента цены между уровнями
-	// 2. Точное количество токенов на каждом уровне
-	// 3. Актуальные остатки токенов на каждом уровне
-	// Это потребует дополнительных RPC вызовов к смарт-контракту и декодирования данных аккаунтов
+	// Округляем цену до 9 знаков после запятой (нано SOL)
+	currentPrice = math.Floor(currentPrice*1e9) / 1e9
 
-	// Создаем инфо о bonding curve
-	// Определяем текущий уровень и модель ценовых уровней
-	const priceIncrement = 0.001 // Инкремент цены между уровнями, обычно 0.001 SOL
+	// Шаг 4: Определяем шаг цены и текущий индекс уровня
+	// В Pump.fun стандартный шаг цены между уровнями составляет 0.001 SOL
+	const priceIncrement = 0.001
 	currentTierIndex := int(math.Floor(currentPrice / priceIncrement))
 
-	// Создаем массив ценовых уровней от текущего вниз
+	// Шаг 5: Создаем массив ценовых уровней от нулевого до текущего
 	tiers := make([]PriceTier, currentTierIndex+1)
 
-	// Заполняем текущий уровень реальной ценой
+	// Шаг 6: Заполняем текущий уровень реальной ценой и стандартным объемом
 	tiers[currentTierIndex] = PriceTier{
 		Price:           currentPrice,
 		TokensRemaining: 20.0, // Приблизительное количество токенов на уровень
 	}
 
-	// Заполняем все предыдущие уровни с шагом priceIncrement
+	// Шаг 7: Заполняем все предыдущие уровни с шагом priceIncrement
+	// Каждый предыдущий уровень имеет более низкую цену
 	for i := currentTierIndex - 1; i >= 0; i-- {
 		tierPrice := priceIncrement * float64(i+1)
 		tiers[i] = PriceTier{
@@ -112,11 +167,11 @@ func (d *DEX) CalculateDiscretePnL(ctx context.Context, tokenAmount float64, ini
 		}
 	}
 
-	// Получаем комиссию (по умолчанию 1%)
-	// TODO: Получать точное значение из GlobalAccount.FeeBasisPoints / 10000.0
-	const defaultFeePercentage = 0.01
+	// Шаг 8: Устанавливаем стандартную комиссию протокола
+	// TODO: В будущем получать точное значение из GlobalAccount.FeeBasisPoints / 10000.0
+	const defaultFeePercentage = 0.01 // 1%
 
-	// Создаем info о bonding curve
+	// Шаг 9: Собираем информацию о bonding curve в единую структуру
 	curveInfo := &BondingCurveInfo{
 		CurrentTierIndex: currentTierIndex,
 		CurrentTierPrice: currentPrice,
@@ -124,21 +179,25 @@ func (d *DEX) CalculateDiscretePnL(ctx context.Context, tokenAmount float64, ini
 		FeePercentage:    defaultFeePercentage,
 	}
 
-	// Расчет теоретической стоимости по текущей цене
+	// Шаг 10: Рассчитываем теоретическую стоимость по текущей цене
+	// (без учета ступенчатого спуска при продаже)
 	theoreticalValue := tokenAmount * currentPrice
 
-	// Расчет ожидаемой выручки от продажи с учетом ступенчатого спуска
+	// Шаг 11: Рассчитываем реалистичную оценку выручки от продажи
+	// с учетом ступенчатого спуска по уровням цены
 	sellEstimate := calculateSellValue(tokenAmount, curveInfo)
 
-	// Расчет чистого PnL
+	// Шаг 12: Рассчитываем чистый PnL как разницу между оценкой
+	// выручки и начальной инвестицией
 	netPnL := sellEstimate - initialInvestment
 
-	// Расчет процента PnL
+	// Шаг 13: Рассчитываем процент PnL относительно начальной инвестиции
 	pnlPercentage := 0.0
 	if initialInvestment > 0 {
 		pnlPercentage = (netPnL / initialInvestment) * 100
 	}
 
+	// Шаг 14: Логируем результаты для отладки
 	d.logger.Debug("Calculated discrete PnL",
 		zap.Float64("current_price", currentPrice),
 		zap.Float64("theoretical_value", theoreticalValue),
@@ -146,6 +205,7 @@ func (d *DEX) CalculateDiscretePnL(ctx context.Context, tokenAmount float64, ini
 		zap.Float64("net_pnl", netPnL),
 		zap.Float64("pnl_percentage", pnlPercentage))
 
+	// Шаг 15: Создаем и возвращаем структуру с результатами PnL
 	return &DiscreteTokenPnL{
 		CurrentPrice:      currentPrice,
 		TheoreticalValue:  theoreticalValue,
