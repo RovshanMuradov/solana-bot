@@ -12,7 +12,20 @@ import (
 	"math/big"
 )
 
-// calculateSwapAmounts вычисляет параметры для операции свапа в зависимости от типа операции (покупка/продажа)
+// calculateSwapAmounts вычисляет параметры для операции свапа в зависимости от типа операции (покупка/продажа).
+//
+// Метод определяет ожидаемый выходной объем токенов, максимальное входное или минимальное выходное
+// количество (с учетом допустимого проскальзывания), а также цену для операции обмена токенов.
+// В зависимости от типа операции (покупка или продажа) вызываются соответствующие вспомогательные функции.
+//
+// Параметры:
+//   - pool: информация о пуле ликвидности
+//   - isBuy: флаг, указывающий тип операции (true - покупка, false - продажа)
+//   - amount: количество токенов для обмена (в минимальных единицах)
+//   - slippage: допустимое проскальзывание в процентах
+//
+// Возвращает:
+//   - *SwapAmounts: структура, содержащая параметры свапа (baseAmount, quoteAmount, price)
 func (d *DEX) calculateSwapAmounts(pool *PoolInfo, isBuy bool, amount uint64, slippage float64) *SwapAmounts {
 	outputAmount, price := d.poolManager.CalculateSwapQuote(pool, amount, false)
 
@@ -23,6 +36,22 @@ func (d *DEX) calculateSwapAmounts(pool *PoolInfo, isBuy bool, amount uint64, sl
 	return calculateSellSwap(amount, outputAmount, slippage, price, d.logger)
 }
 
+// calculateBuySwap вычисляет параметры для операции покупки токена.
+//
+// Функция рассчитывает максимальное количество входных токенов с учетом буфера проскальзывания
+// и минимальное ожидаемое количество выходных токенов. Для операции покупки пользователь получает
+// фиксированное количество baseAmount токенов, платя не более чем quoteAmount.
+//
+// Параметры:
+//   - input: входное количество токенов (в минимальных единицах)
+//   - output: ожидаемое выходное количество токенов (в минимальных единицах)
+//   - slippage: допустимое проскальзывание в процентах
+//   - price: рассчитанная цена обмена
+//   - logger: экземпляр логгера для записи отладочной информации
+//
+// Возвращает:
+//   - *SwapAmounts: структура с параметрами свапа, где BaseAmount = ожидаемый выход,
+//     QuoteAmount = максимальный вход с учетом проскальзывания
 func calculateBuySwap(input, output uint64, slippage, price float64, logger *zap.Logger) *SwapAmounts {
 	maxAmountWithBuffer := uint64(float64(input) * (1.0 + slippage/100.0))
 	minOut := uint64(float64(output) * (1.0 - slippage/100.0))
@@ -37,6 +66,22 @@ func calculateBuySwap(input, output uint64, slippage, price float64, logger *zap
 	return &SwapAmounts{BaseAmount: output, QuoteAmount: maxAmountWithBuffer, Price: price}
 }
 
+// calculateSellSwap вычисляет параметры для операции продажи токена.
+//
+// Функция рассчитывает минимальное количество выходных токенов с учетом допустимого проскальзывания.
+// Для операции продажи пользователь отдает фиксированное количество baseAmount токенов
+// и получает не менее чем quoteAmount токенов.
+//
+// Параметры:
+//   - input: входное количество токенов (в минимальных единицах)
+//   - output: ожидаемое выходное количество токенов (в минимальных единицах)
+//   - slippage: допустимое проскальзывание в процентах
+//   - price: рассчитанная цена обмена
+//   - logger: экземпляр логгера для записи отладочной информации
+//
+// Возвращает:
+//   - *SwapAmounts: структура с параметрами свапа, где BaseAmount = фиксированный вход,
+//     QuoteAmount = минимальный выход с учетом проскальзывания
 func calculateSellSwap(input, output uint64, slippage, price float64, logger *zap.Logger) *SwapAmounts {
 	minOut := uint64(float64(output) * (1.0 - slippage/100.0))
 
@@ -49,6 +94,25 @@ func calculateSellSwap(input, output uint64, slippage, price float64, logger *za
 	return &SwapAmounts{BaseAmount: input, QuoteAmount: minOut, Price: price}
 }
 
+// calculateOutput вычисляет выходное количество токенов для операции свапа по формуле пула ликвидности.
+//
+// Функция реализует математическую формулу Constant Product AMM (Automated Market Maker):
+// outputAmount = y * a * feeFactor / (x + a * feeFactor), где:
+// - x - резервы входного токена
+// - y - резервы выходного токена
+// - a - входное количество
+// - feeFactor - коэффициент комиссии (1 - fee)
+//
+// Для вычислений используется пакет big.Float для предотвращения переполнения и потери точности.
+//
+// Параметры:
+//   - reserves: резервы входного токена в пуле (в минимальных единицах)
+//   - otherReserves: резервы выходного токена в пуле (в минимальных единицах)
+//   - amount: входное количество токенов (в минимальных единицах)
+//   - feeFactor: коэффициент комиссии (обычно 1 - процент комиссии, например 0.997 для 0.3% комиссии)
+//
+// Возвращает:
+//   - uint64: рассчитанное выходное количество токенов (в минимальных единицах)
 func calculateOutput(reserves, otherReserves, amount uint64, feeFactor float64) uint64 {
 	x := new(big.Float).SetUint64(reserves)
 	y := new(big.Float).SetUint64(otherReserves)
@@ -67,6 +131,18 @@ func calculateOutput(reserves, otherReserves, amount uint64, feeFactor float64) 
 }
 
 // getTokenDecimals получает количество десятичных знаков для токена.
+//
+// Метод пытается определить точность токена, используя его mint-адрес.
+// В случае ошибки при получении информации о токене, возвращается значение по умолчанию
+// и записывается предупреждение в лог.
+//
+// Параметры:
+//   - ctx: контекст выполнения
+//   - mint: публичный ключ минта токена в сети Solana
+//   - defaultDec: количество десятичных знаков по умолчанию, используемое при ошибке
+//
+// Возвращает:
+//   - uint8: количество десятичных знаков токена
 func (d *DEX) getTokenDecimals(ctx context.Context, mint solana.PublicKey, defaultDec uint8) uint8 {
 	dec, err := d.DetermineTokenPrecision(ctx, mint)
 	if err != nil {
@@ -77,6 +153,18 @@ func (d *DEX) getTokenDecimals(ctx context.Context, mint solana.PublicKey, defau
 }
 
 // DetermineTokenPrecision получает количество десятичных знаков для данного токена.
+//
+// Метод отправляет запрос к блокчейну Solana для получения данных о минте токена,
+// извлекает и возвращает информацию о количестве десятичных знаков.
+// Эта информация необходима для корректного отображения и обработки сумм токенов.
+//
+// Параметры:
+//   - ctx: контекст выполнения
+//   - mint: публичный ключ минта токена в сети Solana
+//
+// Возвращает:
+//   - uint8: количество десятичных знаков токена
+//   - error: ошибка при получении информации о токене
 func (d *DEX) DetermineTokenPrecision(ctx context.Context, mint solana.PublicKey) (uint8, error) {
 	var mintInfo token.Mint
 	err := d.client.GetAccountDataInto(ctx, mint, &mintInfo)
