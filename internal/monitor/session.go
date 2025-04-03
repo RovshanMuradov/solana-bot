@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -123,7 +124,7 @@ func (ms *MonitoringSession) UpdateWithDiscretePnL() error {
 // printColoredText выводит текст с цветом в зависимости от значения
 func printColoredText(format string, value float64, isPositive bool, args ...interface{}) {
 	var colorCode string
-	
+
 	if value == 0 {
 		colorCode = "\033[0m" // Default color
 	} else if isPositive {
@@ -131,14 +132,36 @@ func printColoredText(format string, value float64, isPositive bool, args ...int
 	} else {
 		colorCode = "\033[31m" // Red
 	}
-	
+
 	allArgs := append([]interface{}{value}, args...)
 	fmt.Printf(colorCode+format+"\033[0m", allArgs...)
 }
 
-// onPriceUpdate is called when the price is updated
-func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentChange, tokenAmount float64) {
-	// Стандартный расчет PnL
+// internal/monitor/session.go (фрагмент - функция onPriceUpdate)
+
+// onPriceUpdate вызывается при обновлении цены
+func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentChange, _ float64) {
+	// Получаем актуальный баланс токенов через RPC
+	balanceCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	actualTokenBalance, err := ms.config.DEX.GetTokenBalance(balanceCtx, ms.config.TokenMint)
+
+	// Рассчитываем актуальное человекочитаемое количество токенов
+	tokenAmount := ms.config.TokenAmount // Используем старое значение, если не удалось получить новое
+	if err == nil && actualTokenBalance > 0 {
+		// Конвертируем актуальный баланс в человекочитаемый формат
+		tokenDecimals := 6 // По умолчанию 6 знаков (стандарт для многих токенов)
+		tokenAmount = float64(actualTokenBalance) / math.Pow10(int(tokenDecimals))
+
+		ms.logger.Debug("Updated token balance",
+			zap.Uint64("raw_balance", actualTokenBalance),
+			zap.Float64("human_amount", tokenAmount))
+	} else if err != nil {
+		ms.logger.Debug("Could not fetch actual token balance", zap.Error(err))
+	}
+
+	// Стандартный расчет PnL с актуальным балансом
 	currentValue := currentPrice * tokenAmount
 	profit := currentValue - ms.config.InitialAmount
 	profitPercent := 0.0
@@ -151,10 +174,10 @@ func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentCh
 	defer cancel()
 
 	discretePnL, err := ms.config.DEX.CalculateDiscretePnL(ctx, tokenAmount, ms.config.InitialAmount)
-	
+
 	// Компактный однострочный формат вывода
 	var pnlText string
-	
+
 	if err == nil && discretePnL != nil {
 		// Цветовое оформление для изменения цены и PnL
 		priceChangeColor := "\033[0m" // Нейтральный
@@ -163,21 +186,21 @@ func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentCh
 		} else if percentChange < 0 {
 			priceChangeColor = "\033[31m" // Красный
 		}
-		
+
 		pnlColor := "\033[0m" // Нейтральный
 		if discretePnL.NetPnL > 0 {
 			pnlColor = "\033[32m" // Зеленый
 		} else if discretePnL.NetPnL < 0 {
 			pnlColor = "\033[31m" // Красный
 		}
-		
+
 		// Форматирование в одну строку
 		pnlText = fmt.Sprintf("\n=== %s Discrete PnL ===\n", ms.config.DEX.GetName()) +
-			fmt.Sprintf("Entry Price: %.9f SOL | Current Price: %.9f SOL | Change: %s%.2f%%\033[0m\n", 
+			fmt.Sprintf("Entry Price: %.9f SOL | Current Price: %.9f SOL | Change: %s%.2f%%\033[0m\n",
 				initialPrice, discretePnL.CurrentPrice, priceChangeColor, percentChange) +
-			fmt.Sprintf("Tokens: %.6f | Theoretical Value: %.6f SOL | Sell Estimate: %.6f SOL\n", 
+			fmt.Sprintf("Tokens: %.6f | Theoretical Value: %.6f SOL | Sell Estimate: %.6f SOL\n",
 				tokenAmount, discretePnL.TheoreticalValue, discretePnL.SellEstimate) +
-			fmt.Sprintf("Initial Investment: %.6f SOL | Net PnL: %s%.6f SOL (%.2f%%)\033[0m\n", 
+			fmt.Sprintf("Initial Investment: %.6f SOL | Net PnL: %s%.6f SOL (%.2f%%)\033[0m\n",
 				discretePnL.InitialInvestment, pnlColor, discretePnL.NetPnL, discretePnL.PnLPercentage) +
 			fmt.Sprintf("===========================\n")
 	} else {
@@ -188,23 +211,23 @@ func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentCh
 		} else if percentChange < 0 {
 			priceChangeColor = "\033[31m" // Красный
 		}
-		
+
 		pnlColor := "\033[0m" // Нейтральный
 		if profit > 0 {
 			pnlColor = "\033[32m" // Зеленый
 		} else if profit < 0 {
 			pnlColor = "\033[31m" // Красный
 		}
-		
+
 		pnlText = fmt.Sprintf("\n=== %s PnL ===\n", ms.config.DEX.GetName()) +
-			fmt.Sprintf("Entry Price: %.9f SOL | Current Price: %.9f SOL | Change: %s%.2f%%\033[0m\n", 
+			fmt.Sprintf("Entry Price: %.9f SOL | Current Price: %.9f SOL | Change: %s%.2f%%\033[0m\n",
 				initialPrice, currentPrice, priceChangeColor, percentChange) +
 			fmt.Sprintf("Tokens: %.6f | Value: %.6f SOL\n", tokenAmount, currentValue) +
-			fmt.Sprintf("Initial Investment: %.6f SOL | Net PnL: %s%.6f SOL (%.2f%%)\033[0m\n", 
+			fmt.Sprintf("Initial Investment: %.6f SOL | Net PnL: %s%.6f SOL (%.2f%%)\033[0m\n",
 				ms.config.InitialAmount, pnlColor, profit, profitPercent) +
 			fmt.Sprintf("===========================\n")
 	}
-	
+
 	// Вывод информации и инструкции
 	fmt.Println(pnlText)
 	fmt.Println("Press Enter to sell tokens or 'q' to exit.")
@@ -218,11 +241,11 @@ func shortenAddress(address string) string {
 	return address
 }
 
-// onEnterPressed is called when Enter is pressed
+// onEnterPressed вызывается при нажатии Enter
 func (ms *MonitoringSession) onEnterPressed(_ string) error {
 	fmt.Println("\nSelling tokens...")
 
-	// Stop the monitoring session
+	// Останавливаем сессию мониторинга
 	ms.Stop()
 
 	// Процент токенов для продажи (99%)
@@ -236,6 +259,7 @@ func (ms *MonitoringSession) onEnterPressed(_ string) error {
 		zap.Uint32("compute_units", ms.config.ComputeUnits))
 
 	// Продаем указанный процент токенов
+	// SellPercentTokens будет запрашивать актуальный баланс внутри себя
 	err := ms.config.DEX.SellPercentTokens(
 		context.Background(),
 		ms.config.TokenMint,
