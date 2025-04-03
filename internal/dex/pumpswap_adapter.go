@@ -12,12 +12,29 @@ import (
 	"math"
 )
 
-// GetName для PumpSwap DEX
+// GetName возвращает название DEX.
+//
+// Метод предоставляет строковый идентификатор для Pump.Swap DEX,
+// который используется для логирования и идентификации биржи в системе.
+//
+// Возвращает:
+//   - string: строковое название DEX ("Pump.Swap")
 func (d *pumpswapDEXAdapter) GetName() string {
 	return "Pump.Swap"
 }
 
-// GetTokenPrice для Pump.swap DEX
+// GetTokenPrice получает текущую цену токена на Pump.Swap DEX.
+//
+// Метод инициализирует DEX для указанного токена и запрашивает
+// его текущую рыночную цену на бирже Pump.Swap.
+//
+// Параметры:
+//   - ctx: контекст выполнения
+//   - tokenMint: адрес минта токена, для которого запрашивается цена
+//
+// Возвращает:
+//   - float64: цена токена в SOL
+//   - error: ошибку, если не удалось получить цену, или nil при успешном выполнении
 func (d *pumpswapDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
 	if err := d.initPumpSwap(ctx, tokenMint); err != nil {
 		return 0, err
@@ -25,7 +42,20 @@ func (d *pumpswapDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string
 	return d.inner.GetTokenPrice(ctx, tokenMint)
 }
 
-// Execute выполняет операцию на Pump.swap DEX
+// Execute выполняет операцию на Pump.Swap DEX.
+//
+// Метод выполняет указанную в задаче операцию (обмен/продажа) на Pump.Swap DEX.
+// Перед выполнением операции автоматически инициализирует адаптер для работы с указанным токеном.
+// Поддерживает операции OperationSwap (покупка) и OperationSell (продажа).
+// При операции обмена (Swap) сумма указывается в SOL и конвертируется в ламппорты.
+// При операции продажи определяется точность токена для корректной конвертации.
+//
+// Параметры:
+//   - ctx: контекст выполнения
+//   - task: структура с параметрами задачи (тип операции, адрес токена, количество SOL и т.д.)
+//
+// Возвращает:
+//   - error: ошибку, если операция не удалась или не поддерживается, или nil при успешном выполнении
 func (d *pumpswapDEXAdapter) Execute(ctx context.Context, task *Task) error {
 	if task.TokenMint == "" {
 		return fmt.Errorf("token mint address is required for Pump.swap")
@@ -84,7 +114,19 @@ func (d *pumpswapDEXAdapter) Execute(ctx context.Context, task *Task) error {
 	}
 }
 
-// initPumpSwap инициализирует Pump.swap DEX если необходимо
+// initPumpSwap инициализирует адаптер Pump.Swap DEX при необходимости.
+//
+// Метод выполняет ленивую инициализацию внутреннего экземпляра DEX для работы с токеном
+// по указанному адресу минта. Если DEX уже инициализирован с тем же токеном, метод
+// возвращает nil. Безопасен для вызова из нескольких горутин благодаря использованию мьютекса.
+// Создает экземпляр менеджера пула и настраивает конфигурацию для указанного токена.
+//
+// Параметры:
+//   - ctx: контекст выполнения (в текущей реализации не используется)
+//   - tokenMint: адрес минта токена, для которого инициализируется DEX
+//
+// Возвращает:
+//   - error: ошибку, если инициализация не удалась, или nil при успешной инициализации
 func (d *pumpswapDEXAdapter) initPumpSwap(_ context.Context, tokenMint string) error {
 	d.initMu.Lock()
 	defer d.initMu.Unlock()
@@ -111,8 +153,21 @@ func (d *pumpswapDEXAdapter) initPumpSwap(_ context.Context, tokenMint string) e
 	return nil
 }
 
-// GetTokenBalance возвращает текущий баланс токена
-// Placeholder для совместимости с интерфейсом DEX
+// GetTokenBalance возвращает текущий баланс токена на аккаунте пользователя.
+//
+// Метод является заглушкой для совместимости с интерфейсом DEX и в текущей
+// реализации не полностью функционален. Логирует вызов с уровнем Debug
+// и возвращает ошибку о неполной реализации.
+//
+// Параметры:
+//   - ctx: контекст выполнения
+//   - tokenMint: адрес минта токена, для которого запрашивается баланс
+//
+// Возвращает:
+//   - uint64: всегда 0 в текущей реализации
+//   - error: ошибку о неполной реализации функциональности
+//
+// TODO: this is placeholder
 func (d *pumpswapDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error) {
 	// В будущем здесь можно реализовать настоящую логику получения баланса
 	d.logger.Debug("GetTokenBalance called on PumpSwap (not fully implemented)",
@@ -122,7 +177,26 @@ func (d *pumpswapDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint stri
 	return 0, fmt.Errorf("GetTokenBalance not fully implemented for Pump.Swap DEX")
 }
 
-// SellPercentTokens продает указанный процент имеющихся токенов
+// SellPercentTokens продает указанный процент имеющихся токенов.
+//
+// Метод определяет текущий баланс токенов пользователя, вычисляет
+// соответствующую указанному проценту долю и выполняет продажу этой
+// доли на Pump.Swap DEX. Операция выполняется с учетом указанного
+// проскальзывания и приоритета транзакции. Логирует предупреждение о
+// неполной реализации функциональности.
+//
+// Параметры:
+//   - ctx: контекст выполнения
+//   - tokenMint: адрес минта токена, который нужно продать
+//   - percentToSell: процент токенов для продажи (0-100)
+//   - slippagePercent: допустимое проскальзывание цены в процентах
+//   - priorityFeeSol: комиссия приоритета в SOL (строковое представление)
+//   - computeUnits: количество вычислительных единиц для транзакции
+//
+// Возвращает:
+//   - error: ошибку, если продажа не удалась, или nil при успешном выполнении
+//
+// TODO: this is placeholder
 func (d *pumpswapDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint string, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
 	if err := d.initPumpSwap(ctx, tokenMint); err != nil {
 		return err
@@ -145,7 +219,24 @@ func (d *pumpswapDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint st
 	return d.inner.ExecuteSell(ctx, tokensToSell, slippagePercent, priorityFeeSol, computeUnits)
 }
 
-// CalculateDiscretePnL реализация для Pump.swap (заглушка)
+// CalculateDiscretePnL вычисляет PnL для токена на Pump.Swap DEX.
+//
+// Метод является упрощенной реализацией для совместимости с интерфейсом.
+// Поскольку Pump.Swap не использует дискретную bonding curve, метод
+// рассчитывает PnL стандартным способом, где оценка продажи равна
+// теоретической стоимости токенов. Получает текущую цену токена и
+// на ее основе вычисляет стоимость токенов и показатели прибыли/убытка.
+//
+// Параметры:
+//   - ctx: контекст выполнения
+//   - tokenAmount: количество токенов для расчета PnL
+//   - initialInvestment: первоначальная инвестиция в SOL
+//
+// Возвращает:
+//   - *DiscreteTokenPnL: структура с информацией о PnL
+//   - error: ошибку, если расчет не удался, или nil при успешном выполнении
+//
+// TODO: this is placeholder. Probably dont even need this func for pumpswap
 func (d *pumpswapDEXAdapter) CalculateDiscretePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*DiscreteTokenPnL, error) {
 	// PumpSwap не использует дискретную bonding curve, поэтому
 	// возвращаем стандартный PnL для совместимости с интерфейсом

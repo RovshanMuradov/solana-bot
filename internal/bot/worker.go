@@ -10,7 +10,17 @@ import (
 	"github.com/rovshanmuradov/solana-bot/internal/task"
 )
 
-// worker processes tasks from the task channel
+// worker обрабатывает задачи из канала задач в отдельной горутине.
+//
+// Метод последовательно извлекает задачи из канала taskCh и обрабатывает их,
+// пока канал не будет закрыт или контекст не будет отменен. Для каждой задачи
+// вызывается метод processTask. Воркер идентифицируется уникальным числовым
+// идентификатором, который используется в логах.
+//
+// Параметры:
+//   - id: уникальный идентификатор воркера для отслеживания в логах
+//   - ctx: контекст выполнения, используемый для отмены операций
+//   - taskCh: канал, из которого воркер получает задачи для обработки
 func (r *Runner) worker(id int, ctx context.Context, taskCh <-chan *task.Task) {
 	logger := r.logger.With(zap.Int("worker_id", id))
 	logger.Debug("Worker started")
@@ -36,7 +46,18 @@ func (r *Runner) worker(id int, ctx context.Context, taskCh <-chan *task.Task) {
 	logger.Debug("Worker finished, no more tasks")
 }
 
-// processTask handles a single task execution
+// processTask обрабатывает выполнение одной задачи.
+//
+// Метод определяет кошелек для выполнения задачи, создает соответствующий
+// DEX-адаптер и выполняет операцию в зависимости от типа задачи. Для операций
+// типа OperationSnipe вызывается специализированный обработчик handleSnipeTask,
+// который включает мониторинг цены после покупки. Для других типов операций
+// (продажа, обмен) выполняется прямой вызов метода Execute адаптера DEX.
+//
+// Параметры:
+//   - ctx: контекст выполнения для отмены операций
+//   - t: информация о задаче, включая тип операции, параметры и целевой токен
+//   - logger: настроенный логгер для записи информации о выполнении
 func (r *Runner) processTask(ctx context.Context, t *task.Task, logger *zap.Logger) {
 	// Get wallet for this task
 	w := r.defaultWallet

@@ -28,7 +28,21 @@ type SessionConfig struct {
 	ComputeUnits    uint32  // Compute units for transactions
 }
 
-// MonitoringSession manages a token monitoring session
+// MonitoringSession представляет сессию мониторинга токенов для операций на DEX.
+//
+// Структура объединяет мониторинг цены и обработку пользовательского ввода для
+// отслеживания стоимости токенов в реальном времени и выполнения операций продажи.
+// Использует контекст для координации работы компонентов и WaitGroup для обеспечения
+// корректного завершения всех операций.
+//
+// Поля:
+//   - config: конфигурация сессии мониторинга
+//   - logger: логгер для записи информации и ошибок
+//   - ctx: контекст для отмены операций
+//   - cancel: функция для отмены контекста
+//   - priceMonitor: компонент для мониторинга цены токена
+//   - inputHandler: компонент для обработки пользовательского ввода
+//   - wg: WaitGroup для синхронизации горутин
 type MonitoringSession struct {
 	config       *SessionConfig
 	priceMonitor *PriceMonitor
@@ -39,7 +53,17 @@ type MonitoringSession struct {
 	logger       *zap.Logger
 }
 
-// NewMonitoringSession creates a new monitoring session
+// NewMonitoringSession создает новую сессию мониторинга.
+//
+// Функция инициализирует структуру MonitoringSession, создает новый контекст
+// с функцией отмены и настраивает все необходимые параметры для отслеживания
+// цены токена и обработки пользовательского ввода.
+//
+// Параметры:
+//   - config: конфигурация сессии мониторинга, содержащая все необходимые параметры
+//
+// Возвращает:
+//   - *MonitoringSession: новый экземпляр сессии мониторинга
 func NewMonitoringSession(config *SessionConfig) *MonitoringSession {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &MonitoringSession{
@@ -50,7 +74,15 @@ func NewMonitoringSession(config *SessionConfig) *MonitoringSession {
 	}
 }
 
-// Start begins the monitoring session
+// Start запускает сессию мониторинга.
+//
+// Метод инициализирует и запускает компоненты мониторинга цены и обработки
+// пользовательского ввода. Регистрирует необходимые обработчики команд
+// и запускает мониторинг цены в отдельной горутине. Отображает пользователю
+// информацию о запуске мониторинга и доступных командах.
+//
+// Возвращает:
+//   - error: ошибку, если не удалось запустить сессию мониторинга
 func (ms *MonitoringSession) Start() error {
 	// Create a price monitor
 	ms.priceMonitor = NewPriceMonitor(
@@ -86,13 +118,27 @@ func (ms *MonitoringSession) Start() error {
 	return nil
 }
 
-// Wait waits for the session to complete
+// Wait ожидает завершения сессии мониторинга.
+//
+// Метод блокирует выполнение до тех пор, пока все горутины, связанные с сессией
+// мониторинга, не завершат свою работу. Используется для обеспечения корректного
+// завершения всех операций перед выходом из программы.
+//
+// Возвращает:
+//   - error: ошибку, если возникли проблемы при ожидании завершения
 func (ms *MonitoringSession) Wait() error {
 	ms.wg.Wait()
 	return nil
 }
 
-// Stop stops the monitoring session
+// Stop останавливает сессию мониторинга.
+//
+// Метод останавливает все компоненты сессии мониторинга в правильном порядке:
+// сначала обработчик ввода, затем монитор цены, и в конце отменяет контекст.
+// Это обеспечивает корректное завершение всех внутренних процессов.
+//
+// Метод безопасен для многократного вызова и при вызове на уже остановленной
+// сессии не производит никаких действий.
 func (ms *MonitoringSession) Stop() {
 	// Stop the input handler
 	if ms.inputHandler != nil {
@@ -110,7 +156,15 @@ func (ms *MonitoringSession) Stop() {
 	}
 }
 
-// UpdateWithDiscretePnL обновляет сессию мониторинга с учетом дискретного расчета PnL
+// UpdateWithDiscretePnL обновляет сессию мониторинга с учетом дискретного расчета PnL.
+//
+// Метод изменяет функцию обратного вызова для обработки обновлений цены,
+// чтобы использовать дискретный (более точный) метод расчета прибыли и убытков.
+// Этот подход учитывает особенности работы DEX и предоставляет более точную
+// оценку текущего состояния инвестиции.
+//
+// Возвращает:
+//   - error: ошибку, если не удалось обновить сессию мониторинга
 func (ms *MonitoringSession) UpdateWithDiscretePnL() error {
 	// Меняем callback для обработки обновлений цены
 	ms.priceMonitor.SetCallback(func(currentPrice, initialPrice, percentChange, tokenAmount float64) {
@@ -121,25 +175,22 @@ func (ms *MonitoringSession) UpdateWithDiscretePnL() error {
 	return nil
 }
 
-// printColoredText выводит текст с цветом в зависимости от значения
-func printColoredText(format string, value float64, isPositive bool, args ...interface{}) {
-	var colorCode string
-
-	if value == 0 {
-		colorCode = "\033[0m" // Default color
-	} else if isPositive {
-		colorCode = "\033[32m" // Green
-	} else {
-		colorCode = "\033[31m" // Red
-	}
-
-	allArgs := append([]interface{}{value}, args...)
-	fmt.Printf(colorCode+format+"\033[0m", allArgs...)
-}
-
-// internal/monitor/session.go (фрагмент - функция onPriceUpdate)
-
-// onPriceUpdate вызывается при обновлении цены
+// onPriceUpdate вызывается при обновлении цены токена.
+//
+// Метод получает актуальную информацию о цене токена и его балансе,
+// вычисляет прибыль/убытки (PnL) и выводит эту информацию в консоль.
+// Метод поддерживает два режима расчета PnL:
+// 1. Дискретный (более точный) - учитывает особенности DEX
+// 2. Стандартный - использует прямой расчет на основе текущей цены
+//
+// Метод также форматирует вывод с цветовым оформлением для лучшего
+// визуального представления изменений цены и PnL.
+//
+// Параметры:
+//   - currentPrice: текущая цена токена в SOL
+//   - initialPrice: начальная цена токена в SOL
+//   - percentChange: процентное изменение цены
+//   - _: количество токенов (не используется, так как получается из актуального баланса)
 func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentChange, _ float64) {
 	// Получаем актуальный баланс токенов через RPC
 	balanceCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -233,15 +284,17 @@ func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentCh
 	fmt.Println("Press Enter to sell tokens or 'q' to exit.")
 }
 
-// shortenAddress сокращает адрес, показывая только начало и конец
-func shortenAddress(address string) string {
-	if len(address) > 12 {
-		return address[:6] + "..." + address[len(address)-4:]
-	}
-	return address
-}
-
-// onEnterPressed вызывается при нажатии Enter
+// onEnterPressed вызывается при нажатии клавиши Enter.
+//
+// Метод инициирует процесс продажи токенов, останавливая сессию мониторинга
+// и выполняя операцию продажи через интерфейс DEX. По умолчанию продается
+// 99% имеющихся токенов с учетом настроенного проскальзывания и приоритета.
+//
+// Параметры:
+//   - _: строка команды (не используется, всегда пустая строка)
+//
+// Возвращает:
+//   - error: ошибку, если не удалось выполнить продажу токенов
 func (ms *MonitoringSession) onEnterPressed(_ string) error {
 	fmt.Println("\nSelling tokens...")
 
@@ -278,7 +331,17 @@ func (ms *MonitoringSession) onEnterPressed(_ string) error {
 	return nil
 }
 
-// onExitCommand is called when exit command is entered
+// onExitCommand вызывается при вводе команды выхода.
+//
+// Метод останавливает сессию мониторинга без продажи токенов
+// и выводит соответствующее сообщение пользователю. Вызывается
+// при вводе команд "q" или "exit".
+//
+// Параметры:
+//   - _: строка команды (не используется)
+//
+// Возвращает:
+//   - error: ошибку, если не удалось корректно остановить сессию
 func (ms *MonitoringSession) onExitCommand(_ string) error {
 	fmt.Println("\nExiting monitor mode without selling tokens.")
 	ms.Stop()

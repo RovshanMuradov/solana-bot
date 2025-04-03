@@ -3,9 +3,7 @@ package solbc
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
@@ -18,19 +16,6 @@ import (
 type Client struct {
 	rpc    *rpc.Client
 	logger *zap.Logger
-}
-
-// Определение ошибок
-var (
-	ErrAccountNotFound = errors.New("account not found")
-)
-
-// IsAccountNotFoundError проверяет, является ли ошибка "not found"
-func IsAccountNotFoundError(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(strings.ToLower(err.Error()), "not found")
 }
 
 // NewClient создаёт новый клиент, принимая RPC URL и логгер через dependency injection.

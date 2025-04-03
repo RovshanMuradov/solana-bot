@@ -30,7 +30,13 @@ type Task struct {
 	MonitorInterval time.Duration // Интервал обновления цены при мониторинге
 }
 
-// pumpswapDEXAdapter адаптирует Pump.swap к интерфейсу DEX
+// pumpswapDEXAdapter адаптирует Pump.Swap к общему интерфейсу DEX.
+//
+// Структура предоставляет реализацию интерфейса DEX для биржи Pump.Swap,
+// используя композицию с базовым адаптером DEX и сохраняя ссылку на
+// внутренний экземпляр Pump.Swap DEX. Адаптер обеспечивает ленивую инициализацию
+// и потокобезопасный доступ к операциям на бирже. Некоторые методы (например,
+// GetTokenBalance и SellPercentTokens) имеют заглушки или неполную реализацию.
 type pumpswapDEXAdapter struct {
 	baseDEXAdapter
 	inner *pumpswap.DEX

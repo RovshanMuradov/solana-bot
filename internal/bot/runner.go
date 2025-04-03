@@ -17,7 +17,11 @@ import (
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 )
 
-// Runner represents the main bot process controller
+// Runner представляет контроллер основного процесса бота, управляющий
+// жизненным циклом приложения, обработкой задач и взаимодействием с блокчейном.
+//
+// Runner координирует выполнение задач через несколько параллельных воркеров,
+// управляет кошельками и обеспечивает корректное завершение работы при получении сигналов.
 type Runner struct {
 	logger        *zap.Logger
 	config        *task.Config
@@ -28,7 +32,16 @@ type Runner struct {
 	shutdownCh    chan os.Signal
 }
 
-// NewRunner creates a new bot runner instance
+// NewRunner создает новый экземпляр Runner с базовой инициализацией.
+//
+// Метод инициализирует только логгер и канал для сигналов завершения работы.
+// Полная настройка компонентов выполняется методом Initialize.
+//
+// Параметры:
+//   - logger: настроенный экземпляр zap.Logger для логирования
+//
+// Возвращает:
+//   - *Runner: новый экземпляр Runner с базовой инициализацией
 func NewRunner(logger *zap.Logger) *Runner {
 	return &Runner{
 		logger:     logger,
@@ -36,7 +49,17 @@ func NewRunner(logger *zap.Logger) *Runner {
 	}
 }
 
-// Initialize sets up all dependencies
+// Initialize настраивает все зависимости и компоненты Runner.
+//
+// Метод выполняет загрузку конфигурации из файла, инициализирует кошельки,
+// создает клиент для взаимодействия с блокчейном Solana и настраивает
+// менеджер задач. Должен вызываться перед методом Run.
+//
+// Параметры:
+//   - configPath: путь к файлу конфигурации
+//
+// Возвращает:
+//   - error: ошибку, если не удалось инициализировать какой-либо компонент
 func (r *Runner) Initialize(configPath string) error {
 	r.logger.Info("Initializing bot runner")
 
@@ -71,7 +94,18 @@ func (r *Runner) Initialize(configPath string) error {
 	return nil
 }
 
-// Run executes the main bot logic with parallel workers
+// Run запускает основную логику бота с параллельными воркерами.
+//
+// Метод настраивает обработку сигналов завершения работы, загружает задачи
+// из файла и распределяет их между воркерами для параллельного выполнения.
+// Количество воркеров определяется из конфигурации. Метод блокирует выполнение
+// до завершения всех задач или получения сигнала завершения работы.
+//
+// Параметры:
+//   - ctx: контекст выполнения, используемый для отмены операций
+//
+// Возвращает:
+//   - error: ошибку, если не удалось загрузить задачи или произошла критическая ошибка
 func (r *Runner) Run(ctx context.Context) error {
 	// Setup signal handling
 	signal.Notify(r.shutdownCh, syscall.SIGINT, syscall.SIGTERM)
@@ -146,7 +180,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	return nil
 }
 
-// Shutdown performs graceful shutdown
+// Shutdown выполняет корректное завершение работы бота.
+//
+// Метод обеспечивает правильное закрытие всех подсистем и компонентов,
+// включая синхронизацию логгера. Игнорирует стандартные ошибки синхронизации
+// логгера, которые могут возникать в некоторых окружениях.
 func (r *Runner) Shutdown() {
 	r.logger.Info("Bot shutting down gracefully")
 	// Здесь может быть код для корректного завершения всех подсистем
@@ -163,7 +201,11 @@ func (r *Runner) Shutdown() {
 	}
 }
 
-// WaitForShutdown blocks until shutdown signal is received
+// WaitForShutdown блокирует выполнение до получения сигнала завершения работы.
+//
+// Метод ожидает сигналы SIGINT или SIGTERM, после чего вызывает метод Shutdown
+// для корректного завершения работы. Обычно вызывается из основного потока
+// приложения после запуска бота.
 func (r *Runner) WaitForShutdown() {
 	sig := <-r.shutdownCh
 	r.logger.Info("Signal received", zap.String("signal", sig.String()))
