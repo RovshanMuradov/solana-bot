@@ -16,42 +16,16 @@ import (
 )
 
 // prepareTransactionContext создает контекст с таймаутом для операции.
-//
-// Метод оборачивает исходный контекст в контекст с таймаутом, что позволяет
-// ограничить максимальное время выполнения операции. Это важно для обеспечения
-// отзывчивости системы и предотвращения бесконечного ожидания при проблемах с сетью.
-//
-// Параметры:
-//   - ctx: исходный контекст, который может содержать значения и отмену
-//   - timeout: максимальная длительность операции
-//
-// Возвращает:
-//   - context.Context: новый контекст с таймаутом
-//   - context.CancelFunc: функцию для отмены контекста до истечения таймаута
 func (d *DEX) prepareTransactionContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, timeout)
 }
 
 // prepareBaseInstructions подготавливает базовые инструкции для транзакции.
-//
-// Метод создает набор инструкций, которые необходимы для большинства транзакций
-// на Pump.fun: задание приоритета и комиссии для транзакции, а также проверка
-// и при необходимости создание ассоциированного токен-аккаунта (ATA) пользователя.
-//
-// Параметры:
-//   - ctx: контекст выполнения (не используется в текущей реализации)
-//   - priorityFeeSol: комиссия приоритета в SOL (строковое представление)
-//   - computeUnits: количество вычислительных единиц для транзакции
-//
-// Возвращает:
-//   - []solana.Instruction: массив базовых инструкций для транзакции
-//   - solana.PublicKey: адрес ассоциированного токен-аккаунта пользователя
-//   - error: ошибку, если не удалось создать инструкции
 func (d *DEX) prepareBaseInstructions(_ context.Context, priorityFeeSol string, computeUnits uint32) ([]solana.Instruction, solana.PublicKey, error) {
 	// Шаг 1: Создаем инструкции для установки приоритета транзакции
 	// Эти инструкции позволяют указать, сколько SOL валидаторы получат за обработку транзакции
 	// и лимит вычислительных единиц (computeUnits), которые транзакция может использовать
-	priorityInstructions, err := d.priorityManager.CreatePriorityInstructions(priorityFeeSol, computeUnits)
+	priorityInstructions, err := d.priorityManager.CreatePriorityInstructions(priorityFeeSol, computeUnits) // TODO: чекнуть работу CreatePriorityInstructions
 	if err != nil {
 		return nil, solana.PublicKey{}, fmt.Errorf("failed to create priority instructions: %w", err)
 	}
@@ -77,18 +51,6 @@ func (d *DEX) prepareBaseInstructions(_ context.Context, priorityFeeSol string, 
 }
 
 // sendAndConfirmTransaction создает, подписывает, отправляет и ожидает подтверждения транзакции.
-//
-// Метод выполняет полный цикл работы с транзакцией: от создания до получения подтверждения
-// от сети Solana. Он также включает симуляцию транзакции перед отправкой для выявления
-// потенциальных проблем и оценки используемых вычислительных ресурсов.
-//
-// Параметры:
-//   - ctx: контекст выполнения с возможностью отмены или таймаута
-//   - instructions: массив инструкций для включения в транзакцию
-//
-// Возвращает:
-//   - solana.Signature: подпись транзакции, которая может использоваться для отслеживания
-//   - error: ошибку, если транзакция не удалась на любом этапе
 func (d *DEX) sendAndConfirmTransaction(ctx context.Context, instructions []solana.Instruction) (solana.Signature, error) {
 	// Шаг 1: Получаем актуальный blockhash из сети
 	// Blockhash нужен для защиты от повторной отправки транзакции и имеет ограниченный срок действия

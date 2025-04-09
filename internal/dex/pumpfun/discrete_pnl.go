@@ -11,66 +11,32 @@ import (
 )
 
 // PriceTier представляет собой ценовой уровень на bonding curve Pump.fun.
-// Каждый тир содержит информацию о цене токена на этом уровне и
-// количестве оставшихся токенов, доступных по этой цене.
 type PriceTier struct {
-	// Price - цена в SOL за один токен на данном уровне
-	Price float64
-
-	// TokensRemaining - количество токенов, доступных для продажи на данном уровне
+	Price           float64
 	TokensRemaining float64
 }
 
 // BondingCurveInfo содержит структурированную информацию о текущем состоянии
 // bonding curve, включая иерархию ценовых уровней и их параметры.
 type BondingCurveInfo struct {
-	// CurrentTierIndex - индекс текущего активного ценового уровня в массиве Tiers
 	CurrentTierIndex int
-
-	// CurrentTierPrice - текущая цена в SOL на активном уровне
 	CurrentTierPrice float64
-
-	// Tiers - массив всех ценовых уровней от минимального (индекс 0) до текущего
-	Tiers []PriceTier
-
-	// FeePercentage - процент комиссии от объема торгов, взимаемый протоколом (от 0 до 1)
-	FeePercentage float64
+	Tiers            []PriceTier
+	FeePercentage    float64
 }
 
 // DiscreteTokenPnL содержит информацию о прибыли и убытках (PnL) токена
-// с учетом дискретной природы Pump.fun bonding curve. В отличие от постоянной
-// функции ликвидности, здесь продажа токенов осуществляется ступенчато.
 type DiscreteTokenPnL struct {
-	// CurrentPrice - текущая рыночная цена токена в SOL
-	CurrentPrice float64
-
-	// TheoreticalValue - теоретическая стоимость токенов при текущей рыночной цене
-	// Рассчитывается как TokenAmount * CurrentPrice
-	TheoreticalValue float64
-
-	// SellEstimate - оценка реальной выручки при продаже всех токенов
-	// Учитывает ступенчатую структуру цены и комиссии
-	SellEstimate float64
-
-	// InitialInvestment - первоначальная инвестиция в SOL
+	CurrentPrice      float64
+	TheoreticalValue  float64
+	SellEstimate      float64
 	InitialInvestment float64
-
-	// NetPnL - чистая прибыль/убыток: SellEstimate - InitialInvestment
-	NetPnL float64
-
-	// PnLPercentage - процент прибыли/убытка относительно начальной инвестиции
-	PnLPercentage float64
+	NetPnL            float64
+	PnLPercentage     float64
 }
 
 // calculateSellValue рассчитывает фактическую выручку от продажи токенов с учетом
 // ступенчатого падения цены по дискретным уровням bonding curve.
-//
-// Аргументы:
-//   - tokenAmount: общее количество токенов для продажи
-//   - curveInfo: информация о текущем состоянии bonding curve
-//
-// Возвращает:
-//   - предполагаемую выручку в SOL после вычета комиссий
 func calculateSellValue(tokenAmount float64, curveInfo *BondingCurveInfo) float64 {
 	// Инициализируем оставшееся количество токенов для продажи
 	remainingTokens := tokenAmount
@@ -110,19 +76,6 @@ func calculateSellValue(tokenAmount float64, curveInfo *BondingCurveInfo) float6
 
 // CalculateDiscretePnL вычисляет детальный анализ прибыли и убытков для токенов
 // в экосистеме Pump.fun с учетом ступенчатой структуры bonding curve.
-//
-// Метод выполняет точную оценку потенциальной выручки от продажи токенов,
-// учитывая дискретную природу цен Pump.fun, где продажа токенов осуществляется
-// последовательно по нисходящим ценовым уровням.
-//
-// Аргументы:
-//   - ctx: контекст выполнения операции
-//   - tokenAmount: количество токенов для анализа
-//   - initialInvestment: начальная инвестиция в SOL
-//
-// Возвращает:
-//   - *DiscreteTokenPnL: структуру с детальной информацией о PnL
-//   - error: ошибку, если не удалось получить данные из блокчейна
 func (d *DEX) CalculateDiscretePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*DiscreteTokenPnL, error) {
 	// Шаг 1: Получаем адреса аккаунтов bonding curve для токена
 	bondingCurve, _, err := d.deriveBondingCurveAccounts(ctx)

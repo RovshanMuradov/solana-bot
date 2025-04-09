@@ -11,39 +11,20 @@ import (
 )
 
 // Known PumpFun protocol addresses - содержит константы адресов протокола Pump.fun.
-// Эти константы определяют фиксированные адреса смарт-контрактов и аккаунтов,
-// используемых протоколом Pump.fun на блокчейне Solana.
-
-// Config содержит конфигурацию для взаимодействия с Pump.fun DEX.
-// Эта структура хранит все необходимые адреса и параметры для
-// выполнения операций в протоколе Pump.fun.
 type Config struct {
-	// Protocol addresses - адреса, связанные с протоколом
-	ContractAddress solana.PublicKey // Адрес основной программы Pump.fun
-	Global          solana.PublicKey // Адрес глобального аккаунта конфигурации
-	FeeRecipient    solana.PublicKey // Адрес получателя комиссий
-	EventAuthority  solana.PublicKey // Адрес авторити для событий
-
-	// Token specific addresses - адреса, специфичные для конкретного токена
-	Mint solana.PublicKey // Адрес минта токена, с которым работает DEX
-
-	// Monitoring configuration - параметры мониторинга
-	MonitorInterval string // Интервал обновления данных при мониторинге в формате длительности (например, "5s")
+	ContractAddress solana.PublicKey
+	Global          solana.PublicKey
+	FeeRecipient    solana.PublicKey
+	EventAuthority  solana.PublicKey
+	Mint            solana.PublicKey
+	MonitorInterval string
 }
 
 // GetDefaultConfig создает конфигурацию по умолчанию для Pump.fun DEX.
-// Метод инициализирует структуру Config стандартными значениями, которые
-// подходят для большинства случаев использования.
 func GetDefaultConfig() *Config {
-	// Шаг 1: Создание новой структуры Config с предустановленными значениями
 	return &Config{
-		// Шаг 2: Установка адреса программы Pump.fun из константы
 		ContractAddress: PumpFunProgramID,
-
-		// Шаг 3: Установка авторити для событий из константы
-		EventAuthority: PumpFunEventAuth,
-
-		// Шаг 4: Установка стандартного интервала мониторинга (5 секунд)
+		EventAuthority:  PumpFunEventAuth,
 		MonitorInterval: "5s",
 	}
 }

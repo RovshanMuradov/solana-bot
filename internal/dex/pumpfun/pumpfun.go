@@ -1,9 +1,6 @@
 // =============================
 // File: internal/dex/pumpfun/pumpfun.go
 // =============================
-// Package pumpfun реализует взаимодействие с протоколом Pump.fun на блокчейне Solana.
-// Этот пакет предоставляет функциональность для выполнения торговых операций через
-// смарт-контракты Pump.fun, включая покупку и продажу токенов.
 package pumpfun
 
 import (
@@ -19,41 +16,15 @@ import (
 )
 
 // DEX представляет собой имплементацию интерфейса для взаимодействия с Pump.fun.
-// Структура содержит все необходимые зависимости для выполнения операций с токенами
-// на DEX Pump.fun, включая клиент блокчейна, кошелек пользователя и конфигурацию.
 type DEX struct {
-	// client предоставляет методы для взаимодействия с блокчейном Solana
-	client *solbc.Client
-
-	// wallet содержит информацию о кошельке пользователя для подписи транзакций
-	wallet *wallet.Wallet
-
-	// logger используется для структурированного логирования операций
-	logger *zap.Logger
-
-	// config содержит настройки подключения и параметры Pump.fun
-	config *Config
-
-	// priorityManager управляет приоритетами транзакций и комиссиями
-	priorityManager *types.PriorityManager
+	client          *solbc.Client
+	wallet          *wallet.Wallet
+	logger          *zap.Logger
+	config          *Config
+	priorityManager *types.PriorityManager // TODO: не используемый параметр. Рассмотреть удаление
 }
 
 // NewDEX создает новый экземпляр DEX для работы с Pump.fun.
-//
-// Эта функция инициализирует все необходимые компоненты для взаимодействия
-// с протоколом Pump.fun, включая настройку логгера, создание менеджера приоритетов
-// и получение данных о комиссиях из глобальной конфигурации смарт-контракта.
-//
-// Параметры:
-//   - client: клиент для взаимодействия с блокчейном Solana
-//   - w: кошелек пользователя для выполнения операций
-//   - logger: логгер для записи информации о выполняемых операциях
-//   - config: конфигурация протокола Pump.fun, включая адреса контрактов
-//   - _: неиспользуемый параметр (оставлен для совместимости с интерфейсом)
-//
-// Возвращает:
-//   - *DEX: инициализированный экземпляр DEX для работы с Pump.fun
-//   - error: ошибку в случае неудачной инициализации
 func NewDEX(client *solbc.Client, w *wallet.Wallet, logger *zap.Logger, config *Config, _ string) (*DEX, error) {
 	// Проверяем, что адрес контракта Pump.fun указан
 	if config.ContractAddress.IsZero() {
@@ -97,20 +68,6 @@ func NewDEX(client *solbc.Client, w *wallet.Wallet, logger *zap.Logger, config *
 }
 
 // ExecuteSnipe выполняет операцию покупки токена на Pump.fun с точным количеством SOL.
-//
-// Этот метод специализирован для быстрого "снайпинга" новых токенов и оптимизирован
-// для скорости исполнения. Он использует programID PumpFunExactSolProgramID, который
-// позволяет указать точное количество SOL для покупки.
-//
-// Параметры:
-//   - ctx: контекст выполнения операции, может содержать дедлайн или отмену
-//   - amountSol: количество SOL для покупки (в человекочитаемом формате)
-//   - slippagePercent: максимально допустимое проскальзывание в процентах (0-100)
-//   - priorityFeeSol: приоритетная комиссия в SOL для ускорения транзакции
-//   - computeUnits: лимит вычислительных единиц для транзакции
-//
-// Возвращает:
-//   - error: ошибку в случае неудачного выполнения транзакции
 func (d *DEX) ExecuteSnipe(ctx context.Context, amountSol float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
 	// Логируем информацию о начале операции
 	d.logger.Info("Starting Pump.fun exact-sol buy operation",
@@ -133,6 +90,8 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amountSol float64, slippagePerce
 
 	// Подготавливаем инструкции для транзакции покупки
 	instructions, err := d.prepareBuyTransaction(opCtx, solAmountLamports, priorityFeeSol, computeUnits)
+	// TODO: пересмотреть логику solAmountLamports, priorityFeeSol, computeUnits. Данные должны брать из config.json and tasks.csv
+
 	if err != nil {
 		return err
 	}
@@ -143,21 +102,6 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amountSol float64, slippagePerce
 }
 
 // ExecuteSell выполняет операцию продажи токена на Pump.fun.
-//
-// Метод продает указанное количество токенов, конвертируя их в SOL с учетом
-// защиты от проскальзывания цены. Внутренне использует механизм bonding curve
-// Pump.fun для определения цены токена.
-//
-// Параметры:
-//   - ctx: контекст выполнения операции
-//   - tokenAmount: количество токенов для продажи (в минимальных единицах токена)
-//   - slippagePercent: максимально допустимое проскальзывание в процентах (0-100)
-//   - priorityFeeSol: приоритетная комиссия в SOL для ускорения транзакции
-//   - computeUnits: лимит вычислительных единиц для транзакции
-//
-// Возвращает:
-//   - error: ошибку в случае неудачного выполнения транзакции или если токен
-//     больше не поддерживается Pump.fun (переехал на другой DEX)
 func (d *DEX) ExecuteSell(ctx context.Context, tokenAmount uint64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
 	// Логируем информацию о начале операции продажи
 	d.logger.Info("Starting Pump.fun sell operation",
@@ -172,6 +116,8 @@ func (d *DEX) ExecuteSell(ctx context.Context, tokenAmount uint64, slippagePerce
 
 	// Подготавливаем инструкции для транзакции продажи
 	instructions, err := d.prepareSellTransaction(opCtx, tokenAmount, slippagePercent, priorityFeeSol, computeUnits)
+	// TODO: тоже пересмотреть логику
+
 	if err != nil {
 		return err
 	}
@@ -187,21 +133,6 @@ func (d *DEX) ExecuteSell(ctx context.Context, tokenAmount uint64, slippagePerce
 }
 
 // SellPercentTokens продает указанный процент от доступного баланса токенов.
-//
-// Метод вычисляет текущий баланс токенов пользователя и продает заданный процент
-// от этого баланса. Это удобно для частичного закрытия позиции или для реализации
-// стратегий с постепенным выходом из позиции.
-//
-// Параметры:
-//   - ctx: контекст выполнения операции
-//   - percentToSell: процент от доступного баланса для продажи (1-100)
-//   - slippagePercent: максимально допустимое проскальзывание в процентах (0-100)
-//   - priorityFeeSol: приоритетная комиссия в SOL для ускорения транзакции
-//   - computeUnits: лимит вычислительных единиц для транзакции
-//
-// Возвращает:
-//   - error: ошибку, если процент указан некорректно, если баланс токенов равен нулю,
-//     или если произошла ошибка во время выполнения операции продажи
 func (d *DEX) SellPercentTokens(ctx context.Context, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
 	// Проверяем, что процент находится в допустимом диапазоне
 	if percentToSell <= 0 || percentToSell > 100 {
