@@ -193,6 +193,9 @@ func (ms *MonitoringSession) UpdateWithDiscretePnL() error {
 //   - _: количество токенов (не используется, так как получается из актуального баланса)
 //
 // TODO: probably need rewrite
+// Исправления для monitor/price.go
+
+// onPriceUpdate с форматированием для мелких чисел, без неиспользуемой переменной
 func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentChange, _ float64) {
 	// Получаем актуальный баланс токенов через RPC
 	balanceCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -200,8 +203,6 @@ func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentCh
 
 	actualTokenBalance, err := ms.config.DEX.GetTokenBalance(balanceCtx, ms.config.TokenMint)
 
-	// TODO: work with balance
-	// Рассчитываем актуальное человекочитаемое количество токенов
 	tokenAmount := ms.config.TokenAmount // Используем старое значение, если не удалось получить новое
 	if err == nil && actualTokenBalance > 0 {
 		// Конвертируем актуальный баланс в человекочитаемый формат
@@ -215,25 +216,36 @@ func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentCh
 		ms.logger.Debug("Could not fetch actual token balance", zap.Error(err))
 	}
 
-	// Стандартный расчет PnL с актуальным балансом
-	currentValue := currentPrice * tokenAmount
-	profit := currentValue - ms.config.InitialAmount
-	profitPercent := 0.0
-	if ms.config.InitialAmount > 0 {
-		profitPercent = (profit / ms.config.InitialAmount) * 100
+	// Минимальные значения для отображения
+	if initialPrice == 0 {
+		initialPrice = 0.000000001 // 1 nano-SOL минимум для отображения
+	}
+	if currentPrice == 0 {
+		currentPrice = 0.000000001 // 1 nano-SOL минимум для отображения
 	}
 
-	// Пытаемся вычислить более точный PnL для Pump.fun
+	// Расчет теоретической стоимости
+	currentValue := currentPrice * tokenAmount
+	profit := currentValue - ms.config.InitialAmount
+	// Удалена неиспользуемая переменная profitPercent
+
+	// Запрос расчета PnL через DEX
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	discretePnL, err := ms.config.DEX.CalculateDiscretePnL(ctx, tokenAmount, ms.config.InitialAmount)
 
-	// Компактный однострочный формат вывода
+	// Формирование текста с улучшенным форматированием цены
 	var pnlText string
 
 	if err == nil && discretePnL != nil {
-		// Цветовое оформление для изменения цены и PnL
+		// Убедимся, что цены не отображаются как 0
+		displayPrice := discretePnL.CurrentPrice
+		if displayPrice < 0.000000001 {
+			displayPrice = 0.000000001
+		}
+
+		// Цветовое оформление
 		priceChangeColor := "\033[0m" // Нейтральный
 		if percentChange > 0 {
 			priceChangeColor = "\033[32m" // Зеленый
@@ -248,43 +260,59 @@ func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentCh
 			pnlColor = "\033[31m" // Красный
 		}
 
-		// Форматирование в одну строку
+		// Научное форматирование для очень маленьких чисел
+		initialPriceStr := formatSmallNumber(initialPrice)
+		currentPriceStr := formatSmallNumber(displayPrice)
+
+		// Форматирование в одну строку с улучшенным отображением мелких чисел
 		pnlText = fmt.Sprintf("\n=== %s Discrete PnL ===\n", ms.config.DEX.GetName()) +
-			fmt.Sprintf("Entry Price: %.9f SOL | Current Price: %.9f SOL | Change: %s%.2f%%\033[0m\n",
-				initialPrice, discretePnL.CurrentPrice, priceChangeColor, percentChange) +
-			fmt.Sprintf("Tokens: %.6f | Theoretical Value: %.6f SOL | Sell Estimate: %.6f SOL\n",
+			fmt.Sprintf("Entry Price: %s SOL | Current Price: %s SOL | Change: %s%.2f%%\033[0m\n",
+				initialPriceStr, currentPriceStr, priceChangeColor, percentChange) +
+			fmt.Sprintf("Tokens: %.6f | Theoretical Value: %.9f SOL | Sell Estimate: %.9f SOL\n",
 				tokenAmount, discretePnL.TheoreticalValue, discretePnL.SellEstimate) +
-			fmt.Sprintf("Initial Investment: %.6f SOL | Net PnL: %s%.6f SOL (%.2f%%)\033[0m\n",
+			fmt.Sprintf("Initial Investment: %.9f SOL | Net PnL: %s%.9f SOL (%.2f%%)\033[0m\n",
 				discretePnL.InitialInvestment, pnlColor, discretePnL.NetPnL, discretePnL.PnLPercentage) +
 			fmt.Sprintf("===========================\n")
 	} else {
-		// Стандартный расчет, если дискретный недоступен
-		priceChangeColor := "\033[0m" // Нейтральный
-		if percentChange > 0 {
-			priceChangeColor = "\033[32m" // Зеленый
-		} else if percentChange < 0 {
-			priceChangeColor = "\033[31m" // Красный
+		// Запасной вариант с простым расчетом, если дискретный PnL не удался
+		// Рассчитываем процент прибыли для простого случая
+		simplePercentage := 0.0
+		if ms.config.InitialAmount > 0 {
+			simplePercentage = (profit / ms.config.InitialAmount) * 100
 		}
 
-		pnlColor := "\033[0m" // Нейтральный
+		// Цветовое оформление для простого PnL
+		profitColor := "\033[0m" // Нейтральный
 		if profit > 0 {
-			pnlColor = "\033[32m" // Зеленый
+			profitColor = "\033[32m" // Зеленый
 		} else if profit < 0 {
-			pnlColor = "\033[31m" // Красный
+			profitColor = "\033[31m" // Красный
 		}
 
-		pnlText = fmt.Sprintf("\n=== %s PnL ===\n", ms.config.DEX.GetName()) +
-			fmt.Sprintf("Entry Price: %.9f SOL | Current Price: %.9f SOL | Change: %s%.2f%%\033[0m\n",
-				initialPrice, currentPrice, priceChangeColor, percentChange) +
-			fmt.Sprintf("Tokens: %.6f | Value: %.6f SOL\n", tokenAmount, currentValue) +
-			fmt.Sprintf("Initial Investment: %.6f SOL | Net PnL: %s%.6f SOL (%.2f%%)\033[0m\n",
-				ms.config.InitialAmount, pnlColor, profit, profitPercent) +
+		pnlText = fmt.Sprintf("\n=== %s PnL (Simple) ===\n", ms.config.DEX.GetName()) +
+			fmt.Sprintf("Entry Price: %s SOL | Current Price: %s SOL\n",
+				formatSmallNumber(initialPrice), formatSmallNumber(currentPrice)) +
+			fmt.Sprintf("Tokens: %.6f | Current Value: %.9f SOL\n",
+				tokenAmount, currentValue) +
+			fmt.Sprintf("Initial Investment: %.9f SOL | Net PnL: %s%.9f SOL (%.2f%%)\033[0m\n",
+				ms.config.InitialAmount, profitColor, profit, simplePercentage) +
 			fmt.Sprintf("===========================\n")
 	}
 
 	// Вывод информации и инструкции
 	fmt.Println(pnlText)
 	fmt.Println("Press Enter to sell tokens or 'q' to exit.")
+}
+
+// Вспомогательная функция для форматирования очень маленьких чисел
+func formatSmallNumber(num float64) string {
+	if num < 0.00000001 {
+		return fmt.Sprintf("%.8e", num) // Научная нотация для очень маленьких чисел
+	} else if num < 0.000001 {
+		return fmt.Sprintf("%.9f", num) // 9 знаков для мелких чисел
+	} else {
+		return fmt.Sprintf("%.6f", num) // 6 знаков для обычных чисел
+	}
 }
 
 // onEnterPressed вызывается при нажатии клавиши Enter.

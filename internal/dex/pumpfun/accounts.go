@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
-	"math"
 	"strconv"
 
 	"github.com/gagliardetto/solana-go"
@@ -140,17 +139,14 @@ func FetchGlobalAccount(ctx context.Context, client *solbc.Client, globalAddr so
 	return account, nil
 }
 
-// GetTokenPrice возвращает текущую цену токена на основе bonding curve.
-// Цена вычисляется как отношение виртуальных резервов SOL к виртуальным резервам токена.
+// Обновленный GetTokenPrice, который использует CalculateTokenPrice
 func (d *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
-	// Шаг 1: Проверка соответствия запрашиваемого токена настроенному в DEX
-	// Это предотвращает неправильное использование экземпляра DEX
+	// Проверка соответствия запрашиваемого токена настроенному в DEX
 	if d.config.Mint.String() != tokenMint {
 		return 0, fmt.Errorf("token %s not configured in this DEX instance", tokenMint)
 	}
 
-	// Шаг 2: Вычисление адреса bonding curve для токена
-	// Используем тот же алгоритм, что и в deriveBondingCurveAccounts
+	// Вычисление адреса bonding curve для токена
 	bondingCurve, _, err := solana.FindProgramAddress(
 		[][]byte{[]byte("bonding-curve"), d.config.Mint.Bytes()},
 		d.config.ContractAddress,
@@ -159,35 +155,14 @@ func (d *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, err
 		return 0, fmt.Errorf("failed to derive bonding curve: %w", err)
 	}
 
-	// Шаг 3: Получение данных аккаунта bonding curve
+	// Получение данных аккаунта bonding curve
 	bondingCurveData, err := d.FetchBondingCurveAccount(ctx, bondingCurve)
 	if err != nil {
 		return 0, fmt.Errorf("failed to fetch bonding curve data: %w", err)
 	}
 
-	// TODO: work with virtual balance
-	// Шаг 4: Проверка деления на ноль
-	// Если виртуальные резервы токена равны нулю, цену невозможно вычислить
-	if bondingCurveData.VirtualTokenReserves == 0 {
-		return 0, fmt.Errorf("virtual token reserves are zero, cannot calculate price")
-	}
-
-	// Шаг 5: Расчет цены по формуле Pump.fun
-	// Цена токена = виртуальный резерв SOL / виртуальный резерв токена
-	price := float64(bondingCurveData.VirtualSolReserves) / float64(bondingCurveData.VirtualTokenReserves)
-
-	// Шаг 6: Округление цены до 9 десятичных знаков
-	// Соответствует точности SOL (1 SOL = 10^9 lamports)
-	price = math.Floor(price*1e9) / 1e9
-
-	// Шаг 7: Логирование для отладки
-	d.logger.Debug("Calculated token price",
-		zap.Float64("price", price),
-		zap.Uint64("virtual_sol_reserves", bondingCurveData.VirtualSolReserves),
-		zap.Uint64("virtual_token_reserves", bondingCurveData.VirtualTokenReserves))
-
-	// Шаг 8: Возврат рассчитанной цены
-	return price, nil
+	// Используем общую функцию для расчета цены токена
+	return d.CalculateTokenPrice(ctx, bondingCurveData)
 }
 
 // GetTokenBalance возвращает текущий баланс токена в кошельке пользователя.
