@@ -161,7 +161,7 @@ func (pm *PriceMonitor) updatePrice() {
 	percentChange := 0.0
 	if pm.initialPrice > 0 {
 		percentChange = ((currentPrice - pm.initialPrice) / pm.initialPrice) * 100
-	}
+	} // TODO: work with balance calculation
 
 	// Format to 2 decimal places
 	percentChange = math.Floor(percentChange*100) / 100

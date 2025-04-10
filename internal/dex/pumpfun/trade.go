@@ -110,7 +110,7 @@ func (d *DEX) prepareSellTransaction(ctx context.Context, tokenAmount uint64, sl
 func (d *DEX) calculateMinSolOutput(tokenAmount uint64, bondingCurveData *BondingCurve, slippagePercent float64) uint64 {
 	// Вычисляем ожидаемый выход SOL на основе пропорции резервов в bonding curve
 	// Формула: (токены * виртуальные резервы SOL) / виртуальные резервы токенов
-	expectedSolValueLamports := (tokenAmount * bondingCurveData.VirtualSolReserves) / bondingCurveData.VirtualTokenReserves
+	expectedSolValueLamports := (tokenAmount * bondingCurveData.VirtualSolReserves) / bondingCurveData.VirtualTokenReserves // TODO:  work with virtual balance
 
 	// Применяем допустимое проскальзывание к ожидаемому выходу
 	// Например, при проскальзывании 1% получим 99% от ожидаемого значения

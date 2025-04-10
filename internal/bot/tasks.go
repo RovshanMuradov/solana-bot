@@ -56,6 +56,7 @@ func (r *Runner) handleSnipeTask(ctx context.Context, t *task.Task, dexAdapter d
 		return
 	}
 
+	// TODO: call convert func
 	// Convert token balance to human-readable format
 	// Assume 6 decimal places for tokens, can be adjusted based on token precision
 	const tokenDecimals = 6

@@ -191,6 +191,8 @@ func (ms *MonitoringSession) UpdateWithDiscretePnL() error {
 //   - initialPrice: начальная цена токена в SOL
 //   - percentChange: процентное изменение цены
 //   - _: количество токенов (не используется, так как получается из актуального баланса)
+//
+// TODO: probably need rewrite
 func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentChange, _ float64) {
 	// Получаем актуальный баланс токенов через RPC
 	balanceCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -198,6 +200,7 @@ func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentCh
 
 	actualTokenBalance, err := ms.config.DEX.GetTokenBalance(balanceCtx, ms.config.TokenMint)
 
+	// TODO: work with balance
 	// Рассчитываем актуальное человекочитаемое количество токенов
 	tokenAmount := ms.config.TokenAmount // Используем старое значение, если не удалось получить новое
 	if err == nil && actualTokenBalance > 0 {

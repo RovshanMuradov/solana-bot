@@ -71,7 +71,7 @@ func (d *DEX) FetchBondingCurveAccount(ctx context.Context, bondingCurve solana.
 	}
 
 	// Шаг 6: Чтение виртуальных резервов токенов (первые 8 байт)
-	virtualTokenReserves := binary.LittleEndian.Uint64(data[0:8])
+	virtualTokenReserves := binary.LittleEndian.Uint64(data[0:8]) // TODO: work with virtual balance
 
 	// Шаг 7: Чтение виртуальных резервов SOL (следующие 8 байт)
 	virtualSolReserves := binary.LittleEndian.Uint64(data[8:16])
@@ -165,6 +165,7 @@ func (d *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, err
 		return 0, fmt.Errorf("failed to fetch bonding curve data: %w", err)
 	}
 
+	// TODO: work with virtual balance
 	// Шаг 4: Проверка деления на ноль
 	// Если виртуальные резервы токена равны нулю, цену невозможно вычислить
 	if bondingCurveData.VirtualTokenReserves == 0 {
