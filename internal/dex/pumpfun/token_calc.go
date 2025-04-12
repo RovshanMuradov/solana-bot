@@ -1,4 +1,4 @@
-// internal/dex/pumpfun/discrete_pnl.go
+// internal/dex/pumpfun/token_calc.go
 package pumpfun
 
 import (

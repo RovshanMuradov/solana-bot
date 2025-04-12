@@ -3,7 +3,6 @@ package monitor
 import (
 	"context"
 	"fmt"
-	"math"
 	"sync"
 	"time"
 
@@ -29,20 +28,6 @@ type SessionConfig struct {
 }
 
 // MonitoringSession представляет сессию мониторинга токенов для операций на DEX.
-//
-// Структура объединяет мониторинг цены и обработку пользовательского ввода для
-// отслеживания стоимости токенов в реальном времени и выполнения операций продажи.
-// Использует контекст для координации работы компонентов и WaitGroup для обеспечения
-// корректного завершения всех операций.
-//
-// Поля:
-//   - config: конфигурация сессии мониторинга
-//   - logger: логгер для записи информации и ошибок
-//   - ctx: контекст для отмены операций
-//   - cancel: функция для отмены контекста
-//   - priceMonitor: компонент для мониторинга цены токена
-//   - inputHandler: компонент для обработки пользовательского ввода
-//   - wg: WaitGroup для синхронизации горутин
 type MonitoringSession struct {
 	config       *SessionConfig
 	priceMonitor *PriceMonitor
@@ -54,16 +39,6 @@ type MonitoringSession struct {
 }
 
 // NewMonitoringSession создает новую сессию мониторинга.
-//
-// Функция инициализирует структуру MonitoringSession, создает новый контекст
-// с функцией отмены и настраивает все необходимые параметры для отслеживания
-// цены токена и обработки пользовательского ввода.
-//
-// Параметры:
-//   - config: конфигурация сессии мониторинга, содержащая все необходимые параметры
-//
-// Возвращает:
-//   - *MonitoringSession: новый экземпляр сессии мониторинга
 func NewMonitoringSession(config *SessionConfig) *MonitoringSession {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &MonitoringSession{
@@ -75,14 +50,6 @@ func NewMonitoringSession(config *SessionConfig) *MonitoringSession {
 }
 
 // Start запускает сессию мониторинга.
-//
-// Метод инициализирует и запускает компоненты мониторинга цены и обработки
-// пользовательского ввода. Регистрирует необходимые обработчики команд
-// и запускает мониторинг цены в отдельной горутине. Отображает пользователю
-// информацию о запуске мониторинга и доступных командах.
-//
-// Возвращает:
-//   - error: ошибку, если не удалось запустить сессию мониторинга
 func (ms *MonitoringSession) Start() error {
 	// Create a price monitor
 	ms.priceMonitor = NewPriceMonitor(
@@ -119,26 +86,12 @@ func (ms *MonitoringSession) Start() error {
 }
 
 // Wait ожидает завершения сессии мониторинга.
-//
-// Метод блокирует выполнение до тех пор, пока все горутины, связанные с сессией
-// мониторинга, не завершат свою работу. Используется для обеспечения корректного
-// завершения всех операций перед выходом из программы.
-//
-// Возвращает:
-//   - error: ошибку, если возникли проблемы при ожидании завершения
 func (ms *MonitoringSession) Wait() error {
 	ms.wg.Wait()
 	return nil
 }
 
 // Stop останавливает сессию мониторинга.
-//
-// Метод останавливает все компоненты сессии мониторинга в правильном порядке:
-// сначала обработчик ввода, затем монитор цены, и в конце отменяет контекст.
-// Это обеспечивает корректное завершение всех внутренних процессов.
-//
-// Метод безопасен для многократного вызова и при вызове на уже остановленной
-// сессии не производит никаких действий.
 func (ms *MonitoringSession) Stop() {
 	// Stop the input handler
 	if ms.inputHandler != nil {
@@ -156,176 +109,16 @@ func (ms *MonitoringSession) Stop() {
 	}
 }
 
-// UpdateWithDiscretePnL обновляет сессию мониторинга с учетом дискретного расчета PnL.
-//
-// Метод изменяет функцию обратного вызова для обработки обновлений цены,
-// чтобы использовать дискретный (более точный) метод расчета прибыли и убытков.
-// Этот подход учитывает особенности работы DEX и предоставляет более точную
-// оценку текущего состояния инвестиции.
-//
-// Возвращает:
-//   - error: ошибку, если не удалось обновить сессию мониторинга
-func (ms *MonitoringSession) UpdateWithDiscretePnL() error {
-	// Меняем callback для обработки обновлений цены
-	ms.priceMonitor.SetCallback(func(currentPrice, initialPrice, percentChange, tokenAmount float64) {
-		// Используем измененную функцию onPriceUpdate
-		ms.onPriceUpdate(currentPrice, initialPrice, percentChange, tokenAmount)
-	})
-
-	return nil
-}
-
 // onPriceUpdate вызывается при обновлении цены токена.
 //
 // Метод получает актуальную информацию о цене токена и его балансе,
 // вычисляет прибыль/убытки (PnL) и выводит эту информацию в консоль.
-// Метод поддерживает два режима расчета PnL:
-// 1. Дискретный (более точный) - учитывает особенности DEX
-// 2. Стандартный - использует прямой расчет на основе текущей цены
-//
-// Метод также форматирует вывод с цветовым оформлением для лучшего
-// визуального представления изменений цены и PnL.
-//
-// Параметры:
-//   - currentPrice: текущая цена токена в SOL
-//   - initialPrice: начальная цена токена в SOL
-//   - percentChange: процентное изменение цены
-//   - _: количество токенов (не используется, так как получается из актуального баланса)
-//
-// TODO: probably need rewrite
-// Исправления для monitor/price.go
-
-// onPriceUpdate с форматированием для мелких чисел, без неиспользуемой переменной
 func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentChange, _ float64) {
-	// Получаем актуальный баланс токенов через RPC
-	balanceCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// TODO: написать правильный метод
 
-	actualTokenBalance, err := ms.config.DEX.GetTokenBalance(balanceCtx, ms.config.TokenMint)
-
-	tokenAmount := ms.config.TokenAmount // Используем старое значение, если не удалось получить новое
-	if err == nil && actualTokenBalance > 0 {
-		// Конвертируем актуальный баланс в человекочитаемый формат
-		tokenDecimals := 6 // По умолчанию 6 знаков (стандарт для многих токенов)
-		tokenAmount = float64(actualTokenBalance) / math.Pow10(int(tokenDecimals))
-
-		ms.logger.Debug("Updated token balance",
-			zap.Uint64("raw_balance", actualTokenBalance),
-			zap.Float64("human_amount", tokenAmount))
-	} else if err != nil {
-		ms.logger.Debug("Could not fetch actual token balance", zap.Error(err))
-	}
-
-	// Минимальные значения для отображения
-	if initialPrice == 0 {
-		initialPrice = 0.000000001 // 1 nano-SOL минимум для отображения
-	}
-	if currentPrice == 0 {
-		currentPrice = 0.000000001 // 1 nano-SOL минимум для отображения
-	}
-
-	// Расчет теоретической стоимости
-	currentValue := currentPrice * tokenAmount
-	profit := currentValue - ms.config.InitialAmount
-	// Удалена неиспользуемая переменная profitPercent
-
-	// Запрос расчета PnL через DEX
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	discretePnL, err := ms.config.DEX.CalculateDiscretePnL(ctx, tokenAmount, ms.config.InitialAmount)
-
-	// Формирование текста с улучшенным форматированием цены
-	var pnlText string
-
-	if err == nil && discretePnL != nil {
-		// Убедимся, что цены не отображаются как 0
-		displayPrice := discretePnL.CurrentPrice
-		if displayPrice < 0.000000001 {
-			displayPrice = 0.000000001
-		}
-
-		// Цветовое оформление
-		priceChangeColor := "\033[0m" // Нейтральный
-		if percentChange > 0 {
-			priceChangeColor = "\033[32m" // Зеленый
-		} else if percentChange < 0 {
-			priceChangeColor = "\033[31m" // Красный
-		}
-
-		pnlColor := "\033[0m" // Нейтральный
-		if discretePnL.NetPnL > 0 {
-			pnlColor = "\033[32m" // Зеленый
-		} else if discretePnL.NetPnL < 0 {
-			pnlColor = "\033[31m" // Красный
-		}
-
-		// Научное форматирование для очень маленьких чисел
-		initialPriceStr := formatSmallNumber(initialPrice)
-		currentPriceStr := formatSmallNumber(displayPrice)
-
-		// Форматирование в одну строку с улучшенным отображением мелких чисел
-		pnlText = fmt.Sprintf("\n=== %s Discrete PnL ===\n", ms.config.DEX.GetName()) +
-			fmt.Sprintf("Entry Price: %s SOL | Current Price: %s SOL | Change: %s%.2f%%\033[0m\n",
-				initialPriceStr, currentPriceStr, priceChangeColor, percentChange) +
-			fmt.Sprintf("Tokens: %.6f | Theoretical Value: %.9f SOL | Sell Estimate: %.9f SOL\n",
-				tokenAmount, discretePnL.TheoreticalValue, discretePnL.SellEstimate) +
-			fmt.Sprintf("Initial Investment: %.9f SOL | Net PnL: %s%.9f SOL (%.2f%%)\033[0m\n",
-				discretePnL.InitialInvestment, pnlColor, discretePnL.NetPnL, discretePnL.PnLPercentage) +
-			fmt.Sprintf("===========================\n")
-	} else {
-		// Запасной вариант с простым расчетом, если дискретный PnL не удался
-		// Рассчитываем процент прибыли для простого случая
-		simplePercentage := 0.0
-		if ms.config.InitialAmount > 0 {
-			simplePercentage = (profit / ms.config.InitialAmount) * 100
-		}
-
-		// Цветовое оформление для простого PnL
-		profitColor := "\033[0m" // Нейтральный
-		if profit > 0 {
-			profitColor = "\033[32m" // Зеленый
-		} else if profit < 0 {
-			profitColor = "\033[31m" // Красный
-		}
-
-		pnlText = fmt.Sprintf("\n=== %s PnL (Simple) ===\n", ms.config.DEX.GetName()) +
-			fmt.Sprintf("Entry Price: %s SOL | Current Price: %s SOL\n",
-				formatSmallNumber(initialPrice), formatSmallNumber(currentPrice)) +
-			fmt.Sprintf("Tokens: %.6f | Current Value: %.9f SOL\n",
-				tokenAmount, currentValue) +
-			fmt.Sprintf("Initial Investment: %.9f SOL | Net PnL: %s%.9f SOL (%.2f%%)\033[0m\n",
-				ms.config.InitialAmount, profitColor, profit, simplePercentage) +
-			fmt.Sprintf("===========================\n")
-	}
-
-	// Вывод информации и инструкции
-	fmt.Println(pnlText)
-	fmt.Println("Press Enter to sell tokens or 'q' to exit.")
-}
-
-// Вспомогательная функция для форматирования очень маленьких чисел
-func formatSmallNumber(num float64) string {
-	if num < 0.00000001 {
-		return fmt.Sprintf("%.8e", num) // Научная нотация для очень маленьких чисел
-	} else if num < 0.000001 {
-		return fmt.Sprintf("%.9f", num) // 9 знаков для мелких чисел
-	} else {
-		return fmt.Sprintf("%.6f", num) // 6 знаков для обычных чисел
-	}
 }
 
 // onEnterPressed вызывается при нажатии клавиши Enter.
-//
-// Метод инициирует процесс продажи токенов, останавливая сессию мониторинга
-// и выполняя операцию продажи через интерфейс DEX. По умолчанию продается
-// 99% имеющихся токенов с учетом настроенного проскальзывания и приоритета.
-//
-// Параметры:
-//   - _: строка команды (не используется, всегда пустая строка)
-//
-// Возвращает:
-//   - error: ошибку, если не удалось выполнить продажу токенов
 func (ms *MonitoringSession) onEnterPressed(_ string) error {
 	fmt.Println("\nSelling tokens...")
 
@@ -363,16 +156,6 @@ func (ms *MonitoringSession) onEnterPressed(_ string) error {
 }
 
 // onExitCommand вызывается при вводе команды выхода.
-//
-// Метод останавливает сессию мониторинга без продажи токенов
-// и выводит соответствующее сообщение пользователю. Вызывается
-// при вводе команд "q" или "exit".
-//
-// Параметры:
-//   - _: строка команды (не используется)
-//
-// Возвращает:
-//   - error: ошибку, если не удалось корректно остановить сессию
 func (ms *MonitoringSession) onExitCommand(_ string) error {
 	fmt.Println("\nExiting monitor mode without selling tokens.")
 	ms.Stop()
