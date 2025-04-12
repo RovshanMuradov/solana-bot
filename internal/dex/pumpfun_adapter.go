@@ -132,11 +132,16 @@ func (d *pumpfunDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string)
 //
 // Метод инициализирует DEX для указанного токена и запрашивает
 // баланс соответствующего токена на ассоциированном токен-аккаунте пользователя.
+// Использует оптимизированную стратегию получения баланса: сначала с быстрым
+// уровнем подтверждения Processed, при неудаче - с уровнем Confirmed.
 func (d *pumpfunDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error) {
+	// Инициализируем DEX для указанного токена
 	if err := d.initPumpFun(ctx, tokenMint); err != nil {
 		return 0, fmt.Errorf("failed to initialize Pump.fun: %w", err)
 	}
-	// Возвращает количество токенов на балансе в минимальных единицах (без учета десятичных знаков)
+
+	// Используем внутреннюю реализацию GetTokenBalance без явного указания commitment
+	// Это позволит внутренней логике применить свою оптимизированную стратегию
 	return d.inner.GetTokenBalance(ctx)
 }
 

@@ -65,7 +65,8 @@ func (d *DEX) prepareSellTransaction(ctx context.Context, tokenAmount uint64, sl
 	// Шаг 3: Получаем данные аккаунта bonding curve для расчета цены
 	bondingCurveData, err := d.FetchBondingCurveAccount(ctx, bondingCurve)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch bonding curve data: %w", err)
+		d.logger.Warn("Failed to fetch bonding curve data",
+			zap.Error(err))
 	}
 
 	// Шаг 4: Проверяем, не завершена ли bonding curve (перемещена на другой DEX)

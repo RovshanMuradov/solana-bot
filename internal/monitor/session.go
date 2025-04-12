@@ -1,8 +1,10 @@
+// internal/monitor/session.go
 package monitor
 
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -113,9 +115,97 @@ func (ms *MonitoringSession) Stop() {
 //
 // Метод получает актуальную информацию о цене токена и его балансе,
 // вычисляет прибыль/убытки (PnL) и выводит эту информацию в консоль.
-func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentChange, _ float64) {
-	// TODO: написать правильный метод
+func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentChange, tokenAmount float64) {
+	// 1. Создаем контекст с таймаутом для выполнения операций
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
+	// 2. Проверяем, не изменился ли баланс токенов
+	var updatedBalance float64 = tokenAmount
+
+	tokenBalanceRaw, err := ms.config.DEX.GetTokenBalance(ctx, ms.config.TokenMint)
+	if err == nil && tokenBalanceRaw > 0 {
+		// Если удалось получить актуальный баланс
+		updatedBalance = float64(tokenBalanceRaw) / 1e6
+		if math.Abs(updatedBalance-tokenAmount) > 0.000001 && updatedBalance > 0 {
+			// Если баланс изменился, обновляем TokenAmount и TokenBalance в конфигурации
+			ms.logger.Debug("Token balance changed",
+				zap.Float64("old_balance", tokenAmount),
+				zap.Float64("new_balance", updatedBalance))
+
+			// Обновляем значения в конфигурации
+			ms.config.TokenAmount = updatedBalance
+			ms.config.TokenBalance = tokenBalanceRaw
+		}
+	}
+
+	// 3. Получаем данные о PnL с использованием специализированного метода DEX
+	pnlData, err := ms.config.DEX.CalculateDiscretePnL(ctx, updatedBalance, ms.config.InitialAmount)
+	if err != nil {
+		ms.logger.Debug("Failed to calculate PnL using DEX method, falling back to simple calculation",
+			zap.Error(err))
+
+		// В случае ошибки используем упрощенные расчеты на основе текущей цены
+		theoreticalValue := updatedBalance * currentPrice
+		// Примерная комиссия DEX - 1%
+		sellEstimate := theoreticalValue * 0.99
+		netPnL := sellEstimate - ms.config.InitialAmount
+		pnlPercent := 0.0
+		if ms.config.InitialAmount > 0 {
+			pnlPercent = (netPnL / ms.config.InitialAmount) * 100
+		}
+
+		pnlData = &dex.DiscreteTokenPnL{
+			CurrentPrice:      currentPrice,
+			TheoreticalValue:  theoreticalValue,
+			SellEstimate:      sellEstimate,
+			InitialInvestment: ms.config.InitialAmount,
+			NetPnL:            netPnL,
+			PnLPercentage:     pnlPercent,
+		}
+	}
+
+	// 4. Форматируем вывод информации
+	fmt.Println("\n╔════════════════ TOKEN MONITOR ════════════════╗")
+	fmt.Printf("║ Token: %-38s ║\n", shortenAddress(ms.config.TokenMint))
+	fmt.Println("╟───────────────────────────────────────────────╢")
+	fmt.Printf("║ Current Price: %-9.8f SOL %15s ║\n", currentPrice, "")
+	fmt.Printf("║ Initial Price: %-9.8f SOL %15s ║\n", initialPrice, "")
+
+	// Форматирование изменения цены с цветом (зеленый для положительного, красный для отрицательного)
+	changeStr := fmt.Sprintf("%.2f%%", percentChange)
+	if percentChange > 0 {
+		changeStr = "\033[32m+" + changeStr + "\033[0m" // Зеленый цвет для положительного изменения
+	} else if percentChange < 0 {
+		changeStr = "\033[31m" + changeStr + "\033[0m" // Красный цвет для отрицательного изменения
+	}
+	fmt.Printf("║ Price Change: %-40s ║\n", changeStr)
+
+	fmt.Printf("║ Tokens Owned: %-9.6f %20s ║\n", updatedBalance, "")
+	fmt.Println("╟───────────────────────────────────────────────╢")
+	fmt.Printf("║ Theoretical Value: %-9.8f SOL %11s ║\n", pnlData.TheoreticalValue, "")
+	fmt.Printf("║ Sell Estimate:     %-9.8f SOL %11s ║\n", pnlData.SellEstimate, "")
+	fmt.Printf("║ Initial Investment: %-9.8f SOL %10s ║\n", pnlData.InitialInvestment, "")
+
+	// Форматирование PnL с цветом
+	pnlStr := fmt.Sprintf("%.8f SOL (%.2f%%)", pnlData.NetPnL, pnlData.PnLPercentage)
+	if pnlData.NetPnL > 0 {
+		pnlStr = "\033[32m+" + pnlStr + "\033[0m" // Зеленый для прибыли
+	} else if pnlData.NetPnL < 0 {
+		pnlStr = "\033[31m" + pnlStr + "\033[0m" // Красный для убытка
+	}
+	fmt.Printf("║ P&L: %-49s ║\n", pnlStr)
+
+	fmt.Println("╚═══════════════════════════════════════════════╝")
+	fmt.Println("Press Enter to sell tokens, 'q' to exit without selling")
+}
+
+// shortenAddress сокращает длинный адрес токена для лучшего отображения
+func shortenAddress(address string) string {
+	if len(address) <= 20 {
+		return address
+	}
+	return address[:8] + "..." + address[len(address)-8:]
 }
 
 // onEnterPressed вызывается при нажатии клавиши Enter.

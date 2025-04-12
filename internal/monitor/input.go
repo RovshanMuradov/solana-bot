@@ -1,3 +1,4 @@
+// internal/monitor/input.go
 package monitor
 
 import (
