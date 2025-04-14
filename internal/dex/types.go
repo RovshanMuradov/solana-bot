@@ -54,9 +54,8 @@ type DEX interface {
 	GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error)
 	// SellPercentTokens продает указанный процент имеющихся токенов
 	SellPercentTokens(ctx context.Context, tokenMint string, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error
-	//
 	//CalculateBondingCurvePnL вычисляет PnL с учетом дискретной структуры Pump.fun
-	CalculateBondingCurvePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*BondingCurvePnL, error)
+	//CalculateBondingCurvePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*BondingCurvePnL, error)
 }
 
 // BondingCurvePnL содержит универсальную информацию о прибыли/убытке (PnL) токена

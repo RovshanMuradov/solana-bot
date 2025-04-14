@@ -115,6 +115,7 @@ func (ms *MonitoringSession) Stop() {
 //
 // Метод получает актуальную информацию о цене токена и его балансе,
 // вычисляет прибыль/убытки (PnL) и выводит эту информацию в консоль.
+// Если специализированный калькулятор для DEX не найден - выводится ошибка.
 func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentChange, tokenAmount float64) {
 	// 1. Создаем контекст с таймаутом для выполнения операций
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -139,14 +140,27 @@ func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentCh
 		}
 	}
 
-	// 3. Получаем данные о PnL с использованием специализированного метода DEX
-	pnlData, err := ms.config.DEX.CalculateBondingCurvePnL(ctx, updatedBalance, ms.config.InitialAmount)
+	// 3. Получаем подходящий калькулятор для текущего DEX
+	calculator, err := GetCalculator(ms.config.DEX, ms.logger)
 	if err != nil {
-		ms.logger.Debug("Failed to calculate PnL using DEX method",
+		ms.logger.Error("Failed to get calculator for DEX",
+			zap.String("dex_name", ms.config.DEX.GetName()),
 			zap.Error(err))
+		fmt.Printf("\nError: Cannot calculate PnL - no calculator for %s DEX\n", ms.config.DEX.GetName())
+		return
 	}
 
-	// 4. Форматируем вывод информации
+	// 4. Используем калькулятор для расчета PnL данных
+	pnlData, err := calculator.CalculatePnL(ctx, ms.config.TokenMint, updatedBalance, ms.config.InitialAmount)
+	if err != nil {
+		ms.logger.Error("Failed to calculate PnL",
+			zap.String("dex_name", ms.config.DEX.GetName()),
+			zap.Error(err))
+		fmt.Printf("\nError calculating PnL: %v\n", err)
+		return
+	}
+
+	// 5. Форматируем вывод информации
 	fmt.Println("\n╔════════════════ TOKEN MONITOR ════════════════╗")
 	fmt.Printf("║ Token: %-38s ║\n", shortenAddress(ms.config.TokenMint))
 	fmt.Println("╟───────────────────────────────────────────────╢")
