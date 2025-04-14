@@ -159,7 +159,7 @@ func (d *pumpfunDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint str
 	return d.inner.SellPercentTokens(ctx, percentToSell, slippagePercent, priorityFeeSol, computeUnits)
 }
 
-// CalculateDiscretePnL вычисляет PnL с учетом дискретной структуры Pump.fun.
+// CalculateBondingCurvePnL вычисляет PnL с учетом дискретной структуры Pump.fun.
 //
 // Метод рассчитывает прибыль и убыток (Profit and Loss) для указанного количества
 // токенов с учетом первоначальной инвестиции и особенностей дискретного

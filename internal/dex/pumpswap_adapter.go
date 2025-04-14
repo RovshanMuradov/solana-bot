@@ -219,7 +219,7 @@ func (d *pumpswapDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint st
 	return d.inner.ExecuteSell(ctx, tokensToSell, slippagePercent, priorityFeeSol, computeUnits)
 }
 
-// CalculateDiscretePnL вычисляет PnL для токена на Pump.Swap DEX.
+// CalculateBondingCurvePnL вычисляет PnL для токена на Pump.Swap DEX.
 //
 // Метод является упрощенной реализацией для совместимости с интерфейсом.
 // Поскольку Pump.Swap не использует дискретную bonding curve, метод
