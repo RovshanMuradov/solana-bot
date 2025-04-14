@@ -165,19 +165,19 @@ func (d *pumpfunDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint str
 // токенов с учетом первоначальной инвестиции и особенностей дискретного
 // ценообразования на Pump.fun. Расчет учитывает разницу между теоретической
 // стоимостью токенов и фактической выручкой при их продаже.
-func (d *pumpfunDEXAdapter) CalculateDiscretePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*DiscreteTokenPnL, error) {
+func (d *pumpfunDEXAdapter) CalculateBondingCurvePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*BondingCurvePnL, error) {
 	if err := d.initPumpFun(ctx, d.tokenMint); err != nil {
 		return nil, fmt.Errorf("failed to initialize Pump.fun: %w", err)
 	}
 
 	// Вызываем внутренний метод из пакета pumpfun
-	result, err := d.inner.CalculateDiscretePnL(ctx, tokenAmount, initialInvestment)
+	result, err := d.inner.CalculateBondingCurvePnL(ctx, tokenAmount, initialInvestment)
 	if err != nil {
 		return nil, err
 	}
 
 	// Конвертируем тип pumpfun.DiscreteTokenPnL в dex.DiscreteTokenPnL
-	return &DiscreteTokenPnL{
+	return &BondingCurvePnL{
 		CurrentPrice:      result.CurrentPrice,
 		TheoreticalValue:  result.TheoreticalValue,
 		SellEstimate:      result.SellEstimate,

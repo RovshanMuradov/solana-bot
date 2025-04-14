@@ -140,7 +140,7 @@ func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentCh
 	}
 
 	// 3. Получаем данные о PnL с использованием специализированного метода DEX
-	pnlData, err := ms.config.DEX.CalculateDiscretePnL(ctx, updatedBalance, ms.config.InitialAmount)
+	pnlData, err := ms.config.DEX.CalculateBondingCurvePnL(ctx, updatedBalance, ms.config.InitialAmount)
 	if err != nil {
 		ms.logger.Debug("Failed to calculate PnL using DEX method, falling back to simple calculation",
 			zap.Error(err))
@@ -155,7 +155,7 @@ func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentCh
 			pnlPercent = (netPnL / ms.config.InitialAmount) * 100
 		}
 
-		pnlData = &dex.DiscreteTokenPnL{
+		pnlData = &dex.BondingCurvePnL{
 			CurrentPrice:      currentPrice,
 			TheoreticalValue:  theoreticalValue,
 			SellEstimate:      sellEstimate,

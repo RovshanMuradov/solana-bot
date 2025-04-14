@@ -19,8 +19,8 @@ const (
 	minPriceThreshold = 1e-18 // Очень маленькое значение, близкое к нулю
 )
 
-// DiscreteTokenPnL содержит информацию о прибыли/убытке (PnL) токена
-type DiscreteTokenPnL struct {
+// BondingCurvePnL содержит информацию о прибыли/убытке (PnL) токена
+type BondingCurvePnL struct {
 	CurrentPrice      float64 // Текущая цена токена (SOL за токен)
 	TheoreticalValue  float64 // Теоретическая стоимость текущей позиции: токены * CurrentPrice
 	SellEstimate      float64 // Приблизительная выручка при продаже (цена * кол-во * (1 - комиссия))
@@ -105,10 +105,10 @@ func (d *DEX) CalculateSellValue(ctx context.Context, tokenAmount float64, bondi
 	return sellEstimate, nil
 }
 
-// CalculateDiscretePnL вычисляет PnL (прибыль/убыток) по количеству токенов и первоначальным инвестициям.
-// Использует оценку выручки от продажи (`CalculateSellValue`), которая учитывает комиссию,
-// но НЕ учитывает проскальзывание (slippage).
-func (d *DEX) CalculateDiscretePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*DiscreteTokenPnL, error) {
+// CalculateBondingCurvePnL вычисляет PnL (прибыль/убыток) на основе модели bonding curve.
+// Расчет учитывает виртуальные резервы токена и SOL, применяет комиссию протокола,
+// но НЕ учитывает проскальзывание (slippage) при больших объемах продажи.
+func (d *DEX) CalculateBondingCurvePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*BondingCurvePnL, error) {
 	// Получаем данные bonding curve через функции deriveBondingCurveAccounts и FetchBondingCurveAccount
 	bondingCurveAddr, _, err := d.deriveBondingCurveAccounts(ctx)
 	if err != nil {
@@ -167,7 +167,7 @@ func (d *DEX) CalculateDiscretePnL(ctx context.Context, tokenAmount float64, ini
 		zap.Float64("net_pnl", netPnL),
 		zap.Float64("pnl_percentage", pnlPercentage))
 
-	return &DiscreteTokenPnL{
+	return &BondingCurvePnL{
 		CurrentPrice:      currentPrice,
 		TheoreticalValue:  theoreticalValue,
 		SellEstimate:      sellEstimate,

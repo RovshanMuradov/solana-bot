@@ -84,22 +84,24 @@ func (pm *PriceMonitor) updatePrice() {
 	ctx, cancel := context.WithTimeout(pm.ctx, 10*time.Second)
 	defer cancel()
 
+	// Получаем текущую цену токена
 	currentPrice, err := pm.dex.GetTokenPrice(ctx, pm.tokenMint)
 	if err != nil {
 		pm.logger.Error("Failed to get token price", zap.Error(err))
 		return
 	}
 
-	// Calculate percent change
+	// Рассчитываем простое процентное изменение цены (отличается от PnL percentage)
+	// Это чистое изменение рыночной цены, без учета комиссий и других факторов
 	percentChange := 0.0
 	if pm.initialPrice > 0 {
 		percentChange = ((currentPrice - pm.initialPrice) / pm.initialPrice) * 100
-	} // TODO: probably need to delete calculation. Need to use calc from
+	}
 
-	// Format to 2 decimal places
+	// Округляем до 2 десятичных знаков для удобства отображения
 	percentChange = math.Floor(percentChange*100) / 100
 
-	// Call the callback with price information
+	// Вызываем обратный вызов с информацией о цене
 	if pm.callback != nil {
 		pm.callback(currentPrice, pm.initialPrice, percentChange, pm.tokenAmount)
 	}
