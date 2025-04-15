@@ -122,7 +122,7 @@ func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentCh
 	defer cancel()
 
 	// 2. Проверяем, не изменился ли баланс токенов
-	var updatedBalance float64 = tokenAmount
+	var updatedBalance = tokenAmount
 
 	tokenBalanceRaw, err := ms.config.DEX.GetTokenBalance(ctx, ms.config.TokenMint)
 	if err == nil && tokenBalanceRaw > 0 {
