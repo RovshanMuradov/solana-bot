@@ -154,7 +154,6 @@ func (d *DEX) SellPercentTokens(ctx context.Context, percentToSell float64, slip
 		return fmt.Errorf("no tokens to sell")
 	}
 
-	// TODO: здесь опять происходит расчет токенов
 	// Рассчитываем количество токенов для продажи на основе процента
 	tokensToSell := uint64(float64(tokenBalance) * (percentToSell / 100.0))
 

@@ -81,6 +81,12 @@ func (pm *PriceMonitor) Stop() {
 
 // updatePrice получает текущую цену токена и вызывает функцию обратного вызова.
 func (pm *PriceMonitor) updatePrice() {
+	// Сначала проверяем, не отменен ли контекст
+	if pm.ctx.Err() != nil {
+		pm.logger.Debug("Price monitor stopping, skipping price update")
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(pm.ctx, 10*time.Second)
 	defer cancel()
 

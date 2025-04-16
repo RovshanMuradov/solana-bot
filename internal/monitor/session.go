@@ -95,14 +95,16 @@ func (ms *MonitoringSession) Wait() error {
 
 // Stop останавливает сессию мониторинга.
 func (ms *MonitoringSession) Stop() {
+	// Stop the price monitor first and wait for it to complete
+	if ms.priceMonitor != nil {
+		ms.priceMonitor.Stop()
+		// Можно добавить небольшую задержку, чтобы дать время на остановку
+		time.Sleep(100 * time.Millisecond)
+	}
+
 	// Stop the input handler
 	if ms.inputHandler != nil {
 		ms.inputHandler.Stop()
-	}
-
-	// Stop the price monitor
-	if ms.priceMonitor != nil {
-		ms.priceMonitor.Stop()
 	}
 
 	// Cancel the context
@@ -194,7 +196,8 @@ func shortenAddress(address string) string {
 func (ms *MonitoringSession) onEnterPressed(_ string) error {
 	fmt.Println("\nSelling tokens...")
 
-	// Останавливаем сессию мониторинга
+	// Останавливаем сессию мониторинга ДО выполнения операции продажи
+	// Это предотвратит дальнейшие попытки обновления цены
 	ms.Stop()
 
 	// Процент токенов для продажи (99%)
@@ -208,7 +211,6 @@ func (ms *MonitoringSession) onEnterPressed(_ string) error {
 		zap.Uint32("compute_units", ms.config.ComputeUnits))
 
 	// Продаем указанный процент токенов
-	// SellPercentTokens будет запрашивать актуальный баланс внутри себя
 	err := ms.config.DEX.SellPercentTokens(
 		context.Background(),
 		ms.config.TokenMint,

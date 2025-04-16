@@ -226,7 +226,7 @@ func (d *DEX) GetTokenBalance(ctx context.Context, commitment ...rpc.CommitmentT
 	// По умолчанию используем Processed - самый быстрый уровень
 	// Можно переопределить через вариативный параметр
 	commitmentLevel := rpc.CommitmentProcessed
-	if len(commitment) > 0 && commitment[0] != "" {
+	if len(commitment) > 0 {
 		commitmentLevel = commitment[0]
 	}
 
