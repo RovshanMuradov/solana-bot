@@ -3,9 +3,10 @@ package bot
 
 import (
 	"context"
+	"time"
+
 	"github.com/rovshanmuradov/solana-bot/internal/monitor"
 	"go.uber.org/zap"
-	"time"
 
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
