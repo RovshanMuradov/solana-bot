@@ -154,105 +154,13 @@ func (d *pumpswapDEXAdapter) initPumpSwap(_ context.Context, tokenMint string) e
 }
 
 // GetTokenBalance возвращает текущий баланс токена на аккаунте пользователя.
-//
-// Метод является заглушкой для совместимости с интерфейсом DEX и в текущей
-// реализации не полностью функционален. Логирует вызов с уровнем Debug
-// и возвращает ошибку о неполной реализации.
-//
-// Параметры:
-//   - ctx: контекст выполнения
-//   - tokenMint: адрес минта токена, для которого запрашивается баланс
-//
-// Возвращает:
-//   - uint64: всегда 0 в текущей реализации
-//   - error: ошибку о неполной реализации функциональности
-//
 // TODO: this is placeholder
 func (d *pumpswapDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error) {
-	// В будущем здесь можно реализовать настоящую логику получения баланса
-	d.logger.Debug("GetTokenBalance called on PumpSwap (not fully implemented)",
-		zap.String("token_mint", tokenMint))
-
-	// Возможно реализовать в будущем, сейчас просто возвращаем ошибку
-	return 0, fmt.Errorf("GetTokenBalance not fully implemented for Pump.Swap DEX")
+	return 0, nil
 }
 
 // SellPercentTokens продает указанный процент имеющихся токенов.
-//
-// Метод определяет текущий баланс токенов пользователя, вычисляет
-// соответствующую указанному проценту долю и выполняет продажу этой
-// доли на Pump.Swap DEX. Операция выполняется с учетом указанного
-// проскальзывания и приоритета транзакции. Логирует предупреждение о
-// неполной реализации функциональности.
-//
-// Параметры:
-//   - ctx: контекст выполнения
-//   - tokenMint: адрес минта токена, который нужно продать
-//   - percentToSell: процент токенов для продажи (0-100)
-//   - slippagePercent: допустимое проскальзывание цены в процентах
-//   - priorityFeeSol: комиссия приоритета в SOL (строковое представление)
-//   - computeUnits: количество вычислительных единиц для транзакции
-//
-// Возвращает:
-//   - error: ошибку, если продажа не удалась, или nil при успешном выполнении
-//
 // TODO: this is placeholder
 func (d *pumpswapDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint string, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
-	if err := d.initPumpSwap(ctx, tokenMint); err != nil {
-		return err
-	}
-
-	d.logger.Warn("SellPercentTokens is not fully implemented for PumpSwap",
-		zap.String("token_mint", tokenMint),
-		zap.Float64("percent_to_sell", percentToSell))
-
-	// Получаем баланс токена (в настоящее время не реализовано полностью)
-	balance, err := d.inner.GetTokenBalance(ctx, tokenMint)
-	if err != nil {
-		return fmt.Errorf("failed to get token balance: %w", err)
-	}
-
-	// Рассчитываем количество токенов для продажи
-	tokensToSell := uint64(float64(balance) * percentToSell / 100.0)
-
-	// Выполняем стандартную операцию продажи
-	return d.inner.ExecuteSell(ctx, tokensToSell, slippagePercent, priorityFeeSol, computeUnits)
-}
-
-// CalculateBondingCurvePnL вычисляет PnL для токена на Pump.Swap DEX.
-//
-// Метод является упрощенной реализацией для совместимости с интерфейсом.
-// Поскольку Pump.Swap не использует дискретную bonding curve, метод
-// рассчитывает PnL стандартным способом, где оценка продажи равна
-// теоретической стоимости токенов. Получает текущую цену токена и
-// на ее основе вычисляет стоимость токенов и показатели прибыли/убытка.
-//
-// Параметры:
-//   - ctx: контекст выполнения
-//   - tokenAmount: количество токенов для расчета PnL
-//   - initialInvestment: первоначальная инвестиция в SOL
-//
-// Возвращает:
-//   - *DiscreteTokenPnL: структура с информацией о PnL
-//   - error: ошибку, если расчет не удался, или nil при успешном выполнении
-//
-// TODO: this is placeholder. Probably dont even need this func for pumpswap
-func (d *pumpswapDEXAdapter) CalculateBondingCurvePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*BondingCurvePnL, error) {
-	// PumpSwap не использует дискретную bonding curve, поэтому
-	// возвращаем стандартный PnL для совместимости с интерфейсом
-	price, err := d.GetTokenPrice(ctx, d.tokenMint)
-	if err != nil {
-		return nil, err
-	}
-
-	theoreticalValue := tokenAmount * price
-
-	return &BondingCurvePnL{
-		CurrentPrice:      price,
-		TheoreticalValue:  theoreticalValue,
-		SellEstimate:      theoreticalValue, // Для не-дискретной кривой оценка равна теоретической стоимости
-		InitialInvestment: initialInvestment,
-		NetPnL:            theoreticalValue - initialInvestment,
-		PnLPercentage:     ((theoreticalValue - initialInvestment) / initialInvestment) * 100,
-	}, nil
+	return nil
 }

@@ -54,17 +54,15 @@ type DEX interface {
 	GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error)
 	// SellPercentTokens продает указанный процент имеющихся токенов
 	SellPercentTokens(ctx context.Context, tokenMint string, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error
-	//CalculateBondingCurvePnL вычисляет PnL с учетом дискретной структуры Pump.fun
-	//CalculateBondingCurvePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*BondingCurvePnL, error)
 }
 
 // BondingCurvePnL содержит универсальную информацию о прибыли/убытке (PnL) токена
 // для всех типов DEX (включая PumpFun, PumpSwap и другие)
-type BondingCurvePnL struct {
-	CurrentPrice      float64 // Текущая цена токена (SOL за токен)
-	TheoreticalValue  float64 // Теоретическая стоимость текущей позиции: токены * CurrentPrice
-	SellEstimate      float64 // Приблизительная выручка при продаже (с учетом комиссии)
-	InitialInvestment float64 // Первоначальные вложения в SOL
-	NetPnL            float64 // Чистая прибыль/убыток: SellEstimate - InitialInvestment
-	PnLPercentage     float64 // Процент PnL от начальных вложений
-}
+//type BondingCurvePnL struct {
+//	CurrentPrice      float64 // Текущая цена токена (SOL за токен)
+//	TheoreticalValue  float64 // Теоретическая стоимость текущей позиции: токены * CurrentPrice
+//	SellEstimate      float64 // Приблизительная выручка при продаже (с учетом комиссии)
+//	InitialInvestment float64 // Первоначальные вложения в SOL
+//	NetPnL            float64 // Чистая прибыль/убыток: SellEstimate - InitialInvestment
+//	PnLPercentage     float64 // Процент PnL от начальных вложений
+//}

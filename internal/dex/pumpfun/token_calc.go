@@ -69,9 +69,7 @@ func (d *DEX) CalculateTokenPrice(ctx context.Context, bondingCurveData *Bonding
 }
 
 // CalculateSellValue вычисляет оценку SOL (выручку) от продажи заданного количества токенов,
-// исходя из текущей цены и с учётом комиссии.
-// ВАЖНО: Эта функция НЕ учитывает проскальзывание (slippage) - влияние самой продажи на цену.
-// Она просто умножает количество токенов на текущую цену и вычитает комиссию.
+// Она просто умножает количество токенов на текущую цену.
 func (d *DEX) CalculateSellValue(ctx context.Context, tokenAmount float64, bondingCurveData *BondingCurve) (float64, error) {
 	if bondingCurveData == nil {
 		return 0, fmt.Errorf("bonding curve data is nil")

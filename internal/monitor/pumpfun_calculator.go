@@ -4,31 +4,27 @@ package monitor
 import (
 	"context"
 	"fmt"
+	"github.com/rovshanmuradov/solana-bot/internal/dex/pumpfun"
 
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
 	"go.uber.org/zap"
 )
 
-// pumpFunCalculator реализует расчет PnL, специфичный для Pump.fun DEX
 type pumpFunCalculator struct {
 	dex    dex.DEX
 	logger *zap.Logger
 }
 
-// CalculatePnL реализует специфический для bonding curve расчет PnL для Pump.fun
 func (c *pumpFunCalculator) CalculatePnL(ctx context.Context, tokenMint string, tokenAmount float64, initialInvestment float64) (*PnLData, error) {
-	type bondingCurvePnLCalculator interface {
-		CalculateBondingCurvePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*dex.BondingCurvePnL, error)
-	}
-
-	calculator, ok := c.dex.(bondingCurvePnLCalculator)
+	// Убедимся, что dex реализует интерфейс BondingCurvePnLCalculator
+	calculator, ok := c.dex.(pumpfun.BondingCurvePnLCalculator)
 	if !ok {
-		return nil, fmt.Errorf("Pump.fun DEX does not implement CalculateBondingCurvePnL")
+		return nil, fmt.Errorf("DEX does not implement bonding curve calculator")
 	}
 
 	result, err := calculator.CalculateBondingCurvePnL(ctx, tokenAmount, initialInvestment)
 	if err != nil {
-		return nil, fmt.Errorf("failed to calculate bonding curve PnL: %w", err)
+		return nil, fmt.Errorf("error calculating bonding curve PnL: %w", err)
 	}
 
 	return &PnLData{
