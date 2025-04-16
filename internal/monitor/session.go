@@ -117,79 +117,66 @@ func (ms *MonitoringSession) Stop() {
 // вычисляет прибыль/убытки (PnL) и выводит эту информацию в консоль.
 // Если специализированный калькулятор для DEX не найден - выводится ошибка.
 func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentChange, tokenAmount float64) {
-	// 1. Создаем контекст с таймаутом для выполнения операций
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// 2. Проверяем, не изменился ли баланс токенов
-	var updatedBalance = tokenAmount
-
+	// Актуализация баланса
+	updatedBalance := tokenAmount
 	tokenBalanceRaw, err := ms.config.DEX.GetTokenBalance(ctx, ms.config.TokenMint)
 	if err == nil && tokenBalanceRaw > 0 {
-		// Если удалось получить актуальный баланс
-		updatedBalance = float64(tokenBalanceRaw) / 1e6
-		if math.Abs(updatedBalance-tokenAmount) > 0.000001 && updatedBalance > 0 {
-			// Если баланс изменился, обновляем TokenAmount и TokenBalance в конфигурации
+		newBalance := float64(tokenBalanceRaw) / 1e6
+		if math.Abs(newBalance-tokenAmount) > 0.000001 && newBalance > 0 {
 			ms.logger.Debug("Token balance changed",
 				zap.Float64("old_balance", tokenAmount),
-				zap.Float64("new_balance", updatedBalance))
+				zap.Float64("new_balance", newBalance))
 
-			// Обновляем значения в конфигурации
-			ms.config.TokenAmount = updatedBalance
+			ms.config.TokenAmount = newBalance
 			ms.config.TokenBalance = tokenBalanceRaw
+			updatedBalance = newBalance
 		}
 	}
 
-	// 3. Получаем подходящий калькулятор для текущего DEX
 	calculator, err := GetCalculator(ms.config.DEX, ms.logger)
 	if err != nil {
-		ms.logger.Error("Failed to get calculator for DEX",
-			zap.String("dex_name", ms.config.DEX.GetName()),
-			zap.Error(err))
-		fmt.Printf("\nError: Cannot calculate PnL - no calculator for %s DEX\n", ms.config.DEX.GetName())
+		ms.logger.Error("Failed to get calculator for DEX", zap.Error(err))
+		fmt.Printf("\nError: Cannot calculate PnL for %s\n", ms.config.DEX.GetName())
 		return
 	}
 
-	// 4. Используем калькулятор для расчета PnL данных
 	pnlData, err := calculator.CalculatePnL(ctx, ms.config.TokenMint, updatedBalance, ms.config.InitialAmount)
 	if err != nil {
-		ms.logger.Error("Failed to calculate PnL",
-			zap.String("dex_name", ms.config.DEX.GetName()),
-			zap.Error(err))
+		ms.logger.Error("Failed to calculate PnL", zap.Error(err))
 		fmt.Printf("\nError calculating PnL: %v\n", err)
 		return
 	}
 
-	// 5. Форматируем вывод информации
+	// Отображение
 	fmt.Println("\n╔════════════════ TOKEN MONITOR ════════════════╗")
 	fmt.Printf("║ Token: %-38s ║\n", shortenAddress(ms.config.TokenMint))
 	fmt.Println("╟───────────────────────────────────────────────╢")
-	fmt.Printf("║ Current Price: %-9.8f SOL %15s ║\n", currentPrice, "")
-	fmt.Printf("║ Initial Price: %-9.8f SOL %15s ║\n", initialPrice, "")
+	fmt.Printf("║ Current Price:       %-14.8f SOL ║\n", currentPrice)
+	fmt.Printf("║ Initial Price:       %-14.8f SOL ║\n", initialPrice)
 
-	// Форматирование изменения цены с цветом (зеленый для положительного, красный для отрицательного)
 	changeStr := fmt.Sprintf("%.2f%%", percentChange)
 	if percentChange > 0 {
-		changeStr = "\033[32m+" + changeStr + "\033[0m" // Зеленый цвет для положительного изменения
+		changeStr = "\033[32m+" + changeStr + "\033[0m"
 	} else if percentChange < 0 {
-		changeStr = "\033[31m" + changeStr + "\033[0m" // Красный цвет для отрицательного изменения
+		changeStr = "\033[31m" + changeStr + "\033[0m"
 	}
-	fmt.Printf("║ Price Change: %-40s ║\n", changeStr)
+	fmt.Printf("║ Price Change:        %-25s ║\n", changeStr)
 
-	fmt.Printf("║ Tokens Owned: %-9.6f %20s ║\n", updatedBalance, "")
+	fmt.Printf("║ Tokens Owned:        %-14.6f      ║\n", updatedBalance)
 	fmt.Println("╟───────────────────────────────────────────────╢")
-	fmt.Printf("║ Theoretical Value: %-9.8f SOL %11s ║\n", pnlData.TheoreticalValue, "")
-	fmt.Printf("║ Sell Estimate:     %-9.8f SOL %11s ║\n", pnlData.SellEstimate, "")
-	fmt.Printf("║ Initial Investment: %-9.8f SOL %10s ║\n", pnlData.InitialInvestment, "")
+	fmt.Printf("║ Sold (Estimate):     %-14.8f SOL ║\n", pnlData.SellEstimate)
+	fmt.Printf("║ Invested:            %-14.8f SOL ║\n", pnlData.InitialInvestment)
 
-	// Форматирование PnL с цветом
 	pnlStr := fmt.Sprintf("%.8f SOL (%.2f%%)", pnlData.NetPnL, pnlData.PnLPercentage)
 	if pnlData.NetPnL > 0 {
-		pnlStr = "\033[32m+" + pnlStr + "\033[0m" // Зеленый для прибыли
+		pnlStr = "\033[32m+" + pnlStr + "\033[0m"
 	} else if pnlData.NetPnL < 0 {
-		pnlStr = "\033[31m" + pnlStr + "\033[0m" // Красный для убытка
+		pnlStr = "\033[31m" + pnlStr + "\033[0m"
 	}
-	fmt.Printf("║ P&L: %-49s ║\n", pnlStr)
+	fmt.Printf("║ P&L:                 %-25s ║\n", pnlStr)
 
 	fmt.Println("╚═══════════════════════════════════════════════╝")
 	fmt.Println("Press Enter to sell tokens, 'q' to exit without selling")

@@ -11,12 +11,10 @@ import (
 
 // PnLData содержит универсальную информацию о прибыли/убытке (PnL) токена
 type PnLData struct {
-	CurrentPrice      float64 // Текущая цена токена (SOL за токен)
-	TheoreticalValue  float64 // Теоретическая стоимость текущей позиции: токены * CurrentPrice
-	SellEstimate      float64 // Приблизительная выручка при продаже (с учетом комиссии)
-	InitialInvestment float64 // Первоначальные вложения в SOL
-	NetPnL            float64 // Чистая прибыль/убыток: SellEstimate - InitialInvestment
-	PnLPercentage     float64 // Процент PnL от начальных вложений
+	InitialInvestment float64 // Сколько вложено в SOL
+	SellEstimate      float64 // Сколько получено в SOL после продажи (с учетом комиссии)
+	NetPnL            float64 // Прибыль/убыток в SOL
+	PnLPercentage     float64 // Процент PnL
 }
 
 // PnLCalculator определяет интерфейс для расчета показателей прибыли и убытка для токенов
