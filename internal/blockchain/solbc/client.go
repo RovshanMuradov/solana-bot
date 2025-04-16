@@ -58,7 +58,7 @@ func (c *Client) GetAccountDataInto(ctx context.Context, pubkey solana.PublicKey
 	return nil
 }
 
-// // GetAccountInfo получает информацию об аккаунте.
+// GetAccountInfo получает информацию об аккаунте.
 func (c *Client) GetAccountInfo(ctx context.Context, pubkey solana.PublicKey) (*rpc.GetAccountInfoResult, error) {
 	result, err := c.rpc.GetAccountInfo(ctx, pubkey)
 	if err != nil {

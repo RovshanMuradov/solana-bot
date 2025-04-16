@@ -16,8 +16,6 @@ const (
 	// Стандартные десятичные знаки для SOL и токенов Pump.fun
 	solDecimals   = 9
 	tokenDecimals = 6
-	// Примерная комиссия за транзакцию на Pump.fun (1%)
-	pumpFeePercentage = 0.01
 	// Минимальная цена для предотвращения деления на ноль или слишком малых значений
 	minPriceThreshold = 1e-18 // Очень маленькое значение, близкое к нулю
 )
@@ -88,24 +86,19 @@ func (d *DEX) CalculateSellValue(ctx context.Context, tokenAmount float64, bondi
 	// Базовая теоретическая стоимость продажи (без учета комиссии и slippage)
 	baseValue := tokenAmount * currentPrice
 
-	// Применяем комиссию
-	sellEstimate := baseValue * (1.0 - pumpFeePercentage)
-
 	d.logger.Debug("Sell estimate calculation (slippage NOT included)",
 		zap.Float64("tokenAmount", tokenAmount),
 		zap.Float64("currentPrice", currentPrice),
-		zap.Float64("baseValue", baseValue),
-		zap.Float64("feePercentage", pumpFeePercentage),
-		zap.Float64("sellEstimate", sellEstimate))
+		zap.Float64("baseValue", baseValue))
 
 	// Дополнительное логирование, если оценка продажи равна нулю
-	if sellEstimate <= 0 {
+	if baseValue <= 0 {
 		d.logger.Warn("Sell estimate is zero or negative",
 			zap.Float64("tokenAmount", tokenAmount),
 			zap.Float64("currentPrice", currentPrice))
 	}
 
-	return sellEstimate, nil
+	return baseValue, nil
 }
 
 // CalculateBondingCurvePnL вычисляет PnL (прибыль/убыток) на основе модели bonding curve.
@@ -196,33 +189,23 @@ func (d *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, err
 		return 0, fmt.Errorf("failed to derive bonding curve: %w", err)
 	}
 
-	// Получение данных аккаунта bonding curve с менее строгим уровнем подтверждения
-	// для более быстрого доступа к новым токенам
-	accountInfo, err := d.client.GetAccountInfo(ctx, bondingCurve)
-
-	// Если аккаунт не найден, возможно, это очень новый токен
-	if err != nil || accountInfo == nil || accountInfo.Value == nil {
-		// Для новых токенов возвращаем минимальную цену
-		d.logger.Warn("Bonding curve account not found or error, assuming new token with minimal price",
-			zap.String("token_mint", tokenMint),
-			zap.Error(err))
-		return 0.000000001, nil // Минимальная цена для новых токенов
-	}
-
-	// Парсим данные bonding curve
+	// Получение и парсинг данных аккаунта bonding curve
 	bondingCurveData, err := d.FetchBondingCurveAccount(ctx, bondingCurve)
-	if err != nil {
-		d.logger.Warn("Failed to parse bonding curve data, assuming new token",
+
+	// Проверка на ошибки и состояние bonding curve
+	if err != nil ||
+		bondingCurveData == nil ||
+		bondingCurveData.VirtualTokenReserves == 0 ||
+		bondingCurveData.VirtualSolReserves == 0 {
+
+		// Если bonding curve graduated или не доступна, логируем это
+		d.logger.Warn("Bonding curve may be graduated or not available",
 			zap.String("token_mint", tokenMint),
 			zap.Error(err))
-		return 0.000000001, nil
-	}
 
-	// Проверка на нулевые резервы (характерно для очень новых токенов)
-	if bondingCurveData.VirtualTokenReserves == 0 || bondingCurveData.VirtualSolReserves == 0 {
-		d.logger.Warn("Bonding curve has zero reserves, assuming new token",
-			zap.String("token_mint", tokenMint))
-		return 0.000000001, nil
+		// Получаем цену из другого источника (например, из рыночных данных)
+		// или возвращаем ошибку, чтобы вызывающий код мог решить, что делать дальше
+		return 0, fmt.Errorf("bonding curve for token %s is graduated or not available", tokenMint)
 	}
 
 	// Используем общую функцию для расчета цены токена
