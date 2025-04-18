@@ -67,7 +67,7 @@ func (d *DEX) FetchBondingCurveAccount(ctx context.Context, bondingCurve solana.
 	}
 
 	// Шаг 6: Чтение виртуальных резервов токенов (первые 8 байт)
-	virtualTokenReserves := binary.LittleEndian.Uint64(data[0:8]) // TODO: work with virtual balance
+	virtualTokenReserves := binary.LittleEndian.Uint64(data[0:8])
 
 	// Шаг 7: Чтение виртуальных резервов SOL (следующие 8 байт)
 	virtualSolReserves := binary.LittleEndian.Uint64(data[8:16])

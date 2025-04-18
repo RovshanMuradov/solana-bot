@@ -16,7 +16,7 @@ import (
 type SessionConfig struct {
 	TokenMint       string        // Token mint address
 	TokenAmount     float64       // Human-readable amount of tokens purchased
-	TokenBalance    uint64        // Raw token balance in smallest units
+	TokenBalance    uint64        // Raw token balance in the smallest units
 	InitialAmount   float64       // Initial SOL amount spent
 	InitialPrice    float64       // Initial token price
 	MonitorInterval time.Duration // Interval for price updates
@@ -115,21 +115,35 @@ func (ms *MonitoringSession) Stop() {
 
 // onPriceUpdate вызывается при обновлении цены токена.
 //
-// Метод получает актуальную информацию о цене токена и его балансе,
-// вычисляет прибыль/убытки (PnL) и выводит эту информацию в консоль.
-// Если специализированный калькулятор для DEX не найден - выводится ошибка.
+// Метод координирует получение актуальной информации о балансе токена,
+// расчет прибыли/убытков и вывод этой информации в консоль.
 func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentChange, tokenAmount float64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// Шаг 1: Обновляем баланс и рассчитываем PnL
+	updatedBalance, pnlData, err := ms.updateBalanceAndCalculatePnL(ctx, tokenAmount)
+	if err != nil {
+		return // Функция updateBalanceAndCalculatePnL уже логирует ошибку
+	}
+
+	// Шаг 2: Отображаем информацию
+	ms.displayMonitorInfo(currentPrice, initialPrice, percentChange, updatedBalance, pnlData)
+}
+
+// updateBalanceAndCalculatePnL обновляет баланс токенов и рассчитывает PnL.
+//
+// Функция запрашивает актуальный баланс токенов, обновляет его в конфигурации
+// и рассчитывает текущую прибыль/убыток на основе этой информации.
+func (ms *MonitoringSession) updateBalanceAndCalculatePnL(ctx context.Context, currentAmount float64) (float64, *PnLData, error) {
 	// Актуализация баланса
-	updatedBalance := tokenAmount
+	updatedBalance := currentAmount
 	tokenBalanceRaw, err := ms.config.DEX.GetTokenBalance(ctx, ms.config.TokenMint)
 	if err == nil && tokenBalanceRaw > 0 {
 		newBalance := float64(tokenBalanceRaw) / 1e6
-		if math.Abs(newBalance-tokenAmount) > 0.000001 && newBalance > 0 {
+		if math.Abs(newBalance-currentAmount) > 0.000001 && newBalance > 0 {
 			ms.logger.Debug("Token balance changed",
-				zap.Float64("old_balance", tokenAmount),
+				zap.Float64("old_balance", currentAmount),
 				zap.Float64("new_balance", newBalance))
 
 			ms.config.TokenAmount = newBalance
@@ -138,48 +152,57 @@ func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentCh
 		}
 	}
 
+	// Получение калькулятора и расчет PnL
 	calculator, err := GetCalculator(ms.config.DEX, ms.logger)
 	if err != nil {
 		ms.logger.Error("Failed to get calculator for DEX", zap.Error(err))
 		fmt.Printf("\nError: Cannot calculate PnL for %s\n", ms.config.DEX.GetName())
-		return
+		return updatedBalance, nil, err
 	}
 
 	pnlData, err := calculator.CalculatePnL(ctx, ms.config.TokenMint, updatedBalance, ms.config.InitialAmount)
 	if err != nil {
 		ms.logger.Error("Failed to calculate PnL", zap.Error(err))
 		fmt.Printf("\nError calculating PnL: %v\n", err)
-		return
+		return updatedBalance, nil, err
 	}
 
-	// Отображение
+	return updatedBalance, pnlData, nil
+}
+
+// displayMonitorInfo форматирует и выводит информацию о мониторинге в консоль.
+func (ms *MonitoringSession) displayMonitorInfo(currentPrice, initialPrice, percentChange, tokenBalance float64, pnlData *PnLData) {
+	// pnlData уже имеет правильный тип *PnLData
+	pnl := pnlData
+
+	// Форматирование процента изменения цены
+	changeStr := fmt.Sprintf("%.2f%%", percentChange)
+	if percentChange > 0 {
+		changeStr = "\033[32m+" + changeStr + "\033[0m" // Зеленый для роста
+	} else if percentChange < 0 {
+		changeStr = "\033[31m" + changeStr + "\033[0m" // Красный для падения
+	}
+
+	// Форматирование PnL
+	pnlStr := fmt.Sprintf("%.8f SOL (%.2f%%)", pnl.NetPnL, pnl.PnLPercentage)
+	if pnl.NetPnL > 0 {
+		pnlStr = "\033[32m+" + pnlStr + "\033[0m" // Зеленый для прибыли
+	} else if pnl.NetPnL < 0 {
+		pnlStr = "\033[31m" + pnlStr + "\033[0m" // Красный для убытка
+	}
+
+	// Вывод информации в консоль
 	fmt.Println("\n╔════════════════ TOKEN MONITOR ════════════════╗")
 	fmt.Printf("║ Token: %-38s ║\n", shortenAddress(ms.config.TokenMint))
 	fmt.Println("╟───────────────────────────────────────────────╢")
 	fmt.Printf("║ Current Price:       %-14.8f SOL ║\n", currentPrice)
 	fmt.Printf("║ Initial Price:       %-14.8f SOL ║\n", initialPrice)
-
-	changeStr := fmt.Sprintf("%.2f%%", percentChange)
-	if percentChange > 0 {
-		changeStr = "\033[32m+" + changeStr + "\033[0m"
-	} else if percentChange < 0 {
-		changeStr = "\033[31m" + changeStr + "\033[0m"
-	}
 	fmt.Printf("║ Price Change:        %-25s ║\n", changeStr)
-
-	fmt.Printf("║ Tokens Owned:        %-14.6f      ║\n", updatedBalance)
+	fmt.Printf("║ Tokens Owned:        %-14.6f      ║\n", tokenBalance)
 	fmt.Println("╟───────────────────────────────────────────────╢")
-	fmt.Printf("║ Sold (Estimate):     %-14.8f SOL ║\n", pnlData.SellEstimate)
-	fmt.Printf("║ Invested:            %-14.8f SOL ║\n", pnlData.InitialInvestment)
-
-	pnlStr := fmt.Sprintf("%.8f SOL (%.2f%%)", pnlData.NetPnL, pnlData.PnLPercentage)
-	if pnlData.NetPnL > 0 {
-		pnlStr = "\033[32m+" + pnlStr + "\033[0m"
-	} else if pnlData.NetPnL < 0 {
-		pnlStr = "\033[31m" + pnlStr + "\033[0m"
-	}
+	fmt.Printf("║ Sold (Estimate):     %-14.8f SOL ║\n", pnl.SellEstimate)
+	fmt.Printf("║ Invested:            %-14.8f SOL ║\n", pnl.InitialInvestment)
 	fmt.Printf("║ P&L:                 %-25s ║\n", pnlStr)
-
 	fmt.Println("╚═══════════════════════════════════════════════╝")
 	fmt.Println("Press Enter to sell tokens, 'q' to exit without selling")
 }

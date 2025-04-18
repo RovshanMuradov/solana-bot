@@ -13,49 +13,17 @@ import (
 )
 
 // GetName возвращает название DEX.
-//
-// Метод предоставляет строковый идентификатор для Pump.Swap DEX,
-// который используется для логирования и идентификации биржи в системе.
-//
-// Возвращает:
-//   - string: строковое название DEX ("Pump.Swap")
 func (d *pumpswapDEXAdapter) GetName() string {
 	return "Pump.Swap"
 }
 
-// GetTokenPrice получает текущую цену токена на Pump.Swap DEX.
-//
-// Метод инициализирует DEX для указанного токена и запрашивает
-// его текущую рыночную цену на бирже Pump.Swap.
-//
-// Параметры:
-//   - ctx: контекст выполнения
-//   - tokenMint: адрес минта токена, для которого запрашивается цена
-//
-// Возвращает:
-//   - float64: цена токена в SOL
-//   - error: ошибку, если не удалось получить цену, или nil при успешном выполнении
-func (d *pumpswapDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
-	if err := d.initPumpSwap(ctx, tokenMint); err != nil {
-		return 0, err
-	}
-	return d.inner.GetTokenPrice(ctx, tokenMint)
+// pumpswapDEXAdapter адаптирует Pump.Swap к общему интерфейсу DEX.
+type pumpswapDEXAdapter struct {
+	baseDEXAdapter
+	inner *pumpswap.DEX
 }
 
 // Execute выполняет операцию на Pump.Swap DEX.
-//
-// Метод выполняет указанную в задаче операцию (обмен/продажа) на Pump.Swap DEX.
-// Перед выполнением операции автоматически инициализирует адаптер для работы с указанным токеном.
-// Поддерживает операции OperationSwap (покупка) и OperationSell (продажа).
-// При операции обмена (Swap) сумма указывается в SOL и конвертируется в ламппорты.
-// При операции продажи определяется точность токена для корректной конвертации.
-//
-// Параметры:
-//   - ctx: контекст выполнения
-//   - task: структура с параметрами задачи (тип операции, адрес токена, количество SOL и т.д.)
-//
-// Возвращает:
-//   - error: ошибку, если операция не удалась или не поддерживается, или nil при успешном выполнении
 func (d *pumpswapDEXAdapter) Execute(ctx context.Context, task *Task) error {
 	if task.TokenMint == "" {
 		return fmt.Errorf("token mint address is required for Pump.swap")
@@ -85,6 +53,21 @@ func (d *pumpswapDEXAdapter) Execute(ctx context.Context, task *Task) error {
 		})
 
 	case OperationSell:
+		// Проверяем, указан ли специальный процент для продажи
+		if task.SellPercentage > 0 {
+			// Если указан процент продажи, используем метод SellPercentTokens
+			d.logger.Info("Executing percent-based sell on Pump.swap",
+				zap.String("token_mint", task.TokenMint),
+				zap.Float64("percent_to_sell", task.SellPercentage),
+				zap.Float64("slippage_percent", task.SlippagePercent),
+				zap.String("priority_fee", task.PriorityFee),
+				zap.Uint32("compute_units", task.ComputeUnits))
+
+			return d.SellPercentTokens(ctx, task.TokenMint, task.SellPercentage,
+				task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
+		}
+
+		// Стандартная продажа с указанным количеством токенов
 		tokenMintPubkey, err := solana.PublicKeyFromBase58(task.TokenMint)
 		if err != nil {
 			return fmt.Errorf("invalid token mint address: %w", err)
@@ -115,18 +98,6 @@ func (d *pumpswapDEXAdapter) Execute(ctx context.Context, task *Task) error {
 }
 
 // initPumpSwap инициализирует адаптер Pump.Swap DEX при необходимости.
-//
-// Метод выполняет ленивую инициализацию внутреннего экземпляра DEX для работы с токеном
-// по указанному адресу минта. Если DEX уже инициализирован с тем же токеном, метод
-// возвращает nil. Безопасен для вызова из нескольких горутин благодаря использованию мьютекса.
-// Создает экземпляр менеджера пула и настраивает конфигурацию для указанного токена.
-//
-// Параметры:
-//   - ctx: контекст выполнения (в текущей реализации не используется)
-//   - tokenMint: адрес минта токена, для которого инициализируется DEX
-//
-// Возвращает:
-//   - error: ошибку, если инициализация не удалась, или nil при успешной инициализации
 func (d *pumpswapDEXAdapter) initPumpSwap(_ context.Context, tokenMint string) error {
 	d.initMu.Lock()
 	defer d.initMu.Unlock()
@@ -154,13 +125,41 @@ func (d *pumpswapDEXAdapter) initPumpSwap(_ context.Context, tokenMint string) e
 }
 
 // GetTokenBalance возвращает текущий баланс токена на аккаунте пользователя.
-// TODO: this is placeholder
 func (d *pumpswapDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error) {
-	return 0, nil
+	if err := d.initPumpSwap(ctx, tokenMint); err != nil {
+		return 0, fmt.Errorf("failed to initialize PumpSwap: %w", err)
+	}
+	return d.inner.GetTokenBalance(ctx)
 }
 
 // SellPercentTokens продает указанный процент имеющихся токенов.
-// TODO: this is placeholder
 func (d *pumpswapDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint string, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
-	return nil
+	// Если процент не указан или указан некорректно, устанавливаем значение по умолчанию - 99%
+	if percentToSell <= 0 || percentToSell > 100 {
+		percentToSell = 99.0
+		d.logger.Info("Используется значение процента продажи по умолчанию", zap.Float64("percent_to_sell", percentToSell))
+	}
+
+	// Инициализируем DEX для указанного токена
+	if err := d.initPumpSwap(ctx, tokenMint); err != nil {
+		return fmt.Errorf("не удалось инициализировать PumpSwap для продажи токенов: %w", err)
+	}
+
+	d.logger.Info("Запуск продажи процента токенов на Pump.swap",
+		zap.String("token_mint", tokenMint),
+		zap.Float64("percent_to_sell", percentToSell),
+		zap.Float64("slippage_percent", slippagePercent),
+		zap.String("priority_fee", priorityFeeSol),
+		zap.Uint32("compute_units", computeUnits))
+
+	// Вызываем метод SellPercentTokens у внутреннего экземпляра DEX
+	return d.inner.SellPercentTokens(ctx, percentToSell, slippagePercent, priorityFeeSol, computeUnits)
+}
+
+// GetTokenPrice получает текущую цену токена на Pump.Swap DEX.
+func (d *pumpswapDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
+	if err := d.initPumpSwap(ctx, tokenMint); err != nil {
+		return 0, err
+	}
+	return d.inner.GetTokenPrice(ctx, tokenMint)
 }

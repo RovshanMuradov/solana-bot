@@ -392,19 +392,19 @@ func (pm *PoolManager) FindPoolWithRetry(ctx context.Context, baseMint, quoteMin
 ////////////////////////////////////////////////////////////////////////////////
 
 // findAndValidatePool находит и проверяет пул для текущей конфигурации DEX.
-func (dex *DEX) findAndValidatePool(ctx context.Context) (*PoolInfo, bool, error) {
-	effBase, effQuote := dex.effectiveMints()
+func (d *DEX) findAndValidatePool(ctx context.Context) (*PoolInfo, bool, error) {
+	effBase, effQuote := d.effectiveMints()
 
-	pool, err := dex.poolManager.FindPoolWithRetry(ctx, effBase, effQuote, 5, 2*time.Second)
+	pool, err := d.poolManager.FindPoolWithRetry(ctx, effBase, effQuote, 5, 2*time.Second)
 	if err != nil {
-		dex.logger.Error("Не удалось найти пул", zap.String("base_mint", effBase.String()), zap.String("quote_mint", effQuote.String()), zap.Error(err))
+		d.logger.Error("Не удалось найти пул", zap.String("base_mint", effBase.String()), zap.String("quote_mint", effQuote.String()), zap.Error(err))
 		return nil, false, fmt.Errorf("failed to find pool: %w", err)
 	}
 
-	dex.config.PoolAddress = pool.Address
-	dex.config.LPMint = pool.LPMint
+	d.config.PoolAddress = pool.Address
+	d.config.LPMint = pool.LPMint
 
-	dex.logger.Info("Получены данные пула", zap.String("pool_address", pool.Address.String()),
+	d.logger.Info("Получены данные пула", zap.String("pool_address", pool.Address.String()),
 		zap.String("base_mint", pool.BaseMint.String()), zap.String("quote_mint", pool.QuoteMint.String()),
 		zap.Uint64("base_reserves", pool.BaseReserves), zap.Uint64("quote_reserves", pool.QuoteReserves))
 

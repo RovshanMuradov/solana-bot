@@ -6,7 +6,6 @@ package dex
 
 import (
 	"context"
-	"github.com/rovshanmuradov/solana-bot/internal/dex/pumpswap"
 	"time"
 )
 
@@ -28,18 +27,7 @@ type Task struct {
 	PriorityFee     string        // Priority fee in SOL (string format, e.g. "0.000001")
 	ComputeUnits    uint32        // Compute units for the transaction
 	MonitorInterval time.Duration // Интервал обновления цены при мониторинге
-}
-
-// pumpswapDEXAdapter адаптирует Pump.Swap к общему интерфейсу DEX.
-//
-// Структура предоставляет реализацию интерфейса DEX для биржи Pump.Swap,
-// используя композицию с базовым адаптером DEX и сохраняя ссылку на
-// внутренний экземпляр Pump.Swap DEX. Адаптер обеспечивает ленивую инициализацию
-// и потокобезопасный доступ к операциям на бирже. Некоторые методы (например,
-// GetTokenBalance и SellPercentTokens) имеют заглушки или неполную реализацию.
-type pumpswapDEXAdapter struct {
-	baseDEXAdapter
-	inner *pumpswap.DEX
+	SellPercentage  float64       // Процент от общего баланса токенов для продажи (0-100)
 }
 
 // DEX — единый интерфейс для работы с различными DEX.
@@ -55,14 +43,3 @@ type DEX interface {
 	// SellPercentTokens продает указанный процент имеющихся токенов
 	SellPercentTokens(ctx context.Context, tokenMint string, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error
 }
-
-// BondingCurvePnL содержит универсальную информацию о прибыли/убытке (PnL) токена
-// для всех типов DEX (включая PumpFun, PumpSwap и другие)
-//type BondingCurvePnL struct {
-//	CurrentPrice      float64 // Текущая цена токена (SOL за токен)
-//	TheoreticalValue  float64 // Теоретическая стоимость текущей позиции: токены * CurrentPrice
-//	SellEstimate      float64 // Приблизительная выручка при продаже (с учетом комиссии)
-//	InitialInvestment float64 // Первоначальные вложения в SOL
-//	NetPnL            float64 // Чистая прибыль/убыток: SellEstimate - InitialInvestment
-//	PnLPercentage     float64 // Процент PnL от начальных вложений
-//}

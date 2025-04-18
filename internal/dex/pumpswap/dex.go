@@ -129,26 +129,36 @@ func (d *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, err
 }
 
 // GetTokenBalance получает баланс токена в кошельке пользователя.
-func (d *DEX) GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error) {
-	// Проверяем соответствие tokenMint
-	mint, err := solana.PublicKeyFromBase58(tokenMint)
-	if err != nil {
-		return 0, fmt.Errorf("invalid token mint: %w", err)
-	}
-
-	effBase, _ := d.effectiveMints()
-	if !mint.Equals(effBase) {
-		return 0, fmt.Errorf("token mint mismatch: expected %s, got %s", effBase.String(), mint.String())
-	}
-
+func (d *DEX) GetTokenBalance(ctx context.Context, commitment ...rpc.CommitmentType) (uint64, error) {
 	// Находим ATA адрес для токена
-	userATA, _, err := solana.FindAssociatedTokenAddress(d.wallet.PublicKey, mint)
+	userATA, _, err := solana.FindAssociatedTokenAddress(d.wallet.PublicKey, d.config.QuoteMint)
 	if err != nil {
 		return 0, fmt.Errorf("failed to derive associated token account: %w", err)
 	}
 
+	// Шаг 2: Определение уровня подтверждения (commitment level)
+	// По умолчанию используем Processed - самый быстрый уровень
+	// Можно переопределить через вариативный параметр
+	commitmentLevel := rpc.CommitmentProcessed
+	if len(commitment) > 0 {
+		commitmentLevel = commitment[0]
+	}
+
 	// Получаем баланс токена
-	result, err := d.client.GetTokenAccountBalance(ctx, userATA, rpc.CommitmentConfirmed)
+	result, err := d.client.GetTokenAccountBalance(ctx, userATA, commitmentLevel)
+
+	// Шаг 4: При неудаче с Processed, пробуем Confirmed
+	if err != nil && commitmentLevel == rpc.CommitmentProcessed {
+		d.logger.Debug("Failed to get balance with Processed commitment, trying Confirmed",
+			zap.String("token_mint", d.config.QuoteMint.String()),
+			zap.String("user_ata", userATA.String()),
+			zap.Error(err))
+
+		// Повторный запрос с более надежным уровнем подтверждения
+		result, err = d.client.GetTokenAccountBalance(ctx, userATA, rpc.CommitmentConfirmed)
+	}
+
+	// Проверяем ошибку после возможной повторной попытки
 	if err != nil {
 		return 0, fmt.Errorf("failed to get token account balance: %w", err)
 	}
@@ -164,4 +174,52 @@ func (d *DEX) GetTokenBalance(ctx context.Context, tokenMint string) (uint64, er
 	}
 
 	return balance, nil
+}
+
+// SellPercentTokens продает указанный процент от доступного баланса токенов.
+// Метод получает баланс токена, рассчитывает сумму для продажи в соответствии
+// с указанным процентом и выполняет операцию продажи.
+//
+// Параметры:
+//   - ctx: контекст выполнения
+//   - percentToSell: процент от общего баланса для продажи (от 0.0 до 100.0)
+//   - slippagePercent: максимально допустимое проскальзывание цены в процентах
+//   - priorityFeeSol: приоритетная комиссия в SOL (строковое представление)
+//   - computeUnits: количество вычислительных единиц для транзакции
+//
+// Возвращает:
+//   - error: ошибку, если операция не удалась, или nil при успешном выполнении
+func (d *DEX) SellPercentTokens(ctx context.Context, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
+	// Проверка валидности параметра percentToSell
+	if percentToSell <= 0 || percentToSell > 100 {
+		return fmt.Errorf("percentToSell должен быть в пределах от 0 до 100, получено: %f", percentToSell)
+	}
+
+	// Получаем текущий баланс токена
+	tokenBalance, err := d.GetTokenBalance(ctx)
+	if err != nil {
+		return fmt.Errorf("не удалось получить баланс токена: %w", err)
+	}
+
+	// Проверяем, есть ли токены для продажи
+	if tokenBalance == 0 {
+		return fmt.Errorf("нет токенов для продажи")
+	}
+
+	// Рассчитываем количество токенов для продажи
+	amountToSell := uint64(float64(tokenBalance) * percentToSell / 100.0)
+	
+	// Убедимся, что продаём хотя бы 1 токен, если есть баланс
+	if amountToSell == 0 && tokenBalance > 0 {
+		amountToSell = 1
+	}
+
+	d.logger.Info("Продажа токенов",
+		zap.Uint64("current_balance", tokenBalance),
+		zap.Float64("percent_to_sell", percentToSell),
+		zap.Uint64("amount_to_sell", amountToSell),
+		zap.Float64("slippage_percent", slippagePercent))
+
+	// Выполняем продажу указанного количества токенов
+	return d.ExecuteSell(ctx, amountToSell, slippagePercent, priorityFeeSol, computeUnits)
 }
