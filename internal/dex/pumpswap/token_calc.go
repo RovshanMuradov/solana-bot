@@ -7,8 +7,11 @@ package pumpswap
 import (
 	"context"
 	"fmt"
+	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
 	"math"
 	"math/big"
+	"strconv"
 	"time"
 
 	"go.uber.org/zap"
@@ -146,6 +149,7 @@ func (tc *TokenCalculator) CalculatePnL(ctx context.Context, tokenAmount float64
 	// Теоретическая стоимость: количество токенов * текущая цена
 	theoreticalValue := tokenAmount * currentPrice
 
+	// TODO: убрать расчет проскальзования и коммиссий
 	// Оценка продажи (с учетом проскальзывания и комиссий)
 	sellEstimate, err := tc.EstimateSellOutput(ctx, tokenAmount, 1.0) // Используем 1% проскальзывание по умолчанию
 	if err != nil {
@@ -180,6 +184,7 @@ func (tc *TokenCalculator) CalculatePnL(ctx context.Context, tokenAmount float64
 	return result, nil
 }
 
+// TODO: убрать
 // EstimateSellOutput вычисляет ожидаемый выход при продаже токенов
 func (tc *TokenCalculator) EstimateSellOutput(ctx context.Context, tokenAmount float64, slippagePercent float64) (*SellEstimate, error) {
 	// Получаем актуальную информацию о пуле
@@ -269,6 +274,7 @@ func (tc *TokenCalculator) EstimateSellOutput(ctx context.Context, tokenAmount f
 	return estimate, nil
 }
 
+// TODO: убрать этот ненужный метод
 // EstimateBuyOutput вычисляет ожидаемый выход при покупке токенов за WSOL
 func (tc *TokenCalculator) EstimateBuyOutput(ctx context.Context, solAmount float64, slippagePercent float64) (*BuyEstimate, error) {
 	// Получаем актуальную информацию о пуле
@@ -366,4 +372,119 @@ type BuyEstimate struct {
 	Price        float64 // Цена исполнения сделки
 	Fee          float64 // Общая комиссия в SOL
 	MinimumOut   float64 // Минимальный выход с учетом проскальзывания
+}
+
+// GetTokenPrice вычисляет цену токена по соотношению резервов пула.
+func (d *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
+	// Здесь мы считаем, что tokenMint должен соответствовать effectiveBaseMint.
+	effBase, effQuote := d.effectiveMints()
+	mint, err := solana.PublicKeyFromBase58(tokenMint)
+	if err != nil {
+		return 0, fmt.Errorf("invalid token mint: %w", err)
+	}
+	if !mint.Equals(effBase) {
+		return 0, fmt.Errorf("token mint mismatch: expected %s, got %s", effBase.String(), mint.String())
+	}
+	pool, err := d.poolManager.FindPoolWithRetry(ctx, effBase, effQuote, 3, 1*time.Second)
+	if err != nil {
+		return 0, fmt.Errorf("failed to find pool: %w", err)
+	}
+	var price float64
+	if pool.BaseReserves > 0 && pool.QuoteReserves > 0 {
+		solDecimals := uint8(WSOLDecimals)
+		tokenDecimals := d.getTokenDecimals(ctx, pool.BaseMint, DefaultTokenDecimals)
+		baseReserves := new(big.Float).SetUint64(pool.BaseReserves)
+		quoteReserves := new(big.Float).SetUint64(pool.QuoteReserves)
+		ratio := new(big.Float).Quo(baseReserves, quoteReserves)
+		adjustment := math.Pow10(int(tokenDecimals)) / math.Pow10(int(solDecimals))
+		adjustedRatio := new(big.Float).Mul(ratio, big.NewFloat(adjustment))
+		price, _ = adjustedRatio.Float64()
+	}
+	return price, nil
+}
+
+// GetTokenBalance получает баланс токена в кошельке пользователя.
+func (d *DEX) GetTokenBalance(ctx context.Context, commitment ...rpc.CommitmentType) (uint64, error) {
+	// Находим ATA адрес для токена
+	userATA, _, err := solana.FindAssociatedTokenAddress(d.wallet.PublicKey, d.config.QuoteMint)
+	if err != nil {
+		return 0, fmt.Errorf("failed to derive associated token account: %w", err)
+	}
+
+	// Шаг 2: Определение уровня подтверждения (commitment level)
+	// По умолчанию используем Processed - самый быстрый уровень
+	// Можно переопределить через вариативный параметр
+	commitmentLevel := rpc.CommitmentProcessed
+	if len(commitment) > 0 {
+		commitmentLevel = commitment[0]
+	}
+
+	// Получаем баланс токена
+	result, err := d.client.GetTokenAccountBalance(ctx, userATA, commitmentLevel)
+
+	// Шаг 4: При неудаче с Processed, пробуем Confirmed
+	if err != nil && commitmentLevel == rpc.CommitmentProcessed {
+		d.logger.Debug("Failed to get balance with Processed commitment, trying Confirmed",
+			zap.String("token_mint", d.config.QuoteMint.String()),
+			zap.String("user_ata", userATA.String()),
+			zap.Error(err))
+
+		// Повторный запрос с более надежным уровнем подтверждения
+		result, err = d.client.GetTokenAccountBalance(ctx, userATA, rpc.CommitmentConfirmed)
+	}
+
+	// Проверяем ошибку после возможной повторной попытки
+	if err != nil {
+		return 0, fmt.Errorf("failed to get token account balance: %w", err)
+	}
+
+	if result == nil || result.Value.Amount == "" {
+		return 0, fmt.Errorf("no token balance found")
+	}
+
+	// Парсим результат в uint64
+	balance, err := strconv.ParseUint(result.Value.Amount, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse token balance: %w", err)
+	}
+
+	return balance, nil
+}
+
+// SellPercentTokens продает указанный процент от доступного баланса токенов.
+// Метод получает баланс токена, рассчитывает сумму для продажи в соответствии
+// с указанным процентом и выполняет операцию продажи.
+func (d *DEX) SellPercentTokens(ctx context.Context, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
+	// Проверка валидности параметра percentToSell
+	if percentToSell <= 0 || percentToSell > 100 {
+		return fmt.Errorf("percentToSell должен быть в пределах от 0 до 100, получено: %f", percentToSell)
+	}
+
+	// Получаем текущий баланс токена
+	tokenBalance, err := d.GetTokenBalance(ctx)
+	if err != nil {
+		return fmt.Errorf("не удалось получить баланс токена: %w", err)
+	}
+
+	// Проверяем, есть ли токены для продажи
+	if tokenBalance == 0 {
+		return fmt.Errorf("нет токенов для продажи")
+	}
+
+	// Рассчитываем количество токенов для продажи
+	amountToSell := uint64(float64(tokenBalance) * percentToSell / 100.0)
+
+	// Убедимся, что продаём хотя бы 1 токен, если есть баланс
+	if amountToSell == 0 && tokenBalance > 0 {
+		amountToSell = 1
+	}
+
+	d.logger.Info("Продажа токенов",
+		zap.Uint64("current_balance", tokenBalance),
+		zap.Float64("percent_to_sell", percentToSell),
+		zap.Uint64("amount_to_sell", amountToSell),
+		zap.Float64("slippage_percent", slippagePercent))
+
+	// Выполняем продажу указанного количества токенов
+	return d.ExecuteSell(ctx, amountToSell, slippagePercent, priorityFeeSol, computeUnits)
 }

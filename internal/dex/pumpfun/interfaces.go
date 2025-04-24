@@ -1,3 +1,4 @@
+// internal/dex/pumpfun/interfaces.go
 package pumpfun
 
 import "context"
