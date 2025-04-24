@@ -151,3 +151,10 @@ func (d *pumpswapDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string
 	}
 	return d.inner.GetTokenPrice(ctx, tokenMint)
 }
+
+func (d *pumpswapDEXAdapter) CalculatePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*pumpswap.TokenPnL, error) {
+	if err := d.initPumpSwap(ctx, d.tokenMint); err != nil {
+		return nil, err
+	}
+	return d.inner.CalculatePnL(ctx, tokenAmount, initialInvestment)
+}

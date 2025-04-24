@@ -6,11 +6,11 @@ package pumpswap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 	"math"
-	"math/big"
 	"strconv"
 	"time"
 
@@ -19,6 +19,9 @@ import (
 
 // PnLCalculatorInterface определяет интерфейс для расчета прибыли/убытка и стоимости токенов
 type PnLCalculatorInterface interface {
+	//GetTokenPrice(ctx context.Context, tokenMint string) (float64, error)
+	CalculatePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*TokenPnL, error)
+	//GetTokenBalance(ctx context.Context, commitment ...rpc.CommitmentType) (uint64, error)
 }
 
 // TokenPnL содержит данные о прибыли/убытке для токена
@@ -85,80 +88,104 @@ func (tc *TokenCalculator) getPool(ctx context.Context) (*PoolInfo, error) {
 	return pool, nil
 }
 
-// GetCurrentPrice возвращает текущую цену токена
+// GetCurrentPrice returns the current BFI token price in SOL, using pool reserves and caching.
 func (tc *TokenCalculator) GetCurrentPrice(ctx context.Context) (float64, error) {
-	// Если в кэше есть актуальная информация о цене, возвращаем ее
-	if tc.cachedPrice > 0 && time.Since(tc.cachedPriceTime) < tc.cacheValidPeriod {
-		tc.logger.Debug("Using cached price", zap.Float64("price", tc.cachedPrice))
+	// Return cached price if still valid
+	if time.Since(tc.cachedPriceTime) < tc.cacheValidPeriod {
+		tc.logger.Debug("cache hit for current price", zap.Float64("price", tc.cachedPrice))
 		return tc.cachedPrice, nil
 	}
 
-	// Получаем актуальную информацию о пуле
+	// Fetch latest pool info
 	pool, err := tc.getPool(ctx)
 	if err != nil {
 		return 0, err
 	}
-
-	// Вычисляем цену по формуле: quote_reserves / base_reserves * (10^base_decimals / 10^quote_decimals)
-	effBase, _ := tc.dex.effectiveMints()
-	baseDecimals := tc.dex.getTokenDecimals(ctx, effBase, DefaultTokenDecimals)
-	quoteDecimals := uint8(WSOLDecimals) // WSOL всегда имеет 9 знаков после запятой
-
-	// Исключаем деление на ноль
 	if pool.BaseReserves == 0 {
-		return 0, fmt.Errorf("base reserves are zero, cannot calculate price")
+		return 0, errors.New("base reserves are zero, cannot calculate price")
 	}
 
-	// Расчет с использованием big.Float для предотвращения потери точности
-	baseReserves := new(big.Float).SetUint64(pool.BaseReserves)
-	quoteReserves := new(big.Float).SetUint64(pool.QuoteReserves)
-	quotient := new(big.Float).Quo(quoteReserves, baseReserves)
+	// Determine decimals for base (BFI) and quote (WSOL)
+	effBase, _ := tc.dex.effectiveMints()
+	baseDecimals := tc.dex.getTokenDecimals(ctx, effBase, DefaultTokenDecimals)
+	quoteDecimals := WSOLDecimals // WSOL has 9 decimals
 
-	// Корректировка с учетом разных десятичных знаков
-	decimalAdjustment := math.Pow10(int(quoteDecimals) - int(baseDecimals))
-	adjustedPrice := new(big.Float).Mul(quotient, big.NewFloat(decimalAdjustment))
+	// Calculate price = (quoteReserves/baseReserves) * 10^(baseDecimals - quoteDecimals)
+	price := float64(pool.QuoteReserves) /
+		float64(pool.BaseReserves) *
+		math.Pow10(int(baseDecimals)-int(quoteDecimals))
 
-	price, _ := adjustedPrice.Float64()
-
-	// Обновляем кэш цены
+	// Update cache
 	tc.cachedPrice = price
 	tc.cachedPriceTime = time.Now()
-	tc.logger.Debug("Current price calculated", zap.Float64("price", price))
+	tc.logger.Debug("calculated current price", zap.Float64("price", price))
 
 	return price, nil
 }
 
-// CalculatePnL вычисляет показатели прибыли и убытка для токенов
+// CalculatePnL computes profit and loss metrics for a given token amount and initial investment in SOL.
 func (tc *TokenCalculator) CalculatePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*TokenPnL, error) {
-	return nil, nil
+	// 1. Get current price
+	price, err := tc.GetCurrentPrice(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current price: %w", err)
+	}
+
+	// 2. Compute current value in SOL
+	currentValue := tokenAmount * price
+
+	// 3. Compute net PnL
+	netPnL := currentValue - initialInvestment
+
+	// 4. Compute PnL percentage
+	pnlPercentage := 0.0
+	if initialInvestment != 0 {
+		pnlPercentage = (netPnL / initialInvestment) * 100
+	}
+
+	// 5. Build result
+	result := &TokenPnL{
+		CurrentPrice:      price,
+		TheoreticalValue:  currentValue,
+		SellEstimate:      currentValue,
+		InitialInvestment: initialInvestment,
+		NetPnL:            netPnL,
+		PnLPercentage:     pnlPercentage,
+	}
+
+	return result, nil
 }
 
-// GetTokenPrice вычисляет цену токена по соотношению резервов пула.
+// GetTokenPrice returns the current price of the given tokenMint (must be the base mint) in SOL.
 func (d *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
-	// Здесь мы считаем, что tokenMint должен соответствовать effectiveBaseMint.
+	// Parse and verify mint
 	effBase, effQuote := d.effectiveMints()
-	mint, err := solana.PublicKeyFromBase58(tokenMint)
+	mintKey, err := solana.PublicKeyFromBase58(tokenMint)
 	if err != nil {
 		return 0, fmt.Errorf("invalid token mint: %w", err)
 	}
-	if !mint.Equals(effBase) {
-		return 0, fmt.Errorf("token mint mismatch: expected %s, got %s", effBase.String(), mint.String())
+	if !mintKey.Equals(effBase) {
+		return 0, fmt.Errorf("token mint mismatch: expected %s, got %s", effBase, mintKey)
 	}
-	pool, err := d.poolManager.FindPoolWithRetry(ctx, effBase, effQuote, 3, 1*time.Second)
+
+	// Retrieve pool reserves
+	pool, err := d.poolManager.FindPoolWithRetry(ctx, effBase, effQuote, 3, time.Second)
 	if err != nil {
 		return 0, fmt.Errorf("failed to find pool: %w", err)
 	}
-	var price float64
-	if pool.BaseReserves > 0 && pool.QuoteReserves > 0 {
-		solDecimals := uint8(WSOLDecimals)
-		tokenDecimals := d.getTokenDecimals(ctx, pool.BaseMint, DefaultTokenDecimals)
-		baseReserves := new(big.Float).SetUint64(pool.BaseReserves)
-		quoteReserves := new(big.Float).SetUint64(pool.QuoteReserves)
-		ratio := new(big.Float).Quo(baseReserves, quoteReserves)
-		adjustment := math.Pow10(int(tokenDecimals)) / math.Pow10(int(solDecimals))
-		adjustedRatio := new(big.Float).Mul(ratio, big.NewFloat(adjustment))
-		price, _ = adjustedRatio.Float64()
+	if pool.BaseReserves == 0 {
+		return 0, fmt.Errorf("base reserves are zero, cannot calculate price")
 	}
+
+	// Determine decimals
+	baseDecimals := d.getTokenDecimals(ctx, effBase, DefaultTokenDecimals)
+	quoteDecimals := WSOLDecimals
+
+	// Compute price
+	price := float64(pool.QuoteReserves) /
+		float64(pool.BaseReserves) *
+		math.Pow10(int(baseDecimals)-int(quoteDecimals))
+
 	return price, nil
 }
 
