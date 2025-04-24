@@ -133,26 +133,14 @@ func (d *pumpswapDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint stri
 }
 
 // SellPercentTokens продает указанный процент имеющихся токенов.
-func (d *pumpswapDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint string, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
-	// Если процент не указан или указан некорректно, устанавливаем значение по умолчанию - 99%
-	if percentToSell <= 0 || percentToSell > 100 {
-		percentToSell = 99.0
-		d.logger.Info("Используется значение процента продажи по умолчанию", zap.Float64("percent_to_sell", percentToSell))
-	}
+func (d *pumpswapDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint string, percentToSell float64,
+	slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
 
-	// Инициализируем DEX для указанного токена
+	// Инициализация PumpSwap если необходимо
 	if err := d.initPumpSwap(ctx, tokenMint); err != nil {
-		return fmt.Errorf("не удалось инициализировать PumpSwap для продажи токенов: %w", err)
+		return fmt.Errorf("failed to initialize PumpSwap: %w", err)
 	}
-
-	d.logger.Info("Запуск продажи процента токенов на Pump.swap",
-		zap.String("token_mint", tokenMint),
-		zap.Float64("percent_to_sell", percentToSell),
-		zap.Float64("slippage_percent", slippagePercent),
-		zap.String("priority_fee", priorityFeeSol),
-		zap.Uint32("compute_units", computeUnits))
-
-	// Вызываем метод SellPercentTokens у внутреннего экземпляра DEX
+	// Делегируем выполнение операции внутреннему DEX
 	return d.inner.SellPercentTokens(ctx, percentToSell, slippagePercent, priorityFeeSol, computeUnits)
 }
 
