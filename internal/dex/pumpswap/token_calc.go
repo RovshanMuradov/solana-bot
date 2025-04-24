@@ -34,53 +34,27 @@ type TokenPnL struct {
 	PnLPercentage     float64 // Процент PnL от начальных вложений
 }
 
-// TokenCalculator реализует расчеты для PumpSwap
-type TokenCalculator struct {
-	dex         *DEX
-	logger      *zap.Logger
-	poolManager PoolManagerInterface
-	config      *Config
-
-	// Кэшированные данные для оптимизации запросов
-	cachedPool       *PoolInfo
-	cachedPoolTime   time.Time
-	cachedPrice      float64
-	cachedPriceTime  time.Time
-	cacheValidPeriod time.Duration
-}
-
-// NewTokenCalculator создает новый экземпляр калькулятора для PumpSwap
-func NewTokenCalculator(dex *DEX, poolManager PoolManagerInterface, config *Config, logger *zap.Logger) *TokenCalculator {
-	return &TokenCalculator{
-		dex:              dex,
-		poolManager:      poolManager,
-		config:           config,
-		logger:           logger.Named("token_calculator"),
-		cacheValidPeriod: 30 * time.Second, // Кэш валиден 30 секунд по умолчанию
-	}
-}
-
 // getPool получает актуальную информацию о пуле ликвидности, используя кэширование
-func (tc *TokenCalculator) getPool(ctx context.Context) (*PoolInfo, error) {
+func (d *DEX) getPool(ctx context.Context) (*PoolInfo, error) {
 	// Если в кэше есть актуальная информация, возвращаем ее
-	if tc.cachedPool != nil && time.Since(tc.cachedPoolTime) < tc.cacheValidPeriod {
-		tc.logger.Debug("Using cached pool info",
-			zap.String("pool", tc.cachedPool.Address.String()),
-			zap.Time("cached_at", tc.cachedPoolTime))
-		return tc.cachedPool, nil
+	if d.cachedPool != nil && time.Since(d.cachedPoolTime) < d.cacheValidPeriod {
+		d.logger.Debug("Using cached pool info",
+			zap.String("pool", d.cachedPool.Address.String()),
+			zap.Time("cached_at", d.cachedPoolTime))
+		return d.cachedPool, nil
 	}
 
 	// Иначе получаем актуальную информацию о пуле
-	effBase, effQuote := tc.dex.effectiveMints()
-	pool, err := tc.poolManager.FindPoolWithRetry(ctx, effBase, effQuote, 3, time.Second)
+	effBase, effQuote := d.effectiveMints()
+	pool, err := d.poolManager.FindPoolWithRetry(ctx, effBase, effQuote, 3, time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find pool: %w", err)
 	}
 
 	// Обновляем кэш
-	tc.cachedPool = pool
-	tc.cachedPoolTime = time.Now()
-	tc.logger.Debug("Updated pool cache",
+	d.cachedPool = pool
+	d.cachedPoolTime = time.Now()
+	d.logger.Debug("Updated pool cache",
 		zap.String("pool", pool.Address.String()),
 		zap.Uint64("base_reserves", pool.BaseReserves),
 		zap.Uint64("quote_reserves", pool.QuoteReserves))
@@ -88,16 +62,16 @@ func (tc *TokenCalculator) getPool(ctx context.Context) (*PoolInfo, error) {
 	return pool, nil
 }
 
-// GetCurrentPrice returns the current BFI token price in SOL, using pool reserves and caching.
-func (tc *TokenCalculator) GetCurrentPrice(ctx context.Context) (float64, error) {
+// GedurrentPrice returns the current BFI token price in SOL, using pool reserves and caching.
+func (d *DEX) GedurrentPrice(ctx context.Context) (float64, error) {
 	// Return cached price if still valid
-	if time.Since(tc.cachedPriceTime) < tc.cacheValidPeriod {
-		tc.logger.Debug("cache hit for current price", zap.Float64("price", tc.cachedPrice))
-		return tc.cachedPrice, nil
+	if time.Since(d.cachedPriceTime) < d.cacheValidPeriod {
+		d.logger.Debug("cache hit for current price", zap.Float64("price", d.cachedPrice))
+		return d.cachedPrice, nil
 	}
 
-	// Fetch latest pool info
-	pool, err := tc.getPool(ctx)
+	// Fedh latest pool info
+	pool, err := d.getPool(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -106,8 +80,8 @@ func (tc *TokenCalculator) GetCurrentPrice(ctx context.Context) (float64, error)
 	}
 
 	// Determine decimals for base (BFI) and quote (WSOL)
-	effBase, _ := tc.dex.effectiveMints()
-	baseDecimals := tc.dex.getTokenDecimals(ctx, effBase, DefaultTokenDecimals)
+	effBase, _ := d.effectiveMints()
+	baseDecimals := d.getTokenDecimals(ctx, effBase, DefaultTokenDecimals)
 	quoteDecimals := WSOLDecimals // WSOL has 9 decimals
 
 	// Calculate price = (quoteReserves/baseReserves) * 10^(baseDecimals - quoteDecimals)
@@ -116,17 +90,17 @@ func (tc *TokenCalculator) GetCurrentPrice(ctx context.Context) (float64, error)
 		math.Pow10(int(baseDecimals)-int(quoteDecimals))
 
 	// Update cache
-	tc.cachedPrice = price
-	tc.cachedPriceTime = time.Now()
-	tc.logger.Debug("calculated current price", zap.Float64("price", price))
+	d.cachedPrice = price
+	d.cachedPriceTime = time.Now()
+	d.logger.Debug("calculated current price", zap.Float64("price", price))
 
 	return price, nil
 }
 
 // CalculatePnL computes profit and loss metrics for a given token amount and initial investment in SOL.
-func (tc *TokenCalculator) CalculatePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*TokenPnL, error) {
+func (d *DEX) CalculatePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*TokenPnL, error) {
 	// 1. Get current price
-	price, err := tc.GetCurrentPrice(ctx)
+	price, err := d.GedurrentPrice(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get current price: %w", err)
 	}
@@ -165,7 +139,7 @@ func (d *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, err
 		return 0, fmt.Errorf("invalid token mint: %w", err)
 	}
 	if !mintKey.Equals(effBase) {
-		return 0, fmt.Errorf("token mint mismatch: expected %s, got %s", effBase, mintKey)
+		return 0, fmt.Errorf("token mint mismadh: expected %s, got %s", effBase, mintKey)
 	}
 
 	// Retrieve pool reserves

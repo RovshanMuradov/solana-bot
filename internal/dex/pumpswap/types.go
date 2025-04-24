@@ -6,6 +6,7 @@ package pumpswap
 import (
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
+	"time"
 
 	"go.uber.org/zap"
 	"sync"
@@ -79,15 +80,20 @@ type PreparedTokenAccounts struct {
 
 // DEX реализует операции для PumpSwap.
 type DEX struct {
-	client      *solbc.Client
-	wallet      *wallet.Wallet
-	logger      *zap.Logger
-	config      *Config
-	poolManager PoolManagerInterface
-
-	// Новые поля
+	client       *solbc.Client
+	wallet       *wallet.Wallet
+	logger       *zap.Logger
+	config       *Config
+	poolManager  PoolManagerInterface
 	globalConfig *GlobalConfig
 	configMutex  sync.RWMutex
+
+	// Кэшированные данные для оптимизации запросов
+	cachedPool       *PoolInfo
+	cachedPoolTime   time.Time
+	cachedPrice      float64
+	cachedPriceTime  time.Time
+	cacheValidPeriod time.Duration
 }
 
 // SwapAmounts содержит результаты расчёта параметров свапа
