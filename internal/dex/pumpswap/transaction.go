@@ -20,14 +20,6 @@ import (
 // Метод объединяет процессы создания, подписи и отправки транзакции
 // с механизмом повторных попыток. Он использует экспоненциальную стратегию
 // задержки между попытками и имеет ограничение на общее время выполнения в 15 секунд.
-//
-// Параметры:
-//   - ctx: контекст выполнения операции
-//   - instructions: массив инструкций для включения в транзакцию
-//
-// Возвращает:
-//   - solana.Signature: подпись подтвержденной транзакции
-//   - error: ошибка при создании, подписании или отправке транзакции
 func (d *DEX) buildAndSubmitTransaction(ctx context.Context, instructions []solana.Instruction) (solana.Signature, error) {
 	op := func() (solana.Signature, error) {
 		tx, err := d.createSignedTransaction(ctx, instructions)
@@ -52,14 +44,6 @@ func (d *DEX) buildAndSubmitTransaction(ctx context.Context, instructions []sola
 // и подписывает её кошельком DEX. В случае критических ошибок (отсутствие blockhash,
 // невозможность создать или подписать транзакцию) возвращается постоянная ошибка,
 // которая предотвращает повторные попытки.
-//
-// Параметры:
-//   - ctx: контекст выполнения операции
-//   - instructions: массив инструкций для включения в транзакцию
-//
-// Возвращает:
-//   - *solana.Transaction: готовая подписанная транзакция
-//   - error: ошибка при получении blockhash, создании или подписании транзакции
 func (d *DEX) createSignedTransaction(ctx context.Context, instructions []solana.Instruction) (*solana.Transaction, error) {
 	blockhash, err := d.client.GetRecentBlockhash(ctx)
 	if err != nil {
@@ -84,15 +68,6 @@ func (d *DEX) createSignedTransaction(ctx context.Context, instructions []solana
 // Он обрабатывает различные типы ошибок: временные (BlockhashNotFound), специфические
 // (SlippageExceeded) и постоянные. Для временных ошибок возможен повторный запуск,
 // для постоянных - операция прерывается.
-//
-// Параметры:
-//   - ctx: контекст выполнения операции
-//   - tx: подписанная транзакция для отправки
-//
-// Возвращает:
-//   - solana.Signature: подпись отправленной транзакции
-//   - error: ошибка при отправке или подтверждении транзакции. В случае ошибки превышения
-//     проскальзывания возвращается структурированная ошибка типа *SlippageExceededError
 func (d *DEX) submitAndConfirmTransaction(ctx context.Context, tx *solana.Transaction) (solana.Signature, error) {
 	sig, err := d.client.SendTransaction(ctx, tx)
 	if err != nil {
@@ -124,14 +99,6 @@ func (d *DEX) submitAndConfirmTransaction(ctx context.Context, tx *solana.Transa
 // Метод создает инструкции для управления вычислительными ресурсами транзакции:
 // установка лимита вычислительных единиц и их стоимости (приоритетная комиссия).
 // Приоритетная комиссия преобразуется из SOL в лампорты (1 SOL = 1e9 лампортов).
-//
-// Параметры:
-//   - computeUnits: максимальное количество вычислительных единиц для транзакции
-//   - priorityFeeSol: приоритетная комиссия в SOL (строковое представление)
-//
-// Возвращает:
-//   - []solana.Instruction: массив инструкций для управления вычислительными ресурсами
-//   - error: ошибка при парсинге или валидации параметров
 func (d *DEX) preparePriorityInstructions(computeUnits uint32, priorityFeeSol string) ([]solana.Instruction, error) {
 	var instructions []solana.Instruction
 	if computeUnits > 0 {
@@ -159,16 +126,6 @@ func (d *DEX) preparePriorityInstructions(computeUnits uint32, priorityFeeSol st
 // в единую структуру, которая используется для создания инструкции свопа.
 // Параметры включают информацию о пуле, токен-аккаунтах пользователя,
 // суммах и получателе комиссии протокола.
-//
-// Параметры:
-//   - pool: информация о пуле для свопа
-//   - accounts: подготовленная информация о токен-аккаунтах
-//   - isBuy: флаг направления свопа (true - покупка базового токена за квотный)
-//   - baseAmount: количество базового токена для свопа
-//   - quoteAmount: количество квотного токена для свопа
-//
-// Возвращает:
-//   - *SwapInstructionParams: структура параметров для создания инструкции свопа
 func (d *DEX) prepareSwapParams(
 	pool *PoolInfo,
 	accounts *PreparedTokenAccounts,
@@ -205,17 +162,6 @@ func (d *DEX) prepareSwapParams(
 // 1) Приоритетные инструкции (установка лимита и цены CU)
 // 2) Создание ассоциированных токен-аккаунтов пользователя (если не существуют)
 // 3) Непосредственно инструкция свопа
-//
-// Параметры:
-//   - pool: информация о пуле для свопа
-//   - accounts: подготовленная информация о токен-аккаунтах
-//   - isBuy: флаг направления свопа (true - покупка базового токена за квотный)
-//   - baseAmount: количество базового токена для свопа
-//   - quoteAmount: количество квотного токена для свопа
-//   - priorityInstructions: инструкции для установки приоритета транзакции
-//
-// Возвращает:
-//   - []solana.Instruction: полный список инструкций для выполнения свопа
 func (d *DEX) buildSwapTransaction(
 	pool *PoolInfo,
 	accounts *PreparedTokenAccounts,
@@ -239,14 +185,6 @@ func (d *DEX) buildSwapTransaction(
 // Метод вычисляет адреса ассоциированных токен-аккаунтов (ATA) для базового и
 // квотного токенов, создает инструкции для их создания (в случае отсутствия)
 // и получает информацию о получателе комиссии протокола из глобальной конфигурации.
-//
-// Параметры:
-//   - ctx: контекст выполнения операции
-//   - pool: информация о пуле, содержащая адреса минтов токенов
-//
-// Возвращает:
-//   - *PreparedTokenAccounts: структура с адресами и инструкциями для токен-аккаунтов
-//   - error: ошибка при вычислении адресов или получении глобальной конфигурации
 func (d *DEX) prepareTokenAccounts(ctx context.Context, pool *PoolInfo) (*PreparedTokenAccounts, error) {
 	userBaseATA, _, err := solana.FindAssociatedTokenAddress(d.wallet.PublicKey, pool.BaseMint)
 	if err != nil {

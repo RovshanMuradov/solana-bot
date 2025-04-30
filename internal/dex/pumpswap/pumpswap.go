@@ -15,10 +15,6 @@ import (
 // Для операции свопа WSOL→токен базовый токен должен быть покупаемым токеном,
 // а квотный – WSOL. Если в конфигурации указано обратное (base = WSOL, quote = токен),
 // то метод инвертирует их порядок для обеспечения правильной логики свопа.
-//
-// Возвращает:
-//   - baseMint: публичный ключ эффективного базового токена
-//   - quoteMint: публичный ключ эффективного квотного токена
 func (d *DEX) effectiveMints() (baseMint, quoteMint solana.PublicKey) {
 	wsol := solana.SolMint
 	// Если конфигурация указана как base = WSOL, а quote = токен,
@@ -35,13 +31,6 @@ func (d *DEX) effectiveMints() (baseMint, quoteMint solana.PublicKey) {
 // Сначала проверяется наличие конфигурации в кэше, и если она отсутствует,
 // выполняется запрос к блокчейну с использованием двойной проверки с блокировкой (DCLP).
 // Полученная конфигурация сохраняется в кэше для последующих запросов.
-//
-// Параметры:
-//   - ctx: контекст выполнения операции
-//
-// Возвращает:
-//   - *GlobalConfig: указатель на структуру с глобальной конфигурацией
-//   - error: ошибка, если не удалось получить конфигурацию
 func (d *DEX) getGlobalConfig(ctx context.Context) (*GlobalConfig, error) {
 	d.configMutex.RLock()
 	config := d.globalConfig
@@ -75,13 +64,6 @@ func (d *DEX) getGlobalConfig(ctx context.Context) (*GlobalConfig, error) {
 // Сначала вычисляется адрес конфигурации, затем получаются данные аккаунта,
 // которые парсятся в структуру GlobalConfig. Этот метод вызывается из getGlobalConfig
 // при отсутствии конфигурации в кэше.
-//
-// Параметры:
-//   - ctx: контекст выполнения операции
-//
-// Возвращает:
-//   - *GlobalConfig: указатель на структуру с глобальной конфигурацией
-//   - error: ошибка, если не удалось получить или распарсить конфигурацию
 func (d *DEX) fetchGlobalConfigFromChain(ctx context.Context) (*GlobalConfig, error) {
 	globalConfigAddr, _, err := d.config.DeriveGlobalConfigAddress()
 	if err != nil {
