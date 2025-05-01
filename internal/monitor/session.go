@@ -95,22 +95,43 @@ func (ms *MonitoringSession) Wait() error {
 
 // Stop останавливает сессию мониторинга.
 func (ms *MonitoringSession) Stop() {
-	// Stop the price monitor first and wait for it to complete
-	if ms.priceMonitor != nil {
-		ms.priceMonitor.Stop()
-		// Можно добавить небольшую задержку, чтобы дать время на остановку
-		time.Sleep(100 * time.Millisecond)
-	}
+	ms.logger.Debug("Stopping monitoring session...") // Добавим лог
 
-	// Stop the input handler
+	// Stop the input handler first (usually quick)
 	if ms.inputHandler != nil {
 		ms.inputHandler.Stop()
+		ms.logger.Debug("Input handler stopped.")
 	}
 
-	// Cancel the context
+	// Stop the price monitor (cancels its context)
+	if ms.priceMonitor != nil {
+		ms.priceMonitor.Stop()
+		ms.logger.Debug("Price monitor stop signal sent.")
+	}
+
+	// Cancel the main session context (if not already done by monitor stop)
 	if ms.cancel != nil {
 		ms.cancel()
+		ms.logger.Debug("Main session context cancelled.")
 	}
+
+	// <<<--- ДОБАВИТЬ ОЖИДАНИЕ ЗАВЕРШЕНИЯ --- >>>
+	// Ждем, пока горутина, запущенная в Start для priceMonitor.Start(),
+	// действительно завершится после отмены контекста.
+	doneChan := make(chan struct{})
+	go func() {
+		ms.wg.Wait() // Ждем завершения всех горутин в группе (сейчас там только монитор)
+		close(doneChan)
+	}()
+
+	// Даем некоторое время на завершение, но не блокируем навсегда
+	select {
+	case <-doneChan:
+		ms.logger.Debug("Monitoring goroutine finished gracefully.")
+	case <-time.After(5 * time.Second): // Таймаут ожидания
+		ms.logger.Warn("Timeout waiting for monitoring goroutine to finish.")
+	}
+	ms.logger.Debug("Monitoring session Stop completed.")
 }
 
 // onPriceUpdate вызывается при обновлении цены токена.

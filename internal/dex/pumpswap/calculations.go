@@ -14,7 +14,8 @@ import (
 
 // calculateSwapAmounts вычисляет параметры для операции свапа в зависимости от типа операции (покупка/продажа).
 func (d *DEX) calculateSwapAmounts(pool *PoolInfo, isBuy bool, amount uint64, slippage float64) *SwapAmounts {
-	outputAmount, price := d.poolManager.CalculateSwapQuote(pool, amount, false)
+	isBaseToQuote := !isBuy
+	outputAmount, price := d.poolManager.CalculateSwapQuote(pool, amount, isBaseToQuote)
 
 	if isBuy {
 		return calculateBuySwap(amount, outputAmount, slippage, price, d.logger)
@@ -35,7 +36,7 @@ func calculateBuySwap(input, output uint64, slippage, price float64, logger *zap
 		zap.Uint64("min_out_amount", minOut),
 		zap.Float64("price", price))
 
-	return &SwapAmounts{BaseAmount: output, QuoteAmount: maxAmountWithBuffer, Price: price}
+	return &SwapAmounts{BaseAmount: minOut, QuoteAmount: maxAmountWithBuffer, Price: price}
 }
 
 // calculateSellSwap вычисляет параметры для операции продажи токена.

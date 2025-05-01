@@ -5,7 +5,6 @@ go 1.23.2
 require (
 	github.com/cenkalti/backoff/v5 v5.0.2
 	github.com/gagliardetto/solana-go v1.11.0
-	github.com/gobwas/ws v1.4.0
 	github.com/google/uuid v1.6.0
 	github.com/prometheus/client_golang v1.20.5
 	github.com/spf13/viper v1.19.0
