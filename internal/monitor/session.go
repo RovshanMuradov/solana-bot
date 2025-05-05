@@ -53,13 +53,58 @@ func NewMonitoringSession(config *SessionConfig) *MonitoringSession {
 
 // Start запускает сессию мониторинга.
 func (ms *MonitoringSession) Start() error {
+	ms.logger.Info("Preparing monitoring session",
+		zap.String("token", ms.config.TokenMint),
+		zap.Float64("initial_investment_sol", ms.config.InitialAmount))
+
+	// <<< ДОБАВЛЕНО: Логирование перед запуском мониторинга >>>
+	// Получим начальную цену и баланс еще раз для лога, если они не переданы или могут быть неточными
+	// Для простоты используем переданные в конфиге значения
+	initialPrice := ms.config.InitialPrice
+	initialTokens := ms.config.TokenAmount
+	// Если цена не была передана, попробуем получить ее
+	if initialPrice == 0 {
+		priceCtx, priceCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		var priceErr error
+		initialPrice, priceErr = ms.config.DEX.GetTokenPrice(priceCtx, ms.config.TokenMint)
+		if priceErr != nil {
+			ms.logger.Warn("Could not get initial price for logging", zap.Error(priceErr))
+		}
+		priceCancel()
+	}
+	// Если баланс токенов не был передан (или равен 0), попробуем получить его
+	if initialTokens == 0 && ms.config.TokenBalance == 0 {
+		balanceCtx, balanceCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		balanceRaw, balanceErr := ms.config.DEX.GetTokenBalance(balanceCtx, ms.config.TokenMint)
+		if balanceErr == nil {
+			ms.config.TokenBalance = balanceRaw
+			// Предполагаем 6 знаков после запятой, если не знаем точно
+			// TODO: Передать или определить точность токена
+			initialTokens = float64(balanceRaw) / 1e6
+			ms.config.TokenAmount = initialTokens // Обновляем значение в конфиге
+		} else {
+			ms.logger.Warn("Could not get initial token balance for logging", zap.Error(balanceErr))
+		}
+		balanceCancel()
+	}
+
+	// Логируем начальные данные
+	ms.logger.Info("Monitor start",
+		zap.String("token", ms.config.TokenMint),
+		zap.Float64("initial_price", initialPrice),
+		zap.Float64("initial_tokens", initialTokens),             // Используем количество токенов
+		zap.Uint64("initial_tokens_raw", ms.config.TokenBalance)) // И сырой баланс
+
+	// Обновляем InitialPrice в конфиге, если мы его только что получили
+	ms.config.InitialPrice = initialPrice
+
 	// Create a price monitor
 	ms.priceMonitor = NewPriceMonitor(
 		ms.config.DEX,
 		ms.config.TokenMint,
-		ms.config.InitialPrice,
-		ms.config.TokenAmount,
-		ms.config.InitialAmount,
+		ms.config.InitialPrice,  // Используем актуальную начальную цену
+		ms.config.TokenAmount,   // Используем актуальный баланс токенов
+		ms.config.InitialAmount, // Сумма вложения SOL
 		ms.config.MonitorInterval,
 		ms.logger.Named("price"),
 		ms.onPriceUpdate,

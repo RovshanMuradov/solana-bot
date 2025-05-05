@@ -54,7 +54,7 @@ func NewDEX(client *solbc.Client, w *wallet.Wallet, logger *zap.Logger, config *
 	defer cancel()
 
 	// Получаем информацию о глобальном аккаунте для определения получателя комиссий
-	globalAccount, err := FetchGlobalAccount(fetchCtx, client, config.Global)
+	globalAccount, err := FetchGlobalAccount(fetchCtx, client, config.Global, logger)
 	if err != nil {
 		logger.Warn("Failed to fetch global account data, using default fee recipient",
 			zap.Error(err))

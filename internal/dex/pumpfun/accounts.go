@@ -6,10 +6,12 @@ package pumpfun
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"github.com/gagliardetto/solana-go"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"go.uber.org/zap"
+	"time"
 )
 
 // deriveBondingCurveAccounts вычисляет необходимые адреса для взаимодействия
@@ -46,9 +48,24 @@ func (d *DEX) deriveBondingCurveAccounts(_ context.Context) (bondingCurve, assoc
 
 // FetchBondingCurveAccount получает и парсит данные аккаунта bonding curve.
 func (d *DEX) FetchBondingCurveAccount(ctx context.Context, bondingCurve solana.PublicKey) (*BondingCurve, error) {
+	// TODO: delete logging
+	// <<< ДОБАВЛЕНО: Логирование времени выполнения RPC >>>
+	start := time.Now()
 	// Шаг 1: Получение информации об аккаунте с блокчейна
 	accountInfo, err := d.client.GetAccountInfo(ctx, bondingCurve)
+	// <<< ДОБАВЛЕНО: Логирование времени выполнения RPC >>>
+	d.logger.Debug("RPC:GetAccountInfo (BondingCurve)",
+		zap.String("account", bondingCurve.String()),
+		zap.Duration("took", time.Since(start)),
+		zap.Error(err)) // Также логируем ошибку, если она есть
+
 	if err != nil {
+		// <<< ДОБАВЛЕНО: Логирование ошибки контекста >>>
+		if errors.Is(err, context.Canceled) {
+			d.logger.Warn("FetchBondingCurveAccount canceled by context", zap.Error(err), zap.String("account", bondingCurve.String()))
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			d.logger.Warn("FetchBondingCurveAccount context deadline exceeded", zap.Error(err), zap.String("account", bondingCurve.String()))
+		}
 		// Шаг 2: Обработка ошибки при неудачном запросе
 		return nil, fmt.Errorf("failed to get bonding curve account: %w", err)
 	}
@@ -80,10 +97,25 @@ func (d *DEX) FetchBondingCurveAccount(ctx context.Context, bondingCurve solana.
 }
 
 // FetchGlobalAccount получает и парсит данные глобального аккаунта Pump.fun.
-func FetchGlobalAccount(ctx context.Context, client *solbc.Client, globalAddr solana.PublicKey) (*GlobalAccount, error) {
+func FetchGlobalAccount(ctx context.Context, client *solbc.Client, globalAddr solana.PublicKey, logger *zap.Logger) (*GlobalAccount, error) {
+	// TODO: delete logging
+	// <<< ИЗМЕНЕНО: Логирование времени выполнения RPC с использованием переданного логгера >>>
+	start := time.Now()
 	// Шаг 1: Получение информации об аккаунте с блокчейна
 	accountInfo, err := client.GetAccountInfo(ctx, globalAddr)
+	// <<< ИЗМЕНЕНО: Логирование времени выполнения RPC >>>
+	logger.Debug("RPC:GetAccountInfo (Global)",
+		zap.String("account", globalAddr.String()),
+		zap.Duration("took", time.Since(start)),
+		zap.Error(err))
+
 	if err != nil {
+		// <<< ИЗМЕНЕНО: Логирование ошибки контекста с использованием переданного логгера >>>
+		if errors.Is(err, context.Canceled) {
+			logger.Warn("FetchGlobalAccount canceled by context", zap.Error(err), zap.String("account", globalAddr.String()))
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			logger.Warn("FetchGlobalAccount context deadline exceeded", zap.Error(err), zap.String("account", globalAddr.String()))
+		}
 		// Шаг 2: Обработка ошибки при неудачном запросе
 		return nil, fmt.Errorf("failed to get global account: %w", err)
 	}
