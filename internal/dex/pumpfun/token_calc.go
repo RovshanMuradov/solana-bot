@@ -35,14 +35,11 @@ type BondingCurvePnL struct {
 // Эта формула является аппроксимацией и может отличаться от точной математической модели кривой Pump.fun.
 func (d *DEX) CalculateTokenPrice(ctx context.Context, bondingCurveData *BondingCurve) (float64, error) {
 	if bondingCurveData == nil {
-		return 0, fmt.Errorf("bonding curve data is nil")
-	}
-
-	// Проверка на нулевые резервы токенов для избежания деления на ноль
-	if bondingCurveData.VirtualTokenReserves == 0 {
-		d.logger.Warn("Virtual token reserves are zero, cannot calculate price accurately. Returning minimum threshold.")
-		// Возвращаем очень маленькую цену или ноль, в зависимости от требуемой логики
-		return minPriceThreshold, nil // Или можно вернуть ошибку: fmt.Errorf("virtual token reserves are zero")
+		var err error
+		bondingCurveData, _, err = d.getBondingCurveData(ctx)
+		if err != nil {
+			return 0, err
+		}
 	}
 
 	// Конвертация виртуальных резервов из lamports/минимальных единиц в полные единицы (SOL и токены)
@@ -103,21 +100,12 @@ func (d *DEX) CalculateSellValue(ctx context.Context, tokenAmount float64, bondi
 // Расчет учитывает виртуальные резервы токена и SOL, применяет комиссию протокола,
 // но НЕ учитывает проскальзывание (slippage) при больших объемах продажи.
 func (d *DEX) CalculateBondingCurvePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*BondingCurvePnL, error) {
-	// Получаем данные bonding curve через функции deriveBondingCurveAccounts и FetchBondingCurveAccount
-	bondingCurveAddr, _, err := d.deriveBondingCurveAccounts(ctx)
+	bondingCurveData, _, err := d.getBondingCurveData(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to derive bonding curve accounts: %w", err)
-	}
-
-	bondingCurveData, err := d.FetchBondingCurveAccount(ctx, bondingCurveAddr)
-	if err != nil {
-		// Попытка обработать случай, когда аккаунт еще не создан (например, токен только что запущен)
-		// В этом случае резервы равны нулю, и цена должна быть минимальной.
 		d.logger.Warn("Failed to fetch bonding curve data, assuming zero reserves", zap.Error(err))
-		bondingCurveData = &BondingCurve{VirtualSolReserves: 0, VirtualTokenReserves: 0} // Используем нулевые резервы
+		bondingCurveData = &BondingCurve{0, 0}
 	}
 
-	// Расчёт текущей цены
 	currentPrice, err := d.CalculateTokenPrice(ctx, bondingCurveData)
 	// Не возвращаем ошибку здесь, так как CalculateTokenPrice может вернуть minPriceThreshold при нулевых резервах
 	if err != nil {
@@ -173,41 +161,27 @@ func (d *DEX) CalculateBondingCurvePnL(ctx context.Context, tokenAmount float64,
 
 // GetTokenPrice возвращает текущую цену токена на Pump.fun, используя данные bonding curve.
 func (d *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
-	// Проверка соответствия запрашиваемого токена настроенному в DEX
+	// проверяем, что запрашиваем именно тот минт,
+	// для которого инициализировали DEX
 	if d.config.Mint.String() != tokenMint {
 		return 0, fmt.Errorf("token %s not configured in this DEX instance", tokenMint)
 	}
 
-	// Вычисление адреса bonding curve для токена
-	bondingCurve, _, err := solana.FindProgramAddress(
-		[][]byte{[]byte("bonding-curve"), d.config.Mint.Bytes()},
-		d.config.ContractAddress,
-	)
+	// Берём данные кривой из внутреннего TTL‑кэша.
+	bcData, _, err := d.getBondingCurveData(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("failed to derive bonding curve: %w", err)
+		return 0, err
 	}
 
-	// Получение и парсинг данных аккаунта bonding curve
-	bondingCurveData, err := d.FetchBondingCurveAccount(ctx, bondingCurve)
-
-	// Проверка на ошибки и состояние bonding curve
-	if err != nil ||
-		bondingCurveData == nil ||
-		bondingCurveData.VirtualTokenReserves == 0 ||
-		bondingCurveData.VirtualSolReserves == 0 {
-
-		// Если bonding curve graduated или не доступна, логируем это
+	// Если кривая «пустая» — значит токен уже уехал на Raydium/PumpSwap
+	if bcData.VirtualTokenReserves == 0 || bcData.VirtualSolReserves == 0 {
 		d.logger.Warn("Bonding curve may be graduated or not available",
-			zap.String("token_mint", tokenMint),
-			zap.Error(err))
-
-		// Получаем цену из другого источника (например, из рыночных данных)
-		// или возвращаем ошибку, чтобы вызывающий код мог решить, что делать дальше
-		return 0, fmt.Errorf("bonding curve for token %s is graduated or not available", tokenMint)
+			zap.String("token_mint", tokenMint))
+		return 0,
+			fmt.Errorf("bonding curve for token %s is graduated or not available", tokenMint)
 	}
 
-	// Используем общую функцию для расчета цены токена
-	return d.CalculateTokenPrice(ctx, bondingCurveData)
+	return d.CalculateTokenPrice(ctx, bcData)
 }
 
 // GetTokenBalance возвращает текущий баланс токена в кошельке пользователя.

@@ -49,51 +49,43 @@ func (d *DEX) prepareBuyTransaction(ctx context.Context, solAmountLamports uint6
 // Метод формирует полный набор инструкций для транзакции продажи токенов.
 // Он выполняет проверку состояния bonding curve, рассчитывает минимальный ожидаемый выход SOL
 // с учетом проскальзывания, и создает инструкцию продажи.
-func (d *DEX) prepareSellTransaction(ctx context.Context, tokenAmount uint64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) ([]solana.Instruction, error) {
-	// Шаг 1: Подготавливаем базовые инструкции (установка приоритета и проверка ATA)
-	baseInstructions, userATA, err := d.prepareBaseInstructions(ctx, priorityFeeSol, computeUnits)
+func (d *DEX) prepareSellTransaction(
+	ctx context.Context,
+	tokenAmount uint64,
+	slippagePercent float64,
+	priorityFeeSol string,
+	computeUnits uint32,
+) ([]solana.Instruction, error) {
+
+	// базовые инструкции
+	baseIx, userATA, err := d.prepareBaseInstructions(ctx, priorityFeeSol, computeUnits)
 	if err != nil {
 		return nil, err
 	}
 
-	// Шаг 2: Получаем адреса аккаунтов bonding curve для токена
-	bondingCurve, associatedBondingCurve, err := d.deriveBondingCurveAccounts(ctx)
+	// адреса
+	bondingCurve, associatedBC, err := d.deriveBondingCurveAccounts(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// Шаг 3: Получаем данные аккаунта bonding curve для расчета цены
-	bondingCurveData, err := d.FetchBondingCurveAccount(ctx, bondingCurve)
+	// ----- берём данные Bonding‑Curve через кеш -----
+	bcData, _, err := d.getBondingCurveData(ctx)
 	if err != nil {
-		d.logger.Warn("Failed to fetch bonding curve data",
-			zap.Error(err))
+		d.logger.Warn("Failed to fetch bonding curve data", zap.Error(err))
 	}
 
-	// Шаг 4: Проверяем, не завершена ли bonding curve (перемещена на другой DEX)
-	// Если резервы SOL слишком малы, возможно, токен переехал на PumpSwap
-	if bondingCurveData.VirtualSolReserves < 1000 {
-		return nil, fmt.Errorf("bonding curve has insufficient SOL reserves, possibly complete")
-	}
+	// расчёт minSol
+	minSolOutput := d.calculateMinSolOutput(tokenAmount, bcData, slippagePercent)
 
-	// TODO: возможно убрать логику и заменить на готовый метод
-	// Шаг 5: Рассчитываем минимальный ожидаемый выход SOL с учетом проскальзывания
-	minSolOutput := d.calculateMinSolOutput(tokenAmount, bondingCurveData, slippagePercent)
-
-	// Шаг 6: Логируем параметры продажи для отладки
-	d.logger.Info("Calculated sell parameters",
-		zap.Uint64("token_amount", tokenAmount),
-		zap.Uint64("virtual_token_reserves", bondingCurveData.VirtualTokenReserves),
-		zap.Uint64("virtual_sol_reserves", bondingCurveData.VirtualSolReserves),
-		zap.Uint64("min_sol_output_lamports", minSolOutput))
-
-	// Шаг 7: Создаем инструкцию продажи с расчетными параметрами
+	// формируем sell‑инструкцию
 	sellIx := createSellInstruction(
 		d.config.ContractAddress,
 		d.config.Global,
 		d.config.FeeRecipient,
 		d.config.Mint,
 		bondingCurve,
-		associatedBondingCurve,
+		associatedBC,
 		userATA,
 		d.wallet.PublicKey,
 		d.config.EventAuthority,
@@ -101,9 +93,7 @@ func (d *DEX) prepareSellTransaction(ctx context.Context, tokenAmount uint64, sl
 		minSolOutput,
 	)
 
-	// Шаг 8: Добавляем инструкцию продажи к базовым инструкциям
-	baseInstructions = append(baseInstructions, sellIx)
-	return baseInstructions, nil
+	return append(baseIx, sellIx), nil
 }
 
 // calculateMinSolOutput вычисляет минимальный ожидаемый выход SOL при продаже токенов

@@ -14,86 +14,70 @@ import (
 	"time"
 )
 
-// deriveBondingCurveAccounts вычисляет необходимые адреса для взаимодействия
-// с bonding curve токена в протоколе Pump.fun.
-func (d *DEX) deriveBondingCurveAccounts(_ context.Context) (bondingCurve, associatedBondingCurve solana.PublicKey, err error) {
-	// Шаг 1: Вычисление Program Derived Address (PDA) для bonding curve
-	bondingCurve, _, err = solana.FindProgramAddress(
-		[][]byte{[]byte("bonding-curve"), d.config.Mint.Bytes()},
-		d.config.ContractAddress,
-	)
-
-	// Шаг 2: Проверка на ошибки при вычислении PDA
-	if err != nil {
-		return solana.PublicKey{}, solana.PublicKey{}, fmt.Errorf("failed to derive bonding curve: %w", err)
+// ----- адреса Bonding‑Curve кэшируются раз‑и‑навсегда -----
+func (d *DEX) deriveBondingCurveAccounts(_ context.Context) (solana.PublicKey, solana.PublicKey, error) {
+	var initErr error
+	d.bcOnce.Do(func() {
+		d.bondingCurve, _, initErr = solana.FindProgramAddress(
+			[][]byte{[]byte("bonding-curve"), d.config.Mint.Bytes()},
+			d.config.ContractAddress,
+		)
+		if initErr != nil {
+			return
+		}
+		d.associatedBondingCurve, _, initErr =
+			solana.FindAssociatedTokenAddress(d.bondingCurve, d.config.Mint)
+	})
+	if initErr != nil {
+		return solana.PublicKey{}, solana.PublicKey{},
+			fmt.Errorf("failed to derive bonding curve addresses: %w", initErr)
 	}
-
-	// Шаг 3: Логирование успешного вычисления адреса bonding curve для отладки
-	d.logger.Debug("Derived bonding curve", zap.String("address", bondingCurve.String()))
-
-	// Шаг 4: Вычисление ассоциированного токен-аккаунта (ATA) для bonding curve
-	associatedBondingCurve, _, err = solana.FindAssociatedTokenAddress(bondingCurve, d.config.Mint)
-
-	// Шаг 5: Проверка на ошибки при вычислении ATA
-	if err != nil {
-		return solana.PublicKey{}, solana.PublicKey{}, fmt.Errorf("failed to derive associated bonding curve: %w", err)
-	}
-
-	// Шаг 6: Логирование успешного вычисления адреса ATA для отладки
-	d.logger.Debug("Derived bonding curve ATA", zap.String("address", associatedBondingCurve.String()))
-
-	// Шаг 7: Возврат вычисленных адресов
-	return bondingCurve, associatedBondingCurve, nil
+	return d.bondingCurve, d.associatedBondingCurve, nil
 }
 
-// FetchBondingCurveAccount получает и парсит данные аккаунта bonding curve.
-func (d *DEX) FetchBondingCurveAccount(ctx context.Context, bondingCurve solana.PublicKey) (*BondingCurve, error) {
-	// TODO: delete logging
-	// <<< ДОБАВЛЕНО: Логирование времени выполнения RPC >>>
-	start := time.Now()
-	// Шаг 1: Получение информации об аккаунте с блокчейна
-	accountInfo, err := d.client.GetAccountInfo(ctx, bondingCurve)
-	// <<< ДОБАВЛЕНО: Логирование времени выполнения RPC >>>
-	d.logger.Debug("RPC:GetAccountInfo (BondingCurve)",
-		zap.String("account", bondingCurve.String()),
-		zap.Duration("took", time.Since(start)),
-		zap.Error(err)) // Также логируем ошибку, если она есть
+// ----- новое: берём данные Bonding‑Curve с внутренним TTL‑кэшем -----
+const bcCacheTTL = 400 * time.Millisecond
 
+func (d *DEX) getBondingCurveData(ctx context.Context) (*BondingCurve, solana.PublicKey, error) {
+	bcAddr, _, err := d.deriveBondingCurveAccounts(ctx)
 	if err != nil {
-		// <<< ДОБАВЛЕНО: Логирование ошибки контекста >>>
-		if errors.Is(err, context.Canceled) {
-			d.logger.Warn("FetchBondingCurveAccount canceled by context", zap.Error(err), zap.String("account", bondingCurve.String()))
-		} else if errors.Is(err, context.DeadlineExceeded) {
-			d.logger.Warn("FetchBondingCurveAccount context deadline exceeded", zap.Error(err), zap.String("account", bondingCurve.String()))
-		}
-		// Шаг 2: Обработка ошибки при неудачном запросе
-		return nil, fmt.Errorf("failed to get bonding curve account: %w", err)
+		return nil, solana.PublicKey{}, err
 	}
 
-	// Шаг 3: Проверка существования аккаунта
-	if accountInfo.Value == nil {
-		return nil, fmt.Errorf("bonding curve account not found")
+	// быстрый путь — свежий кэш
+	d.bcCache.mu.RLock()
+	if d.bcCache.data != nil && time.Since(d.bcCache.fetchedAt) < bcCacheTTL {
+		data := d.bcCache.data
+		d.bcCache.mu.RUnlock()
+		return data, bcAddr, nil
+	}
+	d.bcCache.mu.RUnlock()
+
+	// обновляем кэш одним batched‑запросом
+	res, err := d.client.GetMultipleAccounts(ctx, []solana.PublicKey{bcAddr})
+	if err != nil {
+		return nil, bcAddr, err
+	}
+	if len(res.Value) == 0 || res.Value[0] == nil {
+		return nil, bcAddr, fmt.Errorf("bonding curve account not found")
 	}
 
-	// Шаг 4: Извлечение бинарных данных из аккаунта
-	data := accountInfo.Value.Data.GetBinary()
-
-	// Шаг 5: Проверка минимальной длины данных
-	if len(data) < 16 {
-		return nil, fmt.Errorf("invalid bonding curve data: insufficient length")
+	raw := res.Value[0].Data.GetBinary()
+	if len(raw) < 16 {
+		return nil, bcAddr, fmt.Errorf("invalid bonding curve data length")
 	}
 
-	// Шаг 6: Чтение виртуальных резервов токенов (первые 8 байт)
-	virtualTokenReserves := binary.LittleEndian.Uint64(data[0:8])
+	bc := &BondingCurve{
+		VirtualTokenReserves: binary.LittleEndian.Uint64(raw[:8]),
+		VirtualSolReserves:   binary.LittleEndian.Uint64(raw[8:16]),
+	}
 
-	// Шаг 7: Чтение виртуальных резервов SOL (следующие 8 байт)
-	virtualSolReserves := binary.LittleEndian.Uint64(data[8:16])
+	d.bcCache.mu.Lock()
+	d.bcCache.data = bc
+	d.bcCache.fetchedAt = time.Now()
+	d.bcCache.mu.Unlock()
 
-	// Шаг 8: Создание и возврат структуры с данными
-	return &BondingCurve{
-		VirtualTokenReserves: virtualTokenReserves,
-		VirtualSolReserves:   virtualSolReserves,
-	}, nil
+	return bc, bcAddr, nil
 }
 
 // FetchGlobalAccount получает и парсит данные глобального аккаунта Pump.fun.

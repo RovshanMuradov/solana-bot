@@ -6,7 +6,9 @@ package pumpfun
 import (
 	"context"
 	"fmt"
+	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
+	"sync"
 	"time"
 
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
@@ -21,7 +23,18 @@ type DEX struct {
 	wallet          *wallet.Wallet
 	logger          *zap.Logger
 	config          *Config
-	priorityManager *types.PriorityManager // TODO: не используемый параметр. Рассмотреть удаление
+	priorityManager *types.PriorityManager
+
+	// ---------- bonding‑curve cache ----------
+	bcOnce                 sync.Once
+	bondingCurve           solana.PublicKey
+	associatedBondingCurve solana.PublicKey
+
+	bcCache struct {
+		mu        sync.RWMutex
+		data      *BondingCurve
+		fetchedAt time.Time
+	}
 }
 
 // NewDEX создает новый экземпляр DEX для работы с Pump.fun.
