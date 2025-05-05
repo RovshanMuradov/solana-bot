@@ -63,7 +63,7 @@ func (d *DEX) getPool(ctx context.Context) (*PoolInfo, error) {
 }
 
 // GedurrentPrice returns the current BFI token price in SOL, using pool reserves and caching.
-func (d *DEX) GedurrentPrice(ctx context.Context) (float64, error) {
+func (d *DEX) GetCurrentPrice(ctx context.Context) (float64, error) {
 	// Return cached price if still valid
 	if time.Since(d.cachedPriceTime) < d.cacheValidPeriod {
 		d.logger.Debug("cache hit for current price", zap.Float64("price", d.cachedPrice))
@@ -100,7 +100,7 @@ func (d *DEX) GedurrentPrice(ctx context.Context) (float64, error) {
 // CalculatePnL computes profit and loss metrics for a given token amount and initial investment in SOL.
 func (d *DEX) CalculatePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*TokenPnL, error) {
 	// 1. Get current price
-	price, err := d.GedurrentPrice(ctx)
+	price, err := d.GetCurrentPrice(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get current price: %w", err)
 	}
