@@ -216,7 +216,7 @@ func (pm *PoolManager) FindPool(ctx context.Context, baseMint, quoteMint solana.
 
 // findPoolByProgramAccounts ищет пул по паре mint’ов с минимальным числом RPC.
 func (pm *PoolManager) findPoolByProgramAccounts(ctx context.Context, baseMint, quoteMint solana.PublicKey) (*PoolInfo, error) {
-	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	const (
@@ -234,7 +234,7 @@ func (pm *PoolManager) findPoolByProgramAccounts(ctx context.Context, baseMint, 
 		},
 	}
 
-	accounts, err := pm.client.GetProgramAccountsWithOpts(cctx, pm.programID, opts)
+	accounts, err := pm.client.GetProgramAccountsWithOpts(ctx, pm.programID, opts)
 	if err != nil {
 		return nil, fmt.Errorf("GetProgramAccountsWithOpts: %w", err)
 	}
@@ -248,13 +248,13 @@ func (pm *PoolManager) findPoolByProgramAccounts(ctx context.Context, baseMint, 
 		pubkeys[i] = acc.Pubkey
 	}
 
-	poolsRaw, err := pm.getAccountBinaryDataMultiple(cctx, pubkeys)
+	poolsRaw, err := pm.getAccountBinaryDataMultiple(ctx, pubkeys)
 	if err != nil {
 		return nil, err
 	}
 
 	// кеш глобальной конфигурации
-	cfg, _ := pm.globalConfig(cctx)
+	cfg, _ := pm.globalConfig(ctx)
 
 	// перебираем кандидатов
 	for i, raw := range poolsRaw {
@@ -264,8 +264,8 @@ func (pm *PoolManager) findPoolByProgramAccounts(ctx context.Context, baseMint, 
 		}
 
 		// резервы токен‑аккаунтов (два за один запрос)
-		toks := []solana.PublicKey{pool.PoolBaseTokenAccount, pool.PoolQuoteTokenAccount}
-		tokRaw, err := pm.getAccountBinaryDataMultiple(cctx, toks)
+		tokens := []solana.PublicKey{pool.PoolBaseTokenAccount, pool.PoolQuoteTokenAccount}
+		tokRaw, err := pm.getAccountBinaryDataMultiple(ctx, tokens)
 		if err != nil {
 			continue
 		}
