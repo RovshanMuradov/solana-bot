@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"golang.org/x/sync/errgroup"
+	"sync"
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
@@ -44,6 +46,11 @@ type PoolManager struct {
 	programID  solana.PublicKey
 	maxRetries int
 	retryDelay time.Duration
+
+	// кеш глобальной конфигурации
+	cfgOnce sync.Once
+	cfg     *GlobalConfig
+	cfgErr  error
 }
 
 // PoolManagerOptions содержит опции для создания нового PoolManager.
@@ -83,6 +90,14 @@ func NewPoolManager(client *solbc.Client, logger *zap.Logger, opts ...PoolManage
 		maxRetries: options.MaxRetries,
 		retryDelay: options.RetryDelay,
 	}
+}
+
+// globalConfig возвращает (и кеширует) GlobalConfig.
+func (pm *PoolManager) globalConfig(ctx context.Context) (*GlobalConfig, error) {
+	pm.cfgOnce.Do(func() {
+		pm.cfg, pm.cfgErr = pm.fetchGlobalConfig(ctx)
+	})
+	return pm.cfg, pm.cfgErr
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -148,130 +163,170 @@ func parseTokenAccounts(baseData, quoteData []byte) (uint64, uint64) {
 // Основные методы для работы с пулами
 ////////////////////////////////////////////////////////////////////////////////
 
-// FindPool ищет пул для заданной пары токенов, сперва пытаясь найти в прямом порядке, затем – в обратном.
+// FindPool ищет пул в прямом и обратном порядке параллельно.
 func (pm *PoolManager) FindPool(ctx context.Context, baseMint, quoteMint solana.PublicKey) (*PoolInfo, error) {
+	searchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-	// Пробуем прямой порядок
-	poolInfo, err := pm.findPoolByProgramAccounts(ctx, baseMint, quoteMint)
-	if err == nil && poolInfo != nil {
-		return poolInfo, nil
+	var (
+		found *PoolInfo
+		mu    sync.Mutex
+	)
+
+	g, _ := errgroup.WithContext(searchCtx)
+
+	// прямой порядок
+	g.Go(func() error {
+		if p, _ := pm.findPoolByProgramAccounts(searchCtx, baseMint, quoteMint); p != nil {
+			mu.Lock()
+			if found == nil {
+				found = p
+				cancel()
+			}
+			mu.Unlock()
+		}
+		return nil
+	})
+
+	// обратный порядок
+	g.Go(func() error {
+		if p, _ := pm.findPoolByProgramAccounts(searchCtx, quoteMint, baseMint); p != nil {
+			// приводим к исходному порядку
+			p.BaseMint, p.QuoteMint = p.QuoteMint, p.BaseMint
+			p.BaseReserves, p.QuoteReserves = p.QuoteReserves, p.BaseReserves
+			p.PoolBaseTokenAccount, p.PoolQuoteTokenAccount = p.PoolQuoteTokenAccount, p.PoolBaseTokenAccount
+
+			mu.Lock()
+			if found == nil {
+				found = p
+				cancel()
+			}
+			mu.Unlock()
+		}
+		return nil
+	})
+
+	_ = g.Wait()
+
+	if found == nil {
+		return nil, fmt.Errorf("no pool found for %s / %s", baseMint, quoteMint)
 	}
-
-	pm.logger.Info("Пул в прямом порядке не найден, пробуем обратный порядок")
-
-	// Пробуем обратный порядок
-	poolInfo, err = pm.findPoolByProgramAccounts(ctx, quoteMint, baseMint)
-	if err == nil && poolInfo != nil {
-		pm.logger.Info("Найден пул в обратном порядке", zap.String("pool_address", poolInfo.Address.String()))
-		// Меняем местами поля для корректного результата
-		poolInfo.BaseMint, poolInfo.QuoteMint = poolInfo.QuoteMint, poolInfo.BaseMint
-		poolInfo.BaseReserves, poolInfo.QuoteReserves = poolInfo.QuoteReserves, poolInfo.BaseReserves
-		poolInfo.PoolBaseTokenAccount, poolInfo.PoolQuoteTokenAccount = poolInfo.PoolQuoteTokenAccount, poolInfo.PoolBaseTokenAccount
-		return poolInfo, nil
-	}
-
-	pm.logger.Error("Пул не найден ни в прямом, ни в обратном порядке", zap.String("base_mint", baseMint.String()), zap.String("quote_mint", quoteMint.String()), zap.Error(err))
-	return nil, fmt.Errorf("no pool found for base mint %s and quote mint %s", baseMint.String(), quoteMint.String())
+	return found, nil
 }
 
-// findPoolByProgramAccounts scans program accounts and returns the first matching pool.
+// findPoolByProgramAccounts ищет пул по паре mint’ов с минимальным числом RPC.
 func (pm *PoolManager) findPoolByProgramAccounts(ctx context.Context, baseMint, quoteMint solana.PublicKey) (*PoolInfo, error) {
-	// Apply a 5-second timeout to the RPC call
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+
+	const (
+		offsetBaseMint  = 8 + 1 + 2 + 32 // 43
+		offsetQuoteMint = offsetBaseMint + 32
+	)
 
 	opts := &rpc.GetProgramAccountsOpts{
 		Commitment: rpc.CommitmentConfirmed,
 		Encoding:   solana.EncodingBase64,
 		Filters: []rpc.RPCFilter{
 			{Memcmp: &rpc.RPCFilterMemcmp{Offset: 0, Bytes: PoolDiscriminator}},
-			{Memcmp: &rpc.RPCFilterMemcmp{Offset: 8 + 1 + 2 + 32, Bytes: baseMint.Bytes()}},
+			{Memcmp: &rpc.RPCFilterMemcmp{Offset: offsetBaseMint, Bytes: baseMint.Bytes()}},
+			{Memcmp: &rpc.RPCFilterMemcmp{Offset: offsetQuoteMint, Bytes: quoteMint.Bytes()}},
 		},
 	}
 
-	// Fetch all accounts for the program
 	accounts, err := pm.client.GetProgramAccountsWithOpts(cctx, pm.programID, opts)
 	if err != nil {
-		pm.logger.Error("GetProgramAccountsWithOpts failed", zap.Error(err))
-		return nil, fmt.Errorf("failed to get program accounts: %w", err)
+		return nil, fmt.Errorf("GetProgramAccountsWithOpts: %w", err)
+	}
+	if len(accounts) == 0 {
+		return nil, fmt.Errorf("no program accounts match %s/%s", baseMint, quoteMint)
 	}
 
-	// Iterate and find the pool
-	for _, acc := range accounts {
-		pool, err := ParsePool(acc.Account.Data.GetBinary())
+	// --- получаем весь бинарный контент пулов одним запросом ---
+	pubkeys := make([]solana.PublicKey, len(accounts))
+	for i, acc := range accounts {
+		pubkeys[i] = acc.Pubkey
+	}
+
+	poolsRaw, err := pm.getAccountBinaryDataMultiple(cctx, pubkeys)
+	if err != nil {
+		return nil, err
+	}
+
+	// кеш глобальной конфигурации
+	cfg, _ := pm.globalConfig(cctx)
+
+	// перебираем кандидатов
+	for i, raw := range poolsRaw {
+		pool, err := ParsePool(raw)
 		if err != nil {
 			continue
 		}
-		if (pool.BaseMint.Equals(baseMint) && pool.QuoteMint.Equals(quoteMint)) ||
-			(pool.BaseMint.Equals(quoteMint) && pool.QuoteMint.Equals(baseMint)) {
 
-			// Fetch detailed pool info with its own timeout
-			fctx, fcancel := context.WithTimeout(ctx, 5*time.Second)
-			info, err := pm.FetchPoolInfo(fctx, acc.Pubkey)
-			fcancel()
-			if err != nil {
-				pm.logger.Error("FetchPoolInfo failed", zap.String("pool", acc.Pubkey.String()), zap.Error(err))
-				continue
-			}
-			if info.BaseReserves == 0 || info.QuoteReserves == 0 {
-				pm.logger.Warn("Pool has zero reserves, skipping", zap.String("pool", acc.Pubkey.String()))
-				continue
-			}
-			return info, nil
+		// резервы токен‑аккаунтов (два за один запрос)
+		toks := []solana.PublicKey{pool.PoolBaseTokenAccount, pool.PoolQuoteTokenAccount}
+		tokRaw, err := pm.getAccountBinaryDataMultiple(cctx, toks)
+		if err != nil {
+			continue
 		}
+		baseRes, quoteRes := parseTokenAccounts(tokRaw[0], tokRaw[1])
+		if baseRes == 0 || quoteRes == 0 {
+			continue
+		}
+
+		return &PoolInfo{
+			Address:               pubkeys[i],
+			BaseMint:              pool.BaseMint,
+			QuoteMint:             pool.QuoteMint,
+			BaseReserves:          baseRes,
+			QuoteReserves:         quoteRes,
+			LPSupply:              pool.LPSupply,
+			FeesBasisPoints:       cfg.LPFeeBasisPoints,
+			ProtocolFeeBPS:        cfg.ProtocolFeeBasisPoints,
+			LPMint:                pool.LPMint,
+			PoolBaseTokenAccount:  pool.PoolBaseTokenAccount,
+			PoolQuoteTokenAccount: pool.PoolQuoteTokenAccount,
+		}, nil
 	}
 
-	return nil, fmt.Errorf("no pool found for %s/%s", baseMint.String(), quoteMint.String())
+	return nil, fmt.Errorf("all candidate pools have zero liquidity for %s/%s", baseMint, quoteMint)
 }
 
 // FetchPoolInfo получает полную информацию о пуле по его адресу.
 func (pm *PoolManager) FetchPoolInfo(ctx context.Context, poolAddress solana.PublicKey) (*PoolInfo, error) {
-	// Ограничиваем время запроса для получения данных пула
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	// Получаем данные пула
+	// Данные пула
 	pool, err := pm.getPool(timeoutCtx, poolAddress)
 	if err != nil {
 		pm.logger.Error("Не удалось получить данные пула", zap.String("pool_address", poolAddress.String()), zap.Error(err))
 		return nil, err
 	}
 
-	// Получаем глобальную конфигурацию
-	config, err := pm.fetchGlobalConfig(timeoutCtx)
+	// Глобальная конфигурация из кеша
+	config, err := pm.globalConfig(timeoutCtx)
 	if err != nil {
 		pm.logger.Error("Не удалось получить глобальную конфигурацию", zap.Error(err))
 		return nil, err
 	}
 
-	// Получаем данные токен-аккаунтов
-	accounts := []solana.PublicKey{pool.PoolBaseTokenAccount, pool.PoolQuoteTokenAccount}
-	accountsData, err := pm.getAccountBinaryDataMultiple(timeoutCtx, accounts)
+	// Резервы токен‑аккаунтов
+	accs := []solana.PublicKey{pool.PoolBaseTokenAccount, pool.PoolQuoteTokenAccount}
+	accData, err := pm.getAccountBinaryDataMultiple(timeoutCtx, accs)
 	if err != nil {
-		pm.logger.Error("Не удалось получить данные токен-аккаунтов", zap.Error(err))
+		pm.logger.Error("Не удалось получить данные токен‑аккаунтов", zap.Error(err))
 		return nil, err
 	}
 
-	var baseData, quoteData []byte
-	if len(accountsData) >= 1 {
-		baseData = accountsData[0]
-	}
-	if len(accountsData) >= 2 {
-		quoteData = accountsData[1]
-	}
-	baseReserves, quoteReserves := parseTokenAccounts(baseData, quoteData)
-
-	pm.logger.Debug("Успешно получена информация о пуле", zap.String("pool_address", poolAddress.String()),
-		zap.String("base_mint", pool.BaseMint.String()), zap.String("quote_mint", pool.QuoteMint.String()),
-		zap.Uint64("base_reserves", baseReserves), zap.Uint64("quote_reserves", quoteReserves),
-		zap.Uint64("lp_supply", pool.LPSupply), zap.Uint64("fees_basis_points", config.LPFeeBasisPoints))
+	baseRes, quoteRes := parseTokenAccounts(accData[0], accData[1])
 
 	return &PoolInfo{
 		Address:               poolAddress,
 		BaseMint:              pool.BaseMint,
 		QuoteMint:             pool.QuoteMint,
-		BaseReserves:          baseReserves,
-		QuoteReserves:         quoteReserves,
+		BaseReserves:          baseRes,
+		QuoteReserves:         quoteRes,
 		LPSupply:              pool.LPSupply,
 		FeesBasisPoints:       config.LPFeeBasisPoints,
 		ProtocolFeeBPS:        config.ProtocolFeeBasisPoints,
