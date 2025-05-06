@@ -10,15 +10,16 @@ import (
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
+	"time"
 )
 
-// NewDEX создаёт новый экземпляр DEX для PumpSwap.
+// NewDEX создаёт новый экземпляр DEX для PumpSwap с кешированием и отложенным логированием RPC.
 func NewDEX(
 	client *solbc.Client,
 	w *wallet.Wallet,
 	logger *zap.Logger,
 	config *Config,
-	poolManager PoolManagerInterface, // теперь передаём интерфейс
+	poolManager PoolManagerInterface,
 	monitorInterval string,
 ) (*DEX, error) {
 	if client == nil || w == nil || logger == nil || config == nil || poolManager == nil {
@@ -27,13 +28,17 @@ func NewDEX(
 	if monitorInterval != "" {
 		config.MonitorInterval = monitorInterval
 	}
-	return &DEX{
+
+	d := &DEX{
 		client:      client,
 		wallet:      w,
 		logger:      logger,
 		config:      config,
 		poolManager: poolManager,
-	}, nil
+		// Устанавливаем TTL кеша для пулов и цен
+		cacheValidPeriod: 10 * time.Second,
+	}
+	return d, nil
 }
 
 // ExecuteSwap выполняет операцию обмена на DEX.

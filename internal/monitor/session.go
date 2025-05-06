@@ -57,7 +57,6 @@ func (ms *MonitoringSession) Start() error {
 		zap.String("token", ms.config.TokenMint),
 		zap.Float64("initial_investment_sol", ms.config.InitialAmount))
 
-	// <<< ДОБАВЛЕНО: Логирование перед запуском мониторинга >>>
 	// Получим начальную цену и баланс еще раз для лога, если они не переданы или могут быть неточными
 	// Для простоты используем переданные в конфиге значения
 	initialPrice := ms.config.InitialPrice
@@ -160,7 +159,6 @@ func (ms *MonitoringSession) Stop() {
 		ms.logger.Debug("Main session context cancelled.")
 	}
 
-	// <<<--- ДОБАВИТЬ ОЖИДАНИЕ ЗАВЕРШЕНИЯ --- >>>
 	// Ждем, пока горутина, запущенная в Start для priceMonitor.Start(),
 	// действительно завершится после отмены контекста.
 	doneChan := make(chan struct{})

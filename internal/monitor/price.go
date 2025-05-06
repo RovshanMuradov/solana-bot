@@ -3,7 +3,6 @@ package monitor
 
 import (
 	"context"
-	"math"
 	"time"
 
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
@@ -47,70 +46,44 @@ func NewPriceMonitor(dex dex.DEX, tokenMint string, initialPrice float64,
 	}
 }
 
-// Start запускает процесс мониторинга цены.
+// Start запускает мониторинг в собственной горутине и корректно выходит при Stop.
 func (pm *PriceMonitor) Start() {
-	pm.logger.Info("Starting price monitor",
-		zap.String("token_mint", pm.tokenMint),
-		zap.Float64("initial_price", pm.initialPrice),
-		zap.Duration("interval", pm.interval))
-
-	// Run the first update immediately
-	pm.updatePrice()
-
-	// Start the ticker for periodic updates
+	pm.logger.Info("PriceMonitor: start", zap.String("token", pm.tokenMint))
 	ticker := time.NewTicker(pm.interval)
 	defer ticker.Stop()
 
+	// первая итерация сразу
+	pm.updatePrice()
+
 	for {
 		select {
+		case <-pm.ctx.Done():
+			pm.logger.Info("PriceMonitor: context done, exiting loop")
+			return
 		case <-ticker.C:
 			pm.updatePrice()
-		case <-pm.ctx.Done():
-			pm.logger.Debug("Price monitor stopped")
-			return
 		}
 	}
 }
 
-// Stop останавливает мониторинг цены.
+// Stop отменяет контекст мониторинга
 func (pm *PriceMonitor) Stop() {
-	if pm.cancel != nil {
-		pm.cancel()
-	}
+	pm.cancel()
 }
 
-// updatePrice получает текущую цену токена и вызывает функцию обратного вызова.
+// updatePrice использует разделенный локальный контекст с таймаутом для RPC
 func (pm *PriceMonitor) updatePrice() {
-	// Сначала проверяем, не отменен ли контекст
-	if pm.ctx.Err() != nil {
-		pm.logger.Debug("Price monitor stopping, skipping price update")
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(pm.ctx, 10*time.Second)
+	// Создаем новый контекст для получения цены
+	cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Получаем текущую цену токена
-	currentPrice, err := pm.dex.GetTokenPrice(ctx, pm.tokenMint)
+	price, err := pm.dex.GetTokenPrice(cctx, pm.tokenMint)
 	if err != nil {
-		pm.logger.Error("Failed to get token price", zap.Error(err))
+		pm.logger.Error("GetTokenPrice error", zap.Error(err))
 		return
 	}
-
-	// Рассчитываем простое процентное изменение цены (отличается от PnL percentage)
-	// Это чистое изменение рыночной цены, без учета комиссий и других факторов
-	percentChange := 0.0
-	if pm.initialPrice > 0 {
-		percentChange = ((currentPrice - pm.initialPrice) / pm.initialPrice) * 100
-	}
-
-	// Округляем до 2 десятичных знаков для удобства отображения
-	percentChange = math.Floor(percentChange*100) / 100
-
-	// Вызываем обратный вызов с информацией о цене
-	if pm.callback != nil {
-		pm.callback(currentPrice, pm.initialPrice, percentChange, pm.tokenAmount)
-	}
+	// Вычисляем изменение цены и вызываем callback
+	pm.callback(price, pm.initialPrice, ((price-pm.initialPrice)/pm.initialPrice)*100, pm.tokenAmount)
 }
 
 // SetCallback устанавливает функцию обратного вызова для обновлений цены.
