@@ -6,6 +6,7 @@ package dex
 
 import (
 	"context"
+	"github.com/rovshanmuradov/solana-bot/internal/dex/model"
 	"time"
 )
 
@@ -30,6 +31,14 @@ type Task struct {
 	SellPercentage  float64       // Процент от общего баланса токенов для продажи (0-100)
 }
 
+// PnLResult хранит результат расчёта прибыли/убытка.
+type PnLResult struct {
+	InitialInvestment float64 // Сколько вложено в SOL
+	SellEstimate      float64 // Сколько получено в SOL после продажи (с учетом комиссии)
+	NetPnL            float64 // Прибыль/убыток в SOL
+	PnLPercentage     float64 // Процент PnL
+}
+
 // DEX — единый интерфейс для работы с различными DEX.
 type DEX interface {
 	// GetName возвращает название биржи.
@@ -42,4 +51,5 @@ type DEX interface {
 	GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error)
 	// SellPercentTokens продает указанный процент имеющихся токенов
 	SellPercentTokens(ctx context.Context, tokenMint string, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error
+	CalculatePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*model.PnLResult, error)
 }

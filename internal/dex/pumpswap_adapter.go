@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/gagliardetto/solana-go"
+	"github.com/rovshanmuradov/solana-bot/internal/dex/model"
 	"github.com/rovshanmuradov/solana-bot/internal/dex/pumpswap"
 	"go.uber.org/zap"
 	"math"
@@ -152,7 +153,7 @@ func (d *pumpswapDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string
 	return d.inner.GetTokenPrice(ctx, tokenMint)
 }
 
-func (d *pumpswapDEXAdapter) CalculatePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*pumpswap.TokenPnL, error) {
+func (d *pumpswapDEXAdapter) CalculatePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*model.PnLResult, error) {
 	if err := d.initPumpSwap(ctx, d.tokenMint); err != nil {
 		return nil, err
 	}

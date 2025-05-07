@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
+	"github.com/rovshanmuradov/solana-bot/internal/dex/model"
 	"math"
 	"strconv"
 
@@ -19,16 +20,6 @@ const (
 	// Минимальная цена для предотвращения деления на ноль или слишком малых значений
 	minPriceThreshold = 1e-18 // Очень маленькое значение, близкое к нулю
 )
-
-// BondingCurvePnL содержит информацию о прибыли/убытке (PnL) токена
-type BondingCurvePnL struct {
-	CurrentPrice      float64 // Текущая цена токена (SOL за токен)
-	TheoreticalValue  float64 // Теоретическая стоимость текущей позиции: токены * CurrentPrice
-	SellEstimate      float64 // Приблизительная выручка при продаже (цена * кол-во * (1 - комиссия))
-	InitialInvestment float64 // Первоначальные вложения в SOL
-	NetPnL            float64 // Чистая прибыль/убыток: SellEstimate - InitialInvestment
-	PnLPercentage     float64 // Процент PnL от начальных вложений
-}
 
 // CalculateTokenPrice рассчитывает текущую спотовую цену токена на основе виртуальных резервов bonding curve.
 // Формула: Price = (VirtualSolReserves / 10^solDecimals) / (VirtualTokenReserves / 10^tokenDecimals)
@@ -96,10 +87,10 @@ func (d *DEX) CalculateSellValue(ctx context.Context, tokenAmount float64, bondi
 	return baseValue, nil
 }
 
-// CalculateBondingCurvePnL вычисляет PnL (прибыль/убыток) на основе модели bonding curve.
+// CalculatePnL вычисляет PnL (прибыль/убыток) на основе модели bonding curve.
 // Расчет учитывает виртуальные резервы токена и SOL, применяет комиссию протокола,
 // но НЕ учитывает проскальзывание (slippage) при больших объемах продажи.
-func (d *DEX) CalculateBondingCurvePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*BondingCurvePnL, error) {
+func (d *DEX) CalculatePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*model.PnLResult, error) {
 	bondingCurveData, _, err := d.getBondingCurveData(ctx)
 	if err != nil {
 		d.logger.Warn("Failed to fetch bonding curve data, assuming zero reserves", zap.Error(err))
@@ -149,9 +140,7 @@ func (d *DEX) CalculateBondingCurvePnL(ctx context.Context, tokenAmount float64,
 		zap.Float64("net_pnl", netPnL),
 		zap.Float64("pnl_percentage", pnlPercentage))
 
-	return &BondingCurvePnL{
-		CurrentPrice:      currentPrice,
-		TheoreticalValue:  theoreticalValue,
+	return &model.PnLResult{
 		SellEstimate:      sellEstimate,
 		InitialInvestment: initialInvestment,
 		NetPnL:            netPnL,

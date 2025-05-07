@@ -1,4 +1,4 @@
-// =============================
+// Package dex =============================
 // File: internal/dex/pumpfun_adapter.go
 // =============================
 package dex
@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/gagliardetto/solana-go/rpc"
+	"github.com/rovshanmuradov/solana-bot/internal/dex/model"
 	"github.com/rovshanmuradov/solana-bot/internal/dex/pumpfun"
 	"go.uber.org/zap"
 )
@@ -159,15 +160,15 @@ func (d *pumpfunDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint str
 	return d.inner.SellPercentTokens(ctx, percentToSell, slippagePercent, priorityFeeSol, computeUnits)
 }
 
-// CalculateBondingCurvePnL вычисляет PnL с учетом дискретной структуры Pump.fun.
+// CalculatePnL вычисляет PnL с учетом дискретной структуры Pump.fun.
 //
 // Метод рассчитывает прибыль и убыток (Profit and Loss) для указанного количества
 // токенов с учетом первоначальной инвестиции и особенностей дискретного
 // ценообразования на Pump.fun. Расчет учитывает разницу между теоретической
 // стоимостью токенов и фактической выручкой при их продаже.
-func (d *pumpfunDEXAdapter) CalculateBondingCurvePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*pumpfun.BondingCurvePnL, error) {
+func (d *pumpfunDEXAdapter) CalculatePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*model.PnLResult, error) {
 	if err := d.initPumpFun(ctx, d.tokenMint); err != nil {
 		return nil, err
 	}
-	return d.inner.CalculateBondingCurvePnL(ctx, tokenAmount, initialInvestment)
+	return d.inner.CalculatePnL(ctx, tokenAmount, initialInvestment)
 }

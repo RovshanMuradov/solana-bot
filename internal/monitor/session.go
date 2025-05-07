@@ -4,6 +4,7 @@ package monitor
 import (
 	"context"
 	"fmt"
+	"github.com/rovshanmuradov/solana-bot/internal/dex/model"
 	"math"
 	"sync"
 	"time"
@@ -199,7 +200,7 @@ func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentCh
 //
 // Функция запрашивает актуальный баланс токенов, обновляет его в конфигурации
 // и рассчитывает текущую прибыль/убыток на основе этой информации.
-func (ms *MonitoringSession) updateBalanceAndCalculatePnL(ctx context.Context, currentAmount float64) (float64, *PnLData, error) {
+func (ms *MonitoringSession) updateBalanceAndCalculatePnL(ctx context.Context, currentAmount float64) (float64, *model.PnLResult, error) {
 	// Актуализация баланса
 	updatedBalance := currentAmount
 	tokenBalanceRaw, err := ms.config.DEX.GetTokenBalance(ctx, ms.config.TokenMint)
@@ -224,7 +225,7 @@ func (ms *MonitoringSession) updateBalanceAndCalculatePnL(ctx context.Context, c
 		return updatedBalance, nil, err
 	}
 
-	pnlData, err := calculator.CalculatePnL(ctx, ms.config.TokenMint, updatedBalance, ms.config.InitialAmount)
+	pnlData, err := calculator.CalculatePnL(ctx, updatedBalance, ms.config.InitialAmount)
 	if err != nil {
 		ms.logger.Error("Failed to calculate PnL", zap.Error(err))
 		fmt.Printf("\nError calculating PnL: %v\n", err)
@@ -235,7 +236,7 @@ func (ms *MonitoringSession) updateBalanceAndCalculatePnL(ctx context.Context, c
 }
 
 // displayMonitorInfo форматирует и выводит информацию о мониторинге в консоль.
-func (ms *MonitoringSession) displayMonitorInfo(currentPrice, initialPrice, percentChange, tokenBalance float64, pnlData *PnLData) {
+func (ms *MonitoringSession) displayMonitorInfo(currentPrice, initialPrice, percentChange, tokenBalance float64, pnlData *model.PnLResult) {
 	// pnlData уже имеет правильный тип *PnLData
 	pnl := pnlData
 

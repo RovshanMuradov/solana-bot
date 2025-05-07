@@ -4,23 +4,16 @@ package monitor
 import (
 	"context"
 	"fmt"
+	"github.com/rovshanmuradov/solana-bot/internal/dex/model"
 
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
 	"go.uber.org/zap"
 )
 
-// PnLData содержит универсальную информацию о прибыли/убытке (PnL) токена
-type PnLData struct {
-	InitialInvestment float64 // Сколько вложено в SOL
-	SellEstimate      float64 // Сколько получено в SOL после продажи (с учетом комиссии)
-	NetPnL            float64 // Прибыль/убыток в SOL
-	PnLPercentage     float64 // Процент PnL
-}
-
 // PnLCalculator определяет интерфейс для расчета показателей прибыли и убытка для токенов
 type PnLCalculator interface {
 	// CalculatePnL вычисляет показатели прибыли и убытка для токенов
-	CalculatePnL(ctx context.Context, tokenMint string, tokenAmount float64, initialInvestment float64) (*PnLData, error)
+	CalculatePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*model.PnLResult, error)
 }
 
 // calculatorRegistry сопоставляет типы DEX с соответствующими калькуляторами

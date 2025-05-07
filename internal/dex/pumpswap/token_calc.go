@@ -10,29 +10,13 @@ import (
 	"fmt"
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
+	"github.com/rovshanmuradov/solana-bot/internal/dex/model"
 	"math"
 	"strconv"
 	"time"
 
 	"go.uber.org/zap"
 )
-
-// PnLCalculatorInterface определяет интерфейс для расчета прибыли/убытка и стоимости токенов
-type PnLCalculatorInterface interface {
-	//GetTokenPrice(ctx context.Context, tokenMint string) (float64, error)
-	CalculatePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*TokenPnL, error)
-	//GetTokenBalance(ctx context.Context, commitment ...rpc.CommitmentType) (uint64, error)
-}
-
-// TokenPnL содержит данные о прибыли/убытке для токена
-type TokenPnL struct {
-	CurrentPrice      float64 // Текущая цена токена (SOL за токен)
-	TheoreticalValue  float64 // Теоретическая стоимость: токены * CurrentPrice
-	SellEstimate      float64 // Приблизительная выручка при продаже (с учетом комиссии и проскальзывания)
-	InitialInvestment float64 // Первоначальные вложения в SOL
-	NetPnL            float64 // Чистая прибыль/убыток: SellEstimate - InitialInvestment
-	PnLPercentage     float64 // Процент PnL от начальных вложений
-}
 
 // getPool получает актуальную информацию о пуле ликвидности, используя кэширование
 func (d *DEX) getPool(ctx context.Context) (*PoolInfo, error) {
@@ -62,7 +46,7 @@ func (d *DEX) getPool(ctx context.Context) (*PoolInfo, error) {
 	return pool, nil
 }
 
-// GedurrentPrice returns the current BFI token price in SOL, using pool reserves and caching.
+// GetCurrentPrice returns the current token price in SOL, using pool reserves and caching.
 func (d *DEX) GetCurrentPrice(ctx context.Context) (float64, error) {
 	// Return cached price if still valid
 	if time.Since(d.cachedPriceTime) < d.cacheValidPeriod {
@@ -98,7 +82,7 @@ func (d *DEX) GetCurrentPrice(ctx context.Context) (float64, error) {
 }
 
 // CalculatePnL computes profit and loss metrics for a given token amount and initial investment in SOL.
-func (d *DEX) CalculatePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*TokenPnL, error) {
+func (d *DEX) CalculatePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*model.PnLResult, error) {
 	// 1. Get current price
 	price, err := d.GetCurrentPrice(ctx)
 	if err != nil {
@@ -118,9 +102,7 @@ func (d *DEX) CalculatePnL(ctx context.Context, tokenAmount float64, initialInve
 	}
 
 	// 5. Build result
-	result := &TokenPnL{
-		CurrentPrice:      price,
-		TheoreticalValue:  currentValue,
+	result := &model.PnLResult{
 		SellEstimate:      currentValue,
 		InitialInvestment: initialInvestment,
 		NetPnL:            netPnL,

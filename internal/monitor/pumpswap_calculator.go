@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
-	"github.com/rovshanmuradov/solana-bot/internal/dex/pumpswap"
+	"github.com/rovshanmuradov/solana-bot/internal/dex/model"
 	"go.uber.org/zap"
 )
 
@@ -16,27 +16,14 @@ type pumpSwapCalculator struct {
 }
 
 // CalculatePnL делегирует расчёт PnL к внутреннему TokenCalculator через интерфейс PnLCalculatorInterface.
-func (c *pumpSwapCalculator) CalculatePnL(
-	ctx context.Context,
-	tokenMint string,
-	tokenAmount float64,
-	initialInvestment float64,
-) (*PnLData, error) {
-	// Приводим адаптер DEX к PnLCalculatorInterface
-	pnlCalc, ok := c.dex.(pumpswap.PnLCalculatorInterface)
-	if !ok {
-		return nil, fmt.Errorf("DEX adapter does not implement PnLCalculatorInterface for Pump.Swap")
-	}
-
-	// Вызов внутреннего CalculatePnL
-	res, err := pnlCalc.CalculatePnL(ctx, tokenAmount, initialInvestment)
+func (c *pumpSwapCalculator) CalculatePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*model.PnLResult, error) {
+	res, err := c.dex.CalculatePnL(ctx, tokenAmount, initialInvestment)
 	if err != nil {
-		c.logger.Error("TokenCalculator.CalculatePnL error", zap.Error(err))
-		return nil, err
+		c.logger.Error("dex.CalculatePnL error", zap.Error(err))
+		return nil, fmt.Errorf("failed to calculate PnL: %w", err)
 	}
 
-	// Преобразуем результат TokenPnL в PnLData
-	return &PnLData{
+	return &model.PnLResult{
 		InitialInvestment: res.InitialInvestment,
 		SellEstimate:      res.SellEstimate,
 		NetPnL:            res.NetPnL,
