@@ -4,7 +4,6 @@
 package task
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
@@ -35,6 +34,7 @@ type Task struct {
 	ComputeUnits    uint32  // Compute units for the transaction
 	TokenMint       string  // Token mint address
 	CreatedAt       time.Time
+	AutosellAmount  float64
 }
 
 // NewTask creates a properly initialized task
@@ -52,45 +52,6 @@ func NewTask(name, module, wallet string, op OperationType, amount, slippage flo
 		TokenMint:       tokenMint,
 		CreatedAt:       time.Now(),
 	}
-}
-
-// Validate checks if the task has valid parameters
-func (t *Task) Validate() error {
-	if t.TaskName == "" {
-		return fmt.Errorf("task name cannot be empty")
-	}
-
-	if t.Module == "" {
-		return fmt.Errorf("module cannot be empty")
-	}
-
-	if t.WalletName == "" {
-		return fmt.Errorf("wallet name cannot be empty")
-	}
-
-	if t.TokenMint == "" {
-		return fmt.Errorf("token mint cannot be empty")
-	}
-
-	// Validate operation
-	switch t.Operation {
-	case OperationSnipe, OperationSell, OperationSwap:
-		// Valid operations
-	default:
-		return fmt.Errorf("invalid operation: %s", t.Operation)
-	}
-
-	// Validate numeric values
-	if t.AmountSol <= 0 {
-		return fmt.Errorf("amount must be greater than zero")
-	}
-
-	const MinSlippage = 0.1
-	if t.SlippagePercent < MinSlippage || t.SlippagePercent > 100 {
-		return fmt.Errorf("slippage must be between %.1f and 100", MinSlippage)
-	}
-
-	return nil
 }
 
 // ToDEXTask converts Task to dex.Task format

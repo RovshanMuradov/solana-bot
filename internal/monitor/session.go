@@ -24,7 +24,7 @@ type SessionConfig struct {
 	DEX             dex.DEX       // DEX interface
 	Logger          *zap.Logger   // Logger
 
-	// Transaction parameters from the original task
+	AutosellAmount  float64
 	SlippagePercent float64 // Slippage percentage for transactions
 	PriorityFee     string  // Priority fee for transactions
 	ComputeUnits    uint32  // Compute units for transactions
@@ -237,6 +237,12 @@ func (ms *MonitoringSession) updateBalanceAndCalculatePnL(ctx context.Context, c
 
 // displayMonitorInfo форматирует и выводит информацию о мониторинге в консоль.
 func (ms *MonitoringSession) displayMonitorInfo(currentPrice, initialPrice, percentChange, tokenBalance float64, pnlData *model.PnLResult) {
+	// Если сессия уже отменена — сразу выходим
+	select {
+	case <-ms.ctx.Done():
+		return
+	default:
+	}
 	// pnlData уже имеет правильный тип *PnLData
 	pnl := pnlData
 
@@ -284,30 +290,32 @@ func shortenAddress(address string) string {
 func (ms *MonitoringSession) onEnterPressed(_ string) error {
 	fmt.Println("\nSelling tokens...")
 
-	// Останавливаем сессию мониторинга ДО выполнения операции продажи
-	// Это предотвратит дальнейшие попытки обновления цены
-	ms.Stop()
+	// 1) Отменяем сессию целиком:
+	ms.cancel() // <— главное!
+	ms.inputHandler.Stop()
+	ms.priceMonitor.Stop()
 
-	// Процент токенов для продажи (99%)
-	percentToSell := 99.0
-
+	// 2) Логируем параметры
+	percentToSell := ms.config.AutosellAmount
 	ms.logger.Info("Executing sell operation",
 		zap.String("token_mint", ms.config.TokenMint),
-		zap.Float64("percent_to_sell", percentToSell),
+		zap.Float64("autosell_amount", percentToSell), // ← здесь
 		zap.Float64("slippage_percent", ms.config.SlippagePercent),
 		zap.String("priority_fee", ms.config.PriorityFee),
 		zap.Uint32("compute_units", ms.config.ComputeUnits))
 
-	// Продаем указанный процент токенов
+	// 3) Запускаем продажу в независимом контексте
+	sellCtx, sellCancel := context.WithCancel(context.Background())
+	defer sellCancel()
+
 	err := ms.config.DEX.SellPercentTokens(
-		context.Background(),
+		sellCtx,
 		ms.config.TokenMint,
 		percentToSell,
 		ms.config.SlippagePercent,
 		ms.config.PriorityFee,
 		ms.config.ComputeUnits,
 	)
-
 	if err != nil {
 		fmt.Printf("Error selling tokens: %v\n", err)
 		return err

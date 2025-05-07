@@ -118,6 +118,18 @@ func (m *Manager) parseTaskRow(row []string, index int) (*Task, error) {
 			computeUnits = uint32(computeUnitsUint64)
 		}
 	}
+	// Parse percent_to_sell (default 99%)
+	var autosellAmount = 99.0
+	if len(row) > 9 && row[9] != "" {
+		parsed, err := strconv.ParseFloat(row[9], 64)
+		if err != nil {
+			m.logger.Warn("Invalid percent_to_sell value, using default 99%", zap.String("value", row[9]), zap.Error(err))
+		} else if parsed < 1 || parsed > 99 {
+			m.logger.Warn("percent_to_sell out of range [1–99], using default 99%", zap.Float64("provided", parsed))
+		} else {
+			autosellAmount = parsed
+		}
+	}
 
 	return &Task{
 		ID:              index + 1,
@@ -129,6 +141,7 @@ func (m *Manager) parseTaskRow(row []string, index int) (*Task, error) {
 		SlippagePercent: slippagePercent,
 		PriorityFeeSol:  priorityFeeSol,
 		ComputeUnits:    computeUnits,
+		AutosellAmount:  autosellAmount,
 		TokenMint:       row[7],
 	}, nil
 }
