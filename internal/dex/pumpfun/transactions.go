@@ -1,8 +1,6 @@
 // =============================
 // File: internal/dex/pumpfun/transactions.go
 // =============================
-// Package pumpfun содержит имплементацию для взаимодействия с протоколом Pump.fun на блокчейне Solana.
-// Данный файл реализует функциональность для создания, подписи и отправки транзакций.
 package pumpfun
 
 import (
@@ -52,67 +50,50 @@ func (d *DEX) prepareBaseInstructions(_ context.Context, priorityFeeSol string, 
 
 // sendAndConfirmTransaction создает, подписывает, отправляет и ожидает подтверждения транзакции.
 func (d *DEX) sendAndConfirmTransaction(ctx context.Context, instructions []solana.Instruction) (solana.Signature, error) {
-	// Шаг 1: Получаем актуальный blockhash из сети
-	// Blockhash нужен для защиты от повторной отправки транзакции и имеет ограниченный срок действия
+	// 1) blockhash
 	blockhash, err := d.client.GetRecentBlockhash(ctx)
 	if err != nil {
-		return solana.Signature{}, fmt.Errorf("failed to get recent blockhash: %w", err)
+		return solana.Signature{}, fmt.Errorf("get recent blockhash: %w", err)
 	}
-	d.logger.Debug("Got blockhash", zap.String("blockhash", blockhash.String()))
 
-	// Шаг 2: Создаем транзакцию с указанными инструкциями, blockhash и плательщиком комиссии
+	// 2) сборка готовой транзакции
 	tx, err := solana.NewTransaction(
 		instructions,
 		blockhash,
 		solana.TransactionPayer(d.wallet.PublicKey),
+		// сюда же при необходимости ALT:
+		// solana.TransactionWithAddressLookupTables(d.addressTables...),
 	)
 	if err != nil {
-		return solana.Signature{}, fmt.Errorf("failed to create transaction: %w", err)
+		return solana.Signature{}, fmt.Errorf("create transaction: %w", err)
 	}
 
-	// Шаг 3: Подписываем транзакцию приватным ключом кошелька
+	// 3) подпись
 	if err := d.wallet.SignTransaction(tx); err != nil {
-		return solana.Signature{}, fmt.Errorf("failed to sign transaction: %w", err)
+		return solana.Signature{}, fmt.Errorf("sign transaction: %w", err)
 	}
 
-	// Шаг 4: Симулируем транзакцию для проверки корректности и оценки ресурсов
-	// Это не гарантирует успешное выполнение, но позволяет выявить очевидные проблемы
-	simResult, err := d.client.SimulateTransaction(ctx, tx)
-	if err != nil || (simResult != nil && simResult.Err != nil) {
-		// Логируем предупреждение, но продолжаем выполнение
-		// Иногда симуляция может не пройти, но реальная транзакция выполнится успешно
-		d.logger.Warn("Transaction simulation failed",
-			zap.Error(err),
-			zap.Any("sim_error", simResult != nil && simResult.Err != nil))
-		// Продолжаем выполнение, так как симуляция может иногда не проходить для валидных транзакций
+	// 4) симуляция (оставляем ваш код)
+	simResult, simErr := d.client.SimulateTransaction(ctx, tx)
+	if simErr != nil || (simResult != nil && simResult.Err != nil) {
+		d.logger.Warn("Transaction simulation failed", zap.Error(simErr), zap.Any("sim_error", simResult != nil && simResult.Err != nil))
 	} else {
-		d.logger.Info("Transaction simulation successful",
-			zap.Uint64("compute_units", simResult.UnitsConsumed))
+		d.logger.Info("Transaction simulation successful", zap.Uint64("compute_units", simResult.UnitsConsumed))
 	}
 
-	// Шаг 5: Отправляем транзакцию в сеть
-	txSig, err := d.client.SendTransaction(ctx, tx)
+	// 5) отправка
+	sig, err := d.client.SendTransaction(ctx, tx)
 	if err != nil {
-		return solana.Signature{}, fmt.Errorf("failed to send transaction: %w", err)
+		return solana.Signature{}, fmt.Errorf("send transaction: %w", err)
 	}
+	d.logger.Info("Transaction sent", zap.String("signature", sig.String()))
 
-	// Логируем успешную отправку транзакции
-	d.logger.Info("Transaction sent successfully",
-		zap.String("signature", txSig.String()))
-
-	// Шаг 6: Ждем подтверждения транзакции сетью
-	// Уровень подтверждения "Confirmed" означает, что транзакция включена в блок
-	// и подтверждена большинством валидаторов
-	if err := d.client.WaitForTransactionConfirmation(ctx, txSig, rpc.CommitmentConfirmed); err != nil {
-		// Транзакция отправлена, но не получила подтверждения в указанное время
-		d.logger.Warn("Failed to confirm transaction",
-			zap.String("signature", txSig.String()),
-			zap.Error(err))
-		return txSig, fmt.Errorf("transaction confirmation failed: %w", err)
+	// 6) ожидание подтверждения
+	if err := d.client.WaitForTransactionConfirmation(ctx, sig, rpc.CommitmentConfirmed); err != nil {
+		d.logger.Warn("Confirm failed", zap.String("signature", sig.String()), zap.Error(err))
+		return sig, fmt.Errorf("confirmation failed: %w", err)
 	}
+	d.logger.Info("Transaction confirmed", zap.String("signature", sig.String()))
 
-	// Логируем успешное подтверждение транзакции
-	d.logger.Info("Transaction confirmed",
-		zap.String("signature", txSig.String()))
-	return txSig, nil
+	return sig, nil
 }

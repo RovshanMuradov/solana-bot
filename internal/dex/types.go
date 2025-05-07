@@ -31,14 +31,6 @@ type Task struct {
 	SellPercentage  float64       // Процент от общего баланса токенов для продажи (0-100)
 }
 
-// PnLResult хранит результат расчёта прибыли/убытка.
-type PnLResult struct {
-	InitialInvestment float64 // Сколько вложено в SOL
-	SellEstimate      float64 // Сколько получено в SOL после продажи (с учетом комиссии)
-	NetPnL            float64 // Прибыль/убыток в SOL
-	PnLPercentage     float64 // Процент PnL
-}
-
 // DEX — единый интерфейс для работы с различными DEX.
 type DEX interface {
 	// GetName возвращает название биржи.
