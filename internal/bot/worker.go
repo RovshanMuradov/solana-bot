@@ -117,6 +117,7 @@ func (r *Runner) handleMonitoredTask(ctx context.Context, t *task.Task, dexAdapt
 		SlippagePercent: dexTask.SlippagePercent,
 		PriorityFee:     dexTask.PriorityFee,
 		ComputeUnits:    dexTask.ComputeUnits,
+		AutosellAmount:  t.AutosellAmount, // новое поле
 	}
 
 	session := monitor.NewMonitoringSession(monitorConfig)
