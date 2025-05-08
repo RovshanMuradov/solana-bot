@@ -1,174 +1,101 @@
-// Package dex =============================
-// File: internal/dex/pumpfun_adapter.go
-// =============================
+// internal/dex/pumpfun_adapter.go
 package dex
 
 import (
 	"context"
 	"fmt"
+
 	"github.com/gagliardetto/solana-go/rpc"
+	"go.uber.org/zap"
+
 	"github.com/rovshanmuradov/solana-bot/internal/dex/model"
 	"github.com/rovshanmuradov/solana-bot/internal/dex/pumpfun"
-	"go.uber.org/zap"
 )
 
-// pumpfunDEXAdapter адаптирует Pump.fun к интерфейсу DEX
+// pumpfunDEXAdapter адаптирует Pump.fun к нашему DEX-интерфейсу.
 type pumpfunDEXAdapter struct {
 	baseDEXAdapter
 	inner *pumpfun.DEX
 }
 
-// GetName возвращает название DEX.
-func (d *pumpfunDEXAdapter) initPumpFun(_ context.Context, tokenMint string) error {
-	// Защищаем от конкурентного доступа к полям адаптера
-	d.initMu.Lock()
-	defer d.initMu.Unlock()
-
-	// Проверяем, инициализирован ли уже DEX для запрашиваемого токена
-	// Это позволяет избежать повторной инициализации и экономит ресурсы
-	if d.initDone && d.tokenMint == tokenMint && d.inner != nil {
-		return nil // DEX уже инициализирован для этого токена
-	}
-
-	// Создаем конфигурацию по умолчанию для DEX
-	config := pumpfun.GetDefaultConfig()
-
-	// Настраиваем конфигурацию для конкретного токена
-	// Это включает установку адреса токена и связанных с ним параметров
-	if err := config.SetupForToken(tokenMint, d.logger); err != nil {
-		return fmt.Errorf("failed to setup Pump.fun configuration: %w", err)
-	}
-
-	// Создаем новый экземпляр DEX с переданными параметрами
-	// Все зависимости (клиент, кошелек, логгер) передаются из адаптера
-	var err error
-	d.inner, err = pumpfun.NewDEX(d.client, d.wallet, d.logger, config, config.MonitorInterval)
-	if err != nil {
-		return fmt.Errorf("failed to initialize Pump.fun DEX: %w", err)
-	}
-
-	// Сохраняем информацию об инициализированном токене и статусе инициализации
-	// для возможности переиспользования DEX в будущих вызовах
-	d.tokenMint = tokenMint
-	d.initDone = true
-	return nil
-}
-
-// Execute выполняет операцию на Pump.fun DEX.
+// Execute выполняет snipe или sell, через общий initIfNeeded.
 func (d *pumpfunDEXAdapter) Execute(ctx context.Context, task *Task) error {
-	// Проверка наличия обязательного поля
 	if task.TokenMint == "" {
-		return fmt.Errorf("token mint address is required for Pump.fun")
+		return fmt.Errorf("token mint is required for Pump.fun")
 	}
-
-	// Ленивая инициализация DEX
-	if err := d.initPumpFun(ctx, task.TokenMint); err != nil {
+	// ленивый init
+	if err := d.initIfNeeded(ctx, task.TokenMint, d.makeInitPumpFun(task.TokenMint)); err != nil {
 		return err
 	}
 
 	switch task.Operation {
 	case OperationSnipe:
-		// Логирование параметров операции покупки
-		d.logger.Info("Executing snipe on Pump.fun",
-			zap.String("token_mint", task.TokenMint),
-			zap.Float64("sol_amount", task.AmountSol),
-			zap.Float64("slippage_percent", task.SlippagePercent),
-			zap.String("priority_fee", task.PriorityFee),
-			zap.Uint32("compute_units", task.ComputeUnits))
-
-		// Выполнение покупки токена
+		d.logger.Info("Pump.fun snipe",
+			zap.String("mint", task.TokenMint),
+			zap.Float64("sol", task.AmountSol),
+			zap.Float64("slippage", task.SlippagePercent),
+			zap.String("fee", task.PriorityFee),
+			zap.Uint32("cu", task.ComputeUnits),
+		)
 		return d.inner.ExecuteSnipe(ctx, task.AmountSol, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
 
 	case OperationSell:
-		// Запрос текущего баланса токенов с подтверждением
-		tokenBalance, err := d.inner.GetTokenBalance(ctx, rpc.CommitmentConfirmed)
+		bal, err := d.inner.GetTokenBalance(ctx, rpc.CommitmentConfirmed)
 		if err != nil {
-			return fmt.Errorf("failed to get token balance for sell: %w", err)
+			return fmt.Errorf("get balance: %w", err)
 		}
-
-		if tokenBalance > 0 {
-			// Использование фактического баланса для продажи
-			d.logger.Info("Executing sell on Pump.fun using actual token balance",
-				zap.String("token_mint", task.TokenMint),
-				zap.Uint64("token_balance", tokenBalance),
-				zap.Float64("slippage_percent", task.SlippagePercent),
-				zap.String("priority_fee", task.PriorityFee),
-				zap.Uint32("compute_units", task.ComputeUnits))
-
-			return d.inner.ExecuteSell(ctx, tokenBalance, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
-		} else {
-			// Конвертация человеко-читаемого значения в базовые единицы токена
-			tokenAmount, err := convertToTokenUnits(ctx, d.inner, task.TokenMint, task.AmountSol, 6)
-			if err != nil {
-				return err
-			}
-
-			// Логирование продажи с конвертированным значением
-			d.logger.Info("Executing sell on Pump.fun using converted amount",
-				zap.String("token_mint", task.TokenMint),
-				zap.Float64("tokens_to_sell", task.AmountSol),
-				zap.Uint64("token_amount", tokenAmount),
-				zap.Float64("slippage_percent", task.SlippagePercent),
-				zap.String("priority_fee", task.PriorityFee),
-				zap.Uint32("compute_units", task.ComputeUnits))
-
-			return d.inner.ExecuteSell(ctx, tokenAmount, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
+		if bal > 0 {
+			return d.inner.ExecuteSell(ctx, bal, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
 		}
-
+		// fallback: конвертируем SOL в лампорты
+		lamports := uint64(task.AmountSol * 1e9)
+		return d.inner.ExecuteSell(ctx, lamports, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
 	default:
-		// Возвращение ошибки для неподдерживаемых операций
-		return fmt.Errorf("operation %s is not supported on Pump.fun", task.Operation)
+		return fmt.Errorf("unsupported operation %s on Pump.fun", task.Operation)
 	}
 }
 
-// GetTokenPrice получает текущую цену токена на Pump.fun DEX.
+// GetTokenPrice возвращает цену, гарантируя init.
 func (d *pumpfunDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
-	if err := d.initPumpFun(ctx, tokenMint); err != nil {
+	if err := d.initIfNeeded(ctx, tokenMint, d.makeInitPumpFun(tokenMint)); err != nil {
 		return 0, err
 	}
 	return d.inner.GetTokenPrice(ctx, tokenMint)
 }
 
-// GetTokenBalance возвращает текущий баланс токена на аккаунте пользователя.
-//
-// Метод инициализирует DEX для указанного токена и запрашивает
-// баланс соответствующего токена на ассоциированном токен-аккаунте пользователя.
-// Использует оптимизированную стратегию получения баланса: сначала с быстрым
-// уровнем подтверждения Processed, при неудаче - с уровнем Confirmed.
+// GetTokenBalance возвращает баланс, гарантируя init.
 func (d *pumpfunDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error) {
-	// Инициализируем DEX для указанного токена
-	if err := d.initPumpFun(ctx, tokenMint); err != nil {
-		return 0, fmt.Errorf("failed to initialize Pump.fun: %w", err)
+	if err := d.initIfNeeded(ctx, tokenMint, d.makeInitPumpFun(tokenMint)); err != nil {
+		return 0, err
 	}
-
-	// Используем внутреннюю реализацию GetTokenBalance без явного указания commitment
-	// Это позволит внутренней логике применить свою оптимизированную стратегию
 	return d.inner.GetTokenBalance(ctx)
 }
 
-// SellPercentTokens продает указанный процент имеющихся токенов.
-//
-// Метод определяет текущий баланс токенов пользователя, вычисляет
-// соответствующую указанному проценту долю и выполняет продажу этой
-// доли на Pump.fun DEX. Операция выполняется с учетом указанного
-// проскальзывания и приоритета транзакции.
-func (d *pumpfunDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint string, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
-	if err := d.initPumpFun(ctx, tokenMint); err != nil {
+// SellPercentTokens продаёт процент, гарантируя init.
+func (d *pumpfunDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint string, pct, slip float64, fee string, cu uint32) error {
+	if err := d.initIfNeeded(ctx, tokenMint, d.makeInitPumpFun(tokenMint)); err != nil {
 		return err
 	}
-
-	return d.inner.SellPercentTokens(ctx, percentToSell, slippagePercent, priorityFeeSol, computeUnits)
+	return d.inner.SellPercentTokens(ctx, pct, slip, fee, cu)
 }
 
-// CalculatePnL вычисляет PnL с учетом дискретной структуры Pump.fun.
-//
-// Метод рассчитывает прибыль и убыток (Profit and Loss) для указанного количества
-// токенов с учетом первоначальной инвестиции и особенностей дискретного
-// ценообразования на Pump.fun. Расчет учитывает разницу между теоретической
-// стоимостью токенов и фактической выручкой при их продаже.
-func (d *pumpfunDEXAdapter) CalculatePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*model.PnLResult, error) {
-	if err := d.initPumpFun(ctx, d.tokenMint); err != nil {
+// CalculatePnL считает PnL, гарантируя init.
+func (d *pumpfunDEXAdapter) CalculatePnL(ctx context.Context, amount, invest float64) (*model.PnLResult, error) {
+	if err := d.initIfNeeded(ctx, d.tokenMint, d.makeInitPumpFun(d.tokenMint)); err != nil {
 		return nil, err
 	}
-	return d.inner.CalculatePnL(ctx, tokenAmount, initialInvestment)
+	return d.inner.CalculatePnL(ctx, amount, invest)
+}
+
+// makeInitPumpFun возвращает initFn для initIfNeeded.
+func (d *pumpfunDEXAdapter) makeInitPumpFun(tokenMint string) func() error {
+	return func() error {
+		cfg := pumpfun.GetDefaultConfig()
+		if err := cfg.SetupForToken(tokenMint, d.logger); err != nil {
+			return fmt.Errorf("setup Pump.fun config: %w", err)
+		}
+		var err error
+		d.inner, err = pumpfun.NewDEX(d.client, d.wallet, d.logger, cfg, cfg.MonitorInterval)
+		return err
+	}
 }
