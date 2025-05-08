@@ -9,9 +9,6 @@ import (
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
 )
 
-// Constants
-const LamportsPerSOL = 1_000_000_000
-
 // OperationType defines the supported operation types
 type OperationType string
 
@@ -35,23 +32,6 @@ type Task struct {
 	TokenMint       string  // Token mint address
 	CreatedAt       time.Time
 	AutosellAmount  float64
-}
-
-// NewTask creates a properly initialized task
-func NewTask(name, module, wallet string, op OperationType, amount, slippage float64,
-	priority string, compute uint32, tokenMint string) *Task {
-	return &Task{
-		TaskName:        name,
-		Module:          module,
-		WalletName:      wallet,
-		Operation:       op,
-		AmountSol:       amount,
-		SlippagePercent: slippage,
-		PriorityFeeSol:  priority,
-		ComputeUnits:    compute,
-		TokenMint:       tokenMint,
-		CreatedAt:       time.Now(),
-	}
 }
 
 // ToDEXTask converts Task to dex.Task format

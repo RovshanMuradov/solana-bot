@@ -1,4 +1,4 @@
-// =============================
+// Package dex
 // File: internal/dex/factory.go
 // =============================
 package dex
