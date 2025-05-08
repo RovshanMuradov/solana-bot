@@ -9,32 +9,32 @@ import (
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
 )
 
-// OperationType defines the supported operation types
+// OperationType is the kind of trading action to perform.
 type OperationType string
 
 const (
 	OperationSnipe OperationType = "snipe"
-	OperationSell  OperationType = "sell"
 	OperationSwap  OperationType = "swap"
+	OperationSell  OperationType = "sell"
 )
 
-// Task represents a trading task from CSV configuration
+// Task holds parameters for a trade operation loaded from CSV.
 type Task struct {
-	ID              int
-	TaskName        string
-	Module          string
-	WalletName      string
-	Operation       OperationType
-	AmountSol       float64 // For buy: Amount in SOL to spend. For sell: Number of tokens to sell
-	SlippagePercent float64 // Slippage tolerance in percent (0-100)
-	PriorityFeeSol  string  // Priority fee in SOL (string format, e.g. "0.000001")
-	ComputeUnits    uint32  // Compute units for the transaction
-	TokenMint       string  // Token mint address
-	CreatedAt       time.Time
-	AutosellAmount  float64
+	ID              int           // Unique row index
+	TaskName        string        // Identifier or name
+	Module          string        // Module name (for routing)
+	WalletName      string        // Name of the wallet config
+	Operation       OperationType // Type of operation to execute
+	AmountSol       float64       // SOL amount to spend or tokens amount to sell
+	SlippagePercent float64       // Allowed slippage percent
+	PriorityFeeSol  string        // Priority fee, e.g. "0.000001" or "default"
+	ComputeUnits    uint32        // Compute units for transaction
+	TokenMint       string        // Token mint address
+	CreatedAt       time.Time     // Timestamp when task was parsed
+	AutosellAmount  float64       // Percent of tokens to auto-sell
 }
 
-// ToDEXTask converts Task to dex.Task format
+// ToDEXTask maps this Task into the DEX adapter's Task format.
 func (t *Task) ToDEXTask(monitorInterval time.Duration) *dex.Task {
 	return &dex.Task{
 		Operation:       dex.OperationType(t.Operation),

@@ -10,16 +10,16 @@ import (
 	"github.com/spf13/viper"
 )
 
-// Config defines complete application configuration with all fields from config.json
+// Config holds application settings loaded from config.json.
 type Config struct {
 	License        string        `mapstructure:"license"`
 	RPCList        []string      `mapstructure:"rpc_list"`
 	WebSocketURL   string        `mapstructure:"websocket_url"`
-	MonitorDelay   time.Duration `mapstructure:"-"` // Converted from milliseconds
+	MonitorDelay   time.Duration `mapstructure:"-"`
 	MonitorDelayMS int           `mapstructure:"monitor_delay"`
-	RPCDelay       time.Duration `mapstructure:"-"` // Converted from milliseconds
+	RPCDelay       time.Duration `mapstructure:"-"`
 	RPCDelayMS     int           `mapstructure:"rpc_delay"`
-	PriceDelay     time.Duration `mapstructure:"-"` // Converted from milliseconds
+	PriceDelay     time.Duration `mapstructure:"-"`
 	PriceDelayMS   int           `mapstructure:"price_delay"`
 	DebugLogging   bool          `mapstructure:"debug_logging"`
 	TPSLogging     bool          `mapstructure:"tps_logging"`
@@ -28,12 +28,12 @@ type Config struct {
 	Workers        int           `mapstructure:"workers"`
 }
 
-// LoadConfig reads and validates configuration from the provided path
+// LoadConfig reads configuration from the specified file path and performs validation.
 func LoadConfig(path string) (*Config, error) {
 	v := viper.New()
 	v.SetConfigFile(path)
 
-	// Set defaults
+	// Defaults
 	v.SetDefault("debug_logging", true)
 	v.SetDefault("tps_logging", false)
 	v.SetDefault("price_delay", 500)
@@ -51,37 +51,40 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("unmarshal error: %w", err)
 	}
 
-	// Convert milliseconds to durations
+	// Convert ms to Duration
 	cfg.MonitorDelay = time.Duration(cfg.MonitorDelayMS) * time.Millisecond
 	cfg.RPCDelay = time.Duration(cfg.RPCDelayMS) * time.Millisecond
 	cfg.PriceDelay = time.Duration(cfg.PriceDelayMS) * time.Millisecond
 
-	// Basic validation
-	if len(cfg.RPCList) == 0 {
-		return nil, fmt.Errorf("rpc_list is empty")
-	}
-
-	if cfg.License == "" {
-		return nil, fmt.Errorf("license is required")
-	}
-
-	if cfg.WebSocketURL == "" {
-		return nil, fmt.Errorf("websocket_url is required")
-	}
-
-	if cfg.Workers <= 0 {
-		cfg.Workers = 1
-	}
-
-	if cfg.Retries <= 0 {
-		cfg.Retries = 3
+	// Validate
+	if err := cfg.validate(); err != nil {
+		return nil, err
 	}
 
 	return &cfg, nil
 }
 
-// ValidateLicense is a placeholder for license validation
+// validate checks required fields and applies defaults if necessary.
+func (c *Config) validate() error {
+	if len(c.RPCList) == 0 {
+		return fmt.Errorf("rpc_list must contain at least one RPC endpoint")
+	}
+	if c.License == "" {
+		return fmt.Errorf("license is required")
+	}
+	if c.WebSocketURL == "" {
+		return fmt.Errorf("websocket_url is required")
+	}
+	if c.Workers <= 0 {
+		c.Workers = 1
+	}
+	if c.Retries <= 0 {
+		c.Retries = 3
+	}
+	return nil
+}
+
+// ValidateLicense returns true if the provided license string meets basic criteria.
 func ValidateLicense(license string) bool {
-	// Placeholder for license validation logic
 	return license != ""
 }
