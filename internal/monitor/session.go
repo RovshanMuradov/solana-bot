@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/rovshanmuradov/solana-bot/internal/dex/model"
+	"github.com/rovshanmuradov/solana-bot/internal/task"
 	"math"
 	"sync"
 	"time"
@@ -14,20 +15,14 @@ import (
 )
 
 // SessionConfig contains configuration for a monitoring session
+// SessionConfig contains configuration for a monitoring session
 type SessionConfig struct {
-	TokenMint       string        // Token mint address
-	TokenAmount     float64       // Human-readable amount of tokens purchased
-	TokenBalance    uint64        // Raw token balance in the smallest units
-	InitialAmount   float64       // Initial SOL amount spent
+	Task            *task.Task    // ✅ ссылка на исходную задачу
+	TokenBalance    uint64        // Raw token balance in smallest units
 	InitialPrice    float64       // Initial token price
-	MonitorInterval time.Duration // Interval for price updates
-	DEX             dex.DEX       // DEX interface
+	DEX             dex.DEX       // DEX adapter
 	Logger          *zap.Logger   // Logger
-
-	AutosellAmount  float64
-	SlippagePercent float64 // Slippage percentage for transactions
-	PriorityFee     string  // Priority fee for transactions
-	ComputeUnits    uint32  // Compute units for transactions
+	MonitorInterval time.Duration // Интервал обновления цены
 }
 
 // MonitoringSession представляет сессию мониторинга токенов для операций на DEX.
@@ -54,57 +49,46 @@ func NewMonitoringSession(config *SessionConfig) *MonitoringSession {
 
 // Start запускает сессию мониторинга.
 func (ms *MonitoringSession) Start() error {
+	t := ms.config.Task // 👈 просто для краткости
+
 	ms.logger.Info("Preparing monitoring session",
-		zap.String("token", ms.config.TokenMint),
-		zap.Float64("initial_investment_sol", ms.config.InitialAmount))
+		zap.String("token", t.TokenMint),
+		zap.Float64("initial_investment_sol", t.AmountSol))
 
-	// Получим начальную цену и баланс еще раз для лога, если они не переданы или могут быть неточными
-	// Для простоты используем переданные в конфиге значения
 	initialPrice := ms.config.InitialPrice
-	initialTokens := ms.config.TokenAmount
-	// Если цена не была передана, попробуем получить ее
+	initialTokens := t.AutosellAmount
+
 	if initialPrice == 0 {
-		priceCtx, priceCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		var priceErr error
-		initialPrice, priceErr = ms.config.DEX.GetTokenPrice(priceCtx, ms.config.TokenMint)
-		if priceErr != nil {
-			ms.logger.Warn("Could not get initial price for logging", zap.Error(priceErr))
-		}
-		priceCancel()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		initialPrice, _ = ms.config.DEX.GetTokenPrice(ctx, t.TokenMint)
+		cancel()
 	}
-	// Если баланс токенов не был передан (или равен 0), попробуем получить его
 	if initialTokens == 0 && ms.config.TokenBalance == 0 {
-		balanceCtx, balanceCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		balanceRaw, balanceErr := ms.config.DEX.GetTokenBalance(balanceCtx, ms.config.TokenMint)
-		if balanceErr == nil {
-			ms.config.TokenBalance = balanceRaw
-			// Предполагаем 6 знаков после запятой, если не знаем точно
-			// TODO: Передать или определить точность токена
-			initialTokens = float64(balanceRaw) / 1e6
-			ms.config.TokenAmount = initialTokens // Обновляем значение в конфиге
-		} else {
-			ms.logger.Warn("Could not get initial token balance for logging", zap.Error(balanceErr))
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		bal, err := ms.config.DEX.GetTokenBalance(ctx, t.TokenMint)
+		cancel()
+		if err == nil {
+			ms.config.TokenBalance = bal
+			initialTokens = float64(bal) / 1e6
 		}
-		balanceCancel()
 	}
 
-	// Логируем начальные данные
 	ms.logger.Info("Monitor start",
-		zap.String("token", ms.config.TokenMint),
+		zap.String("token", t.TokenMint),
 		zap.Float64("initial_price", initialPrice),
-		zap.Float64("initial_tokens", initialTokens),             // Используем количество токенов
-		zap.Uint64("initial_tokens_raw", ms.config.TokenBalance)) // И сырой баланс
+		zap.Float64("initial_tokens", initialTokens),
+		zap.Uint64("initial_tokens_raw", ms.config.TokenBalance))
 
-	// Обновляем InitialPrice в конфиге, если мы его только что получили
 	ms.config.InitialPrice = initialPrice
+	t.AutosellAmount = initialTokens
 
-	// Create a price monitor
+	// Создаем монитор цен
 	ms.priceMonitor = NewPriceMonitor(
 		ms.config.DEX,
-		ms.config.TokenMint,
-		ms.config.InitialPrice,  // Используем актуальную начальную цену
-		ms.config.TokenAmount,   // Используем актуальный баланс токенов
-		ms.config.InitialAmount, // Сумма вложения SOL
+		t.TokenMint,
+		initialPrice,
+		initialTokens,
+		t.AmountSol,
 		ms.config.MonitorInterval,
 		ms.logger.Named("price"),
 		ms.onPriceUpdate,
@@ -201,9 +185,10 @@ func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentCh
 // Функция запрашивает актуальный баланс токенов, обновляет его в конфигурации
 // и рассчитывает текущую прибыль/убыток на основе этой информации.
 func (ms *MonitoringSession) updateBalanceAndCalculatePnL(ctx context.Context, currentAmount float64) (float64, *model.PnLResult, error) {
-	// Актуализация баланса
+	t := ms.config.Task
+
 	updatedBalance := currentAmount
-	tokenBalanceRaw, err := ms.config.DEX.GetTokenBalance(ctx, ms.config.TokenMint)
+	tokenBalanceRaw, err := ms.config.DEX.GetTokenBalance(ctx, t.TokenMint)
 	if err == nil && tokenBalanceRaw > 0 {
 		newBalance := float64(tokenBalanceRaw) / 1e6
 		if math.Abs(newBalance-currentAmount) > 0.000001 && newBalance > 0 {
@@ -211,13 +196,14 @@ func (ms *MonitoringSession) updateBalanceAndCalculatePnL(ctx context.Context, c
 				zap.Float64("old_balance", currentAmount),
 				zap.Float64("new_balance", newBalance))
 
-			ms.config.TokenAmount = newBalance
+			// обновляем task и config
+			t.AutosellAmount = newBalance
 			ms.config.TokenBalance = tokenBalanceRaw
 			updatedBalance = newBalance
 		}
 	}
 
-	// Получение калькулятора и расчет PnL
+	// Получаем PnL калькулятор
 	calculator, err := GetCalculator(ms.config.DEX, ms.logger)
 	if err != nil {
 		ms.logger.Error("Failed to get calculator for DEX", zap.Error(err))
@@ -225,7 +211,8 @@ func (ms *MonitoringSession) updateBalanceAndCalculatePnL(ctx context.Context, c
 		return updatedBalance, nil, err
 	}
 
-	pnlData, err := calculator.CalculatePnL(ctx, updatedBalance, ms.config.InitialAmount)
+	// используем исходную сумму из task
+	pnlData, err := calculator.CalculatePnL(ctx, updatedBalance, t.AmountSol)
 	if err != nil {
 		ms.logger.Error("Failed to calculate PnL", zap.Error(err))
 		fmt.Printf("\nError calculating PnL: %v\n", err)
@@ -237,6 +224,7 @@ func (ms *MonitoringSession) updateBalanceAndCalculatePnL(ctx context.Context, c
 
 // displayMonitorInfo форматирует и выводит информацию о мониторинге в консоль.
 func (ms *MonitoringSession) displayMonitorInfo(currentPrice, initialPrice, percentChange, tokenBalance float64, pnlData *model.PnLResult) {
+	t := ms.config.Task
 	// Если сессия уже отменена — сразу выходим
 	select {
 	case <-ms.ctx.Done():
@@ -264,7 +252,7 @@ func (ms *MonitoringSession) displayMonitorInfo(currentPrice, initialPrice, perc
 
 	// Вывод информации в консоль
 	fmt.Println("\n╔════════════════ TOKEN MONITOR ════════════════╗")
-	fmt.Printf("║ Token: %-38s ║\n", shortenAddress(ms.config.TokenMint))
+	fmt.Printf("║ Token: %-38s ║\n", shortenAddress(t.TokenMint))
 	fmt.Println("╟───────────────────────────────────────────────╢")
 	fmt.Printf("║ Current Price:       %-14.8f SOL ║\n", currentPrice)
 	fmt.Printf("║ Initial Price:       %-14.8f SOL ║\n", initialPrice)
@@ -288,33 +276,30 @@ func shortenAddress(address string) string {
 
 // onEnterPressed вызывается при нажатии клавиши Enter.
 func (ms *MonitoringSession) onEnterPressed(_ string) error {
-	fmt.Println("\nSelling tokens...")
+	t := ms.config.Task
 
-	// 1) Отменяем сессию целиком:
-	ms.cancel() // <— главное!
+	fmt.Println("\nSelling tokens...")
+	ms.cancel()
 	ms.inputHandler.Stop()
 	ms.priceMonitor.Stop()
 
-	// 2) Логируем параметры
-	percentToSell := ms.config.AutosellAmount
 	ms.logger.Info("Executing sell operation",
-		zap.String("token_mint", ms.config.TokenMint),
-		zap.Float64("autosell_amount", percentToSell), // ← здесь
-		zap.Float64("slippage_percent", ms.config.SlippagePercent),
-		zap.String("priority_fee", ms.config.PriorityFee),
-		zap.Uint32("compute_units", ms.config.ComputeUnits))
+		zap.String("token_mint", t.TokenMint),
+		zap.Float64("autosell_amount", t.AutosellAmount),
+		zap.Float64("slippage_percent", t.SlippagePercent),
+		zap.String("priority_fee", t.PriorityFeeSol),
+		zap.Uint32("compute_units", t.ComputeUnits))
 
-	// 3) Запускаем продажу в независимом контексте
-	sellCtx, sellCancel := context.WithCancel(context.Background())
-	defer sellCancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	err := ms.config.DEX.SellPercentTokens(
-		sellCtx,
-		ms.config.TokenMint,
-		percentToSell,
-		ms.config.SlippagePercent,
-		ms.config.PriorityFee,
-		ms.config.ComputeUnits,
+		ctx,
+		t.TokenMint,
+		t.AutosellAmount,
+		t.SlippagePercent,
+		t.PriorityFeeSol,
+		t.ComputeUnits,
 	)
 	if err != nil {
 		fmt.Printf("Error selling tokens: %v\n", err)
