@@ -5,8 +5,6 @@ package task
 
 import (
 	"time"
-
-	"github.com/rovshanmuradov/solana-bot/internal/dex"
 )
 
 // OperationType is the kind of trading action to perform.
@@ -32,17 +30,4 @@ type Task struct {
 	TokenMint       string        // Token mint address
 	CreatedAt       time.Time     // Timestamp when task was parsed
 	AutosellAmount  float64       // Percent of tokens to auto-sell
-}
-
-// ToDEXTask maps this Task into the DEX adapter's Task format.
-func (t *Task) ToDEXTask(monitorInterval time.Duration) *dex.Task {
-	return &dex.Task{
-		Operation:       dex.OperationType(t.Operation),
-		AmountSol:       t.AmountSol,
-		SlippagePercent: t.SlippagePercent,
-		TokenMint:       t.TokenMint,
-		PriorityFee:     t.PriorityFeeSol,
-		ComputeUnits:    t.ComputeUnits,
-		MonitorInterval: monitorInterval,
-	}
 }

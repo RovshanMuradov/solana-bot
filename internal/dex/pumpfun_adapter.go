@@ -4,6 +4,7 @@ package dex
 import (
 	"context"
 	"fmt"
+	"github.com/rovshanmuradov/solana-bot/internal/task"
 
 	"github.com/gagliardetto/solana-go/rpc"
 	"go.uber.org/zap"
@@ -19,39 +20,39 @@ type pumpfunDEXAdapter struct {
 }
 
 // Execute выполняет snipe или sell, через общий initIfNeeded.
-func (d *pumpfunDEXAdapter) Execute(ctx context.Context, task *Task) error {
-	if task.TokenMint == "" {
+func (d *pumpfunDEXAdapter) Execute(ctx context.Context, t *task.Task) error {
+	if t.TokenMint == "" {
 		return fmt.Errorf("token mint is required for Pump.fun")
 	}
 	// ленивый init
-	if err := d.initIfNeeded(ctx, task.TokenMint, d.makeInitPumpFun(task.TokenMint)); err != nil {
+	if err := d.initIfNeeded(ctx, t.TokenMint, d.makeInitPumpFun(t.TokenMint)); err != nil {
 		return err
 	}
 
-	switch task.Operation {
-	case OperationSnipe:
+	switch t.Operation {
+	case task.OperationSnipe:
 		d.logger.Info("Pump.fun snipe",
-			zap.String("mint", task.TokenMint),
-			zap.Float64("sol", task.AmountSol),
-			zap.Float64("slippage", task.SlippagePercent),
-			zap.String("fee", task.PriorityFee),
-			zap.Uint32("cu", task.ComputeUnits),
+			zap.String("mint", t.TokenMint),
+			zap.Float64("sol", t.AmountSol),
+			zap.Float64("slippage", t.SlippagePercent),
+			zap.String("fee", t.PriorityFeeSol),
+			zap.Uint32("cu", t.ComputeUnits),
 		)
-		return d.inner.ExecuteSnipe(ctx, task.AmountSol, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
+		return d.inner.ExecuteSnipe(ctx, t.AmountSol, t.SlippagePercent, t.PriorityFeeSol, t.ComputeUnits)
 
-	case OperationSell:
+	case t.Operation:
 		bal, err := d.inner.GetTokenBalance(ctx, rpc.CommitmentConfirmed)
 		if err != nil {
 			return fmt.Errorf("get balance: %w", err)
 		}
 		if bal > 0 {
-			return d.inner.ExecuteSell(ctx, bal, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
+			return d.inner.ExecuteSell(ctx, bal, t.SlippagePercent, t.PriorityFeeSol, t.ComputeUnits)
 		}
 		// fallback: конвертируем SOL в лампорты
-		lamports := uint64(task.AmountSol * 1e9)
-		return d.inner.ExecuteSell(ctx, lamports, task.SlippagePercent, task.PriorityFee, task.ComputeUnits)
+		lamports := uint64(t.AmountSol * 1e9)
+		return d.inner.ExecuteSell(ctx, lamports, t.SlippagePercent, t.PriorityFeeSol, t.ComputeUnits)
 	default:
-		return fmt.Errorf("unsupported operation %s on Pump.fun", task.Operation)
+		return fmt.Errorf("unsupported operation %s on Pump.fun", t.Operation)
 	}
 }
 
