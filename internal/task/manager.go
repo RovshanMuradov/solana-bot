@@ -153,14 +153,6 @@ func parseFloatField(value, name string) (float64, error) {
 	return f, nil
 }
 
-func parseUint32Field(fields []string, idx int) (uint32, error) {
-	if idx >= len(fields) || fields[idx] == "" {
-		return 0, nil
-	}
-	u, err := strconv.ParseUint(fields[idx], 10, 32)
-	return uint32(u), err
-}
-
 func clamp(val, min, max, def float64) float64 {
 	if val < min || val > max {
 		return def
