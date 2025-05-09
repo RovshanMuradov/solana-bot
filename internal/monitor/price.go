@@ -27,11 +27,11 @@ type PriceMonitor struct {
 }
 
 // NewPriceMonitor создает новый монитор цены токена.
-func NewPriceMonitor(dex dex.DEX, tokenMint string, initialPrice float64,
+func NewPriceMonitor(parentCtx context.Context, dex dex.DEX, tokenMint string, initialPrice float64,
 	tokenAmount float64, initialAmount float64,
 	interval time.Duration, logger *zap.Logger,
 	callback PriceUpdateCallback) *PriceMonitor {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parentCtx)
 	return &PriceMonitor{
 		dex:           dex,
 		interval:      interval,

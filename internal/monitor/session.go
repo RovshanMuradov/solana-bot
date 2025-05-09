@@ -15,7 +15,6 @@ import (
 )
 
 // SessionConfig contains configuration for a monitoring session
-// SessionConfig contains configuration for a monitoring session
 type SessionConfig struct {
 	Task            *task.Task    // ✅ ссылка на исходную задачу
 	TokenBalance    uint64        // Raw token balance in smallest units
@@ -84,6 +83,7 @@ func (ms *MonitoringSession) Start() error {
 
 	// Создаем монитор цен
 	ms.priceMonitor = NewPriceMonitor(
+		ms.ctx,
 		ms.config.DEX,
 		t.TokenMint,
 		initialPrice,
@@ -95,7 +95,7 @@ func (ms *MonitoringSession) Start() error {
 	)
 
 	// Create an input handler
-	ms.inputHandler = NewInputHandler(ms.logger.Named("input"))
+	ms.inputHandler = NewInputHandler(ms.ctx, ms.logger.Named("input"))
 
 	// Register commands
 	ms.inputHandler.RegisterCommand("", ms.onEnterPressed) // Empty command (Enter key)
@@ -167,7 +167,7 @@ func (ms *MonitoringSession) Stop() {
 // Метод координирует получение актуальной информации о балансе токена,
 // расчет прибыли/убытков и вывод этой информации в консоль.
 func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentChange, tokenAmount float64) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(ms.ctx, 5*time.Second)
 	defer cancel()
 
 	// Шаг 1: Обновляем баланс и рассчитываем PnL
@@ -187,23 +187,27 @@ func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentCh
 func (ms *MonitoringSession) updateBalanceAndCalculatePnL(ctx context.Context, currentAmount float64) (float64, *model.PnLResult, error) {
 	t := ms.config.Task
 
-	updatedBalance := currentAmount
+	// Шаг 1: Пробуем получить актуальный баланс токена
 	tokenBalanceRaw, err := ms.config.DEX.GetTokenBalance(ctx, t.TokenMint)
-	if err == nil && tokenBalanceRaw > 0 {
+	if err != nil {
+		ms.logger.Error("Failed to get token balance", zap.Error(err))
+		return currentAmount, nil, err
+	}
+
+	// Шаг 2: Если получили — обновим локальную переменную
+	updatedBalance := currentAmount
+	if tokenBalanceRaw > 0 {
 		newBalance := float64(tokenBalanceRaw) / 1e6
 		if math.Abs(newBalance-currentAmount) > 0.000001 && newBalance > 0 {
 			ms.logger.Debug("Token balance changed",
 				zap.Float64("old_balance", currentAmount),
 				zap.Float64("new_balance", newBalance))
-
-			// обновляем task и config
-			t.AutosellAmount = newBalance
 			ms.config.TokenBalance = tokenBalanceRaw
 			updatedBalance = newBalance
 		}
 	}
 
-	// Получаем PnL калькулятор
+	// Шаг 3: Получаем PnL калькулятор
 	calculator, err := GetCalculator(ms.config.DEX, ms.logger)
 	if err != nil {
 		ms.logger.Error("Failed to get calculator for DEX", zap.Error(err))
@@ -211,7 +215,7 @@ func (ms *MonitoringSession) updateBalanceAndCalculatePnL(ctx context.Context, c
 		return updatedBalance, nil, err
 	}
 
-	// используем исходную сумму из task
+	// Шаг 4: Считаем PnL по текущему балансу, но исходной цене покупки
 	pnlData, err := calculator.CalculatePnL(ctx, updatedBalance, t.AmountSol)
 	if err != nil {
 		ms.logger.Error("Failed to calculate PnL", zap.Error(err))

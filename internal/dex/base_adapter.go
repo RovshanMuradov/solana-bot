@@ -1,14 +1,12 @@
-// Package dex =============================
-// File: internal/dex/base_adapter.go
-// =============================
 package dex
 
 import (
 	"context"
+	"sync"
+
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
-	"sync"
 )
 
 // baseDEXAdapter содержит общую логику для всех адаптеров DEX
@@ -19,37 +17,34 @@ type baseDEXAdapter struct {
 	name   string
 
 	mu        sync.Mutex
-	initDone  bool
+	inited    map[string]bool // tokenMint → initialized
 	tokenMint string
 }
 
-// initIfNeeded выполняет «ленивую» инициализацию для конкретного токена.
-// initFn — это ваша «фабрика», которая создаёт inner DEX.
-func (b *baseDEXAdapter) initIfNeeded(ctx context.Context, tokenMint string, initFn func() error) error {
-	// Первая проверка под мьютексом
+func (b *baseDEXAdapter) init(ctx context.Context, tokenMint string, initFn func() error) error {
 	b.mu.Lock()
-	if b.initDone && b.tokenMint == tokenMint {
+	if b.inited == nil {
+		b.inited = make(map[string]bool)
+	}
+	if b.inited[tokenMint] {
 		b.mu.Unlock()
 		return nil
 	}
 	b.mu.Unlock()
 
-	// Запуск инициализации без блокировки
+	// вне lock вызываем initFn (сетевой вызов)
 	if err := initFn(); err != nil {
 		return err
 	}
 
-	// Повторная блокировка и double-check
+	// сохраняем факт инициализации под мьютексом
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	if !b.initDone || b.tokenMint != tokenMint {
-		b.tokenMint = tokenMint
-		b.initDone = true
-	}
+	b.inited[tokenMint] = true
+	b.tokenMint = tokenMint
+	b.mu.Unlock()
 	return nil
 }
 
-// GetName возвращает название биржи
 func (b *baseDEXAdapter) GetName() string {
 	return b.name
 }

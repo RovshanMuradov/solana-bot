@@ -3,55 +3,84 @@ package bot
 
 import (
 	"context"
-	"github.com/rovshanmuradov/solana-bot/internal/monitor"
+	"fmt"
+	"sync"
 	"time"
 
-	"go.uber.org/zap"
-
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
+	"github.com/rovshanmuradov/solana-bot/internal/monitor"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
+	"github.com/rovshanmuradov/solana-bot/internal/wallet"
+	"go.uber.org/zap"
 )
 
-// worker обрабатывает задачи из канала задач в отдельной горутине.
-func (r *Runner) worker(id int, ctx context.Context, taskCh <-chan *task.Task) {
-	logger := r.logger.With(zap.Int("worker_id", id))
-	logger.Debug("Worker started")
-
-	for t := range taskCh {
-		// Check if context is cancelled
-		select {
-		case <-ctx.Done():
-			logger.Debug("Worker shutting down due to context cancellation")
-			return
-		default:
-			// Continue processing
-		}
-
-		logger.Info("Processing task",
-			zap.String("task", t.TaskName),
-			zap.String("operation", string(t.Operation)))
-
-		// Process the task
-		r.processTask(ctx, t, logger)
-	}
-
-	logger.Debug("Worker finished, no more tasks")
+type WorkerPool struct {
+	wg        sync.WaitGroup
+	ctx       context.Context
+	tasks     <-chan *task.Task
+	logger    *zap.Logger
+	config    *task.Config
+	solClient *solbc.Client
+	wallets   map[string]*wallet.Wallet
 }
 
-// processTask обрабатывает выполнение одной задачи.
-func (r *Runner) processTask(ctx context.Context, t *task.Task, logger *zap.Logger) {
-	// Get wallet for this task
-	w := r.defaultWallet
-	if r.wallets[t.WalletName] != nil {
-		w = r.wallets[t.WalletName]
+func NewWorkerPool(
+	ctx context.Context,
+	cfg *task.Config,
+	logger *zap.Logger,
+	solClient *solbc.Client,
+	wallets map[string]*wallet.Wallet,
+	tasks <-chan *task.Task,
+) *WorkerPool {
+	return &WorkerPool{
+		ctx:       ctx,
+		config:    cfg,
+		logger:    logger,
+		tasks:     tasks,
+		solClient: solClient,
+		wallets:   wallets,
 	}
+}
+
+func (wp *WorkerPool) Start(n int) {
+	for i := 0; i < n; i++ {
+		wp.wg.Add(1)
+		go wp.worker(i + 1)
+	}
+}
+
+func (wp *WorkerPool) Wait() {
+	wp.wg.Wait()
+}
+
+func (wp *WorkerPool) worker(id int) {
+	logger := wp.logger.With(zap.Int("worker_id", id))
+	logger.Info("Worker started")
+
+	for {
+		select {
+		case <-wp.ctx.Done():
+			logger.Info("Worker shutting down due to context cancellation")
+			return
+		case t, ok := <-wp.tasks:
+			if !ok {
+				logger.Info("Task channel closed")
+				return
+			}
+			wp.handleTask(wp.ctx, t, logger)
+		}
+	}
+}
+
+func (wp *WorkerPool) handleTask(ctx context.Context, t *task.Task, logger *zap.Logger) {
+	w := wp.wallets[t.WalletName]
 	if w == nil {
-		logger.Warn("Skipping task - no wallet found", zap.String("task", t.TaskName))
+		logger.Warn("Skipping task - no wallet found", zap.String("wallet", t.WalletName))
 		return
 	}
 
-	// Get DEX adapter
-	dexAdapter, err := dex.GetDEXByName(t.Module, r.solClient, w, logger)
+	dexAdapter, err := dex.GetDEXByName(t.Module, wp.solClient, w, logger)
 	if err != nil {
 		logger.Error("DEX adapter init error", zap.String("task", t.TaskName), zap.Error(err))
 		return
@@ -64,71 +93,72 @@ func (r *Runner) processTask(ctx context.Context, t *task.Task, logger *zap.Logg
 		zap.String("token_mint", t.TokenMint),
 	)
 
-	// Create a time-based monitor interval from config
-	monitorInterval := r.config.PriceDelay
-	dexTask := t.ToDEXTask(monitorInterval)
-
-	// Handle task based on operation type
-	// Запускаем мониторинг как для операции Snipe, так и для операции Swap
 	if t.Operation == task.OperationSnipe || t.Operation == task.OperationSwap {
-		r.handleMonitoredTask(ctx, t, dexAdapter, dexTask, logger)
-	} else {
-		// Normal execution for другие операции
-		err = dexAdapter.Execute(ctx, dexTask)
+		err := wp.handleMonitoredTask(ctx, t, dexAdapter, logger)
 		if err != nil {
-			logger.Error("Error executing operation",
-				zap.String("task", t.TaskName),
-				zap.Error(err),
-			)
+			logger.Error("Monitored task failed", zap.Error(err))
+		}
+	} else {
+		err := dexAdapter.Execute(ctx, t)
+		if err != nil {
+			logger.Error("Task execution failed", zap.String("task", t.TaskName), zap.Error(err))
 		} else {
-			logger.Info("Operation completed",
-				zap.String("task", t.TaskName))
+			logger.Info("Task executed successfully", zap.String("task", t.TaskName))
 		}
 	}
 }
 
-// handleMonitoredTask выполняет операцию и запускает мониторинг цены токена.
-// Это обобщенная версия функции handleSnipeTask, которая работает для разных типов операций.
-func (r *Runner) handleMonitoredTask(ctx context.Context, t *task.Task, dexAdapter dex.DEX, dexTask *dex.Task, logger *zap.Logger) {
-	logger.Info("Starting operation with monitoring",
-		zap.String("task", t.TaskName),
-		zap.String("token", t.TokenMint),
-		zap.String("operation", string(t.Operation)),
-		zap.Float64("amount_sol", dexTask.AmountSol),
-		zap.String("dex", dexAdapter.GetName()))
+func (wp *WorkerPool) handleMonitoredTask(ctx context.Context, t *task.Task, dexAdapter dex.DEX, logger *zap.Logger) error {
+	logger.Info("Monitored task started", zap.String("token", t.TokenMint))
 
-	opCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-	defer cancel()
-
-	if err := dexAdapter.Execute(opCtx, dexTask); err != nil {
-		logger.Error("Operation failed", zap.String("task", t.TaskName), zap.Error(err))
-		return
+	if err := dexAdapter.Execute(ctx, t); err != nil {
+		return fmt.Errorf("execute task: %w", err)
 	}
+
 	logger.Info("Operation completed successfully", zap.String("task", t.TaskName))
 
-	time.Sleep(5 * time.Second)
+	var tokenBalance uint64
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	for i := 0; i < 10; i++ {
+		bal, err := dexAdapter.GetTokenBalance(checkCtx, t.TokenMint)
+		if err != nil {
+			logger.Warn("GetTokenBalance failed", zap.Int("try", i+1), zap.Error(err))
+		} else if bal > 0 {
+			tokenBalance = bal
+			logger.Info("Token received", zap.Uint64("balance", tokenBalance))
+			break
+		}
+		select {
+		case <-checkCtx.Done():
+			logger.Warn("Timeout waiting for token", zap.String("token", t.TokenMint))
+			break
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+
+	if tokenBalance == 0 {
+		logger.Warn("No tokens received; skipping monitor")
+		return nil
+	}
 
 	monitorConfig := &monitor.SessionConfig{
-		TokenMint:       t.TokenMint,
-		InitialAmount:   dexTask.AmountSol,
-		MonitorInterval: dexTask.MonitorInterval,
+		Task:            t,
+		TokenBalance:    tokenBalance,
+		InitialPrice:    0,
 		DEX:             dexAdapter,
 		Logger:          logger.Named("monitor"),
-		SlippagePercent: dexTask.SlippagePercent,
-		PriorityFee:     dexTask.PriorityFee,
-		ComputeUnits:    dexTask.ComputeUnits,
-		AutosellAmount:  t.AutosellAmount, // новое поле
+		MonitorInterval: wp.config.MonitorDelay,
 	}
 
 	session := monitor.NewMonitoringSession(monitorConfig)
+
 	if err := session.Start(); err != nil {
-		logger.Error("Failed to start monitoring session", zap.String("task", t.TaskName), zap.Error(err))
-		return
+		logger.Error("Monitor session failed to start", zap.Error(err))
+		return err
 	}
 
-	logger.Info("Monitoring session started - press Enter to sell tokens or 'q' to exit", zap.String("task", t.TaskName))
-
-	if err := session.Wait(); err != nil {
-		logger.Error("Monitoring session error", zap.String("task", t.TaskName), zap.Error(err))
-	}
+	session.Wait()
+	return nil
 }

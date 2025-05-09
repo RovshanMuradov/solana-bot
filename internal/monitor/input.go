@@ -23,8 +23,8 @@ type InputHandler struct {
 }
 
 // NewInputHandler создает новый обработчик пользовательского ввода.
-func NewInputHandler(logger *zap.Logger) *InputHandler {
-	ctx, cancel := context.WithCancel(context.Background())
+func NewInputHandler(parentCtx context.Context, logger *zap.Logger) *InputHandler {
+	ctx, cancel := context.WithCancel(parentCtx)
 	return &InputHandler{
 		callbacks: make(map[string]CommandCallback),
 		logger:    logger,

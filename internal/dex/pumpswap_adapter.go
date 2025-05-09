@@ -25,7 +25,7 @@ func (d *pumpswapDEXAdapter) Execute(ctx context.Context, t *task.Task) error {
 	if t.TokenMint == "" {
 		return fmt.Errorf("token mint is required for Pump.swap")
 	}
-	if err := d.initIfNeeded(ctx, t.TokenMint, d.makeInitPumpSwap(t.TokenMint)); err != nil {
+	if err := d.init(ctx, t.TokenMint, d.makeInitPumpSwap(t.TokenMint)); err != nil {
 		return err
 	}
 
@@ -71,7 +71,7 @@ func (d *pumpswapDEXAdapter) Execute(ctx context.Context, t *task.Task) error {
 
 // GetTokenBalance возвращает баланс, предварительно инициализировав DEX.
 func (d *pumpswapDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error) {
-	if err := d.initIfNeeded(ctx, tokenMint, d.makeInitPumpSwap(tokenMint)); err != nil {
+	if err := d.init(ctx, tokenMint, d.makeInitPumpSwap(tokenMint)); err != nil {
 		return 0, fmt.Errorf("init Pump.swap: %w", err)
 	}
 	return d.inner.GetTokenBalance(ctx)
@@ -79,7 +79,7 @@ func (d *pumpswapDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint stri
 
 // SellPercentTokens продаёт процент токенов, предварительно инициализировав DEX.
 func (d *pumpswapDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint string, percentToSell, slippage float64, priorityFee string, computeUnits uint32) error {
-	if err := d.initIfNeeded(ctx, tokenMint, d.makeInitPumpSwap(tokenMint)); err != nil {
+	if err := d.init(ctx, tokenMint, d.makeInitPumpSwap(tokenMint)); err != nil {
 		return fmt.Errorf("init Pump.swap: %w", err)
 	}
 	return d.inner.SellPercentTokens(ctx, percentToSell, slippage, priorityFee, computeUnits)
@@ -87,7 +87,7 @@ func (d *pumpswapDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint st
 
 // GetTokenPrice возвращает цену, предварительно инициализировав DEX.
 func (d *pumpswapDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
-	if err := d.initIfNeeded(ctx, tokenMint, d.makeInitPumpSwap(tokenMint)); err != nil {
+	if err := d.init(ctx, tokenMint, d.makeInitPumpSwap(tokenMint)); err != nil {
 		return 0, fmt.Errorf("init Pump.swap: %w", err)
 	}
 	return d.inner.GetTokenPrice(ctx, tokenMint)
@@ -95,7 +95,11 @@ func (d *pumpswapDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string
 
 // CalculatePnL рассчитывает PnL, предварительно инициализировав DEX.
 func (d *pumpswapDEXAdapter) CalculatePnL(ctx context.Context, tokenAmount, initialInvestment float64) (*model.PnLResult, error) {
-	if err := d.initIfNeeded(ctx, d.tokenMint, d.makeInitPumpSwap(d.tokenMint)); err != nil {
+	d.mu.Lock()
+	tokenMint := d.tokenMint
+	d.mu.Unlock()
+
+	if err := d.init(ctx, tokenMint, d.makeInitPumpSwap(tokenMint)); err != nil {
 		return nil, err
 	}
 	return d.inner.CalculatePnL(ctx, tokenAmount, initialInvestment)

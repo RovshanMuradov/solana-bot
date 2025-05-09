@@ -25,7 +25,7 @@ func (d *pumpfunDEXAdapter) Execute(ctx context.Context, t *task.Task) error {
 		return fmt.Errorf("token mint is required for Pump.fun")
 	}
 	// ленивый init
-	if err := d.initIfNeeded(ctx, t.TokenMint, d.makeInitPumpFun(t.TokenMint)); err != nil {
+	if err := d.init(ctx, t.TokenMint, d.makeInitPumpFun(t.TokenMint)); err != nil {
 		return err
 	}
 
@@ -58,7 +58,7 @@ func (d *pumpfunDEXAdapter) Execute(ctx context.Context, t *task.Task) error {
 
 // GetTokenPrice возвращает цену, гарантируя init.
 func (d *pumpfunDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
-	if err := d.initIfNeeded(ctx, tokenMint, d.makeInitPumpFun(tokenMint)); err != nil {
+	if err := d.init(ctx, tokenMint, d.makeInitPumpFun(tokenMint)); err != nil {
 		return 0, err
 	}
 	return d.inner.GetTokenPrice(ctx, tokenMint)
@@ -66,7 +66,7 @@ func (d *pumpfunDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string)
 
 // GetTokenBalance возвращает баланс, гарантируя init.
 func (d *pumpfunDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error) {
-	if err := d.initIfNeeded(ctx, tokenMint, d.makeInitPumpFun(tokenMint)); err != nil {
+	if err := d.init(ctx, tokenMint, d.makeInitPumpFun(tokenMint)); err != nil {
 		return 0, err
 	}
 	return d.inner.GetTokenBalance(ctx)
@@ -74,7 +74,7 @@ func (d *pumpfunDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint strin
 
 // SellPercentTokens продаёт процент, гарантируя init.
 func (d *pumpfunDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint string, pct, slip float64, fee string, cu uint32) error {
-	if err := d.initIfNeeded(ctx, tokenMint, d.makeInitPumpFun(tokenMint)); err != nil {
+	if err := d.init(ctx, tokenMint, d.makeInitPumpFun(tokenMint)); err != nil {
 		return err
 	}
 	return d.inner.SellPercentTokens(ctx, pct, slip, fee, cu)
@@ -82,7 +82,11 @@ func (d *pumpfunDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint str
 
 // CalculatePnL считает PnL, гарантируя init.
 func (d *pumpfunDEXAdapter) CalculatePnL(ctx context.Context, amount, invest float64) (*model.PnLResult, error) {
-	if err := d.initIfNeeded(ctx, d.tokenMint, d.makeInitPumpFun(d.tokenMint)); err != nil {
+	d.mu.Lock()
+	tokenMint := d.tokenMint
+	d.mu.Unlock()
+
+	if err := d.init(ctx, tokenMint, d.makeInitPumpFun(tokenMint)); err != nil {
 		return nil, err
 	}
 	return d.inner.CalculatePnL(ctx, amount, invest)
