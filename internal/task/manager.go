@@ -34,8 +34,13 @@ func (m *Manager) LoadTasks(path string) ([]*Task, error) {
 
 	r := csv.NewReader(file)
 	// Read header
-	if _, err := r.Read(); err != nil {
+	header, err := r.Read()
+	if err != nil {
 		return nil, fmt.Errorf("read CSV header: %w", err)
+	}
+	indexes := make(map[string]int)
+	for i, name := range header {
+		indexes[name] = i
 	}
 
 	tasks := make([]*Task, 0)
@@ -51,7 +56,7 @@ func (m *Manager) LoadTasks(path string) ([]*Task, error) {
 			continue
 		}
 
-		task, err := m.parseRow(rw, line)
+		task, err := m.parseRow(rw, indexes, line)
 		if err != nil {
 			m.logger.Warn("Skipping invalid task row", zap.Int("line", line), zap.Error(err))
 			continue
@@ -63,61 +68,71 @@ func (m *Manager) LoadTasks(path string) ([]*Task, error) {
 	return tasks, nil
 }
 
-func (m *Manager) parseRow(fields []string, line int) (*Task, error) {
-	if len(fields) < 8 {
-		return nil, fmt.Errorf("expected >=8 columns, got %d", len(fields))
+func (m *Manager) parseRow(fields []string, indexes map[string]int, line int) (*Task, error) {
+	get := func(key string) string {
+		if idx, ok := indexes[key]; ok && idx < len(fields) {
+			return fields[idx]
+		}
+		return ""
 	}
 
-	op, err := parseOperation(fields[3])
+	op, err := parseOperation(get("operation"))
 	if err != nil {
 		return nil, err
 	}
 
-	amount, err := parseFloatField(fields[4], "amount_sol")
+	amount, err := parseFloatField(get("amount_sol"), "amount_sol")
 	if err != nil {
 		return nil, err
 	}
 
-	slippage, err := parseFloatField(fields[5], "slippage_percent")
+	slippage, err := parseFloatField(get("slippage_percent"), "slippage_percent")
 	if err != nil {
 		return nil, err
 	}
 	slippage = clamp(slippage, 0.5, 100.0, 1.0)
 
-	priority := fields[6]
+	priority := get("priority_fee")
 	if priority == "" {
 		priority = "default"
 	}
 
-	computeUnits, err := parseUint32Field(fields, 8)
+	computeUnits, err := parseUint32FieldStr(get("compute_units"))
 	if err != nil {
 		m.logger.Warn("Invalid compute_units, using default", zap.Error(err))
 	}
 
 	autoSell := 99.0
-	if len(fields) > 9 {
-		s, err := strconv.ParseFloat(fields[9], 64)
-		if err == nil && s >= 1 && s <= 99 {
-			autoSell = s
+	if s := get("percent_to_sell"); s != "" {
+		if f, err := strconv.ParseFloat(s, 64); err == nil && f >= 1 && f <= 99 {
+			autoSell = f
 		} else {
-			m.logger.Warn("Invalid percent_to_sell, defaulting to 99%", zap.String("value", fields[9]), zap.Error(err))
+			m.logger.Warn("Invalid percent_to_sell, defaulting to 99%", zap.String("value", s), zap.Error(err))
 		}
 	}
 
 	return &Task{
 		ID:              line - 1,
-		TaskName:        fields[0],
-		Module:          fields[1],
-		WalletName:      fields[2],
+		TaskName:        get("task_name"),
+		Module:          get("module"),
+		WalletName:      get("wallet"),
 		Operation:       op,
 		AmountSol:       amount,
 		SlippagePercent: slippage,
 		PriorityFeeSol:  priority,
 		ComputeUnits:    computeUnits,
 		AutosellAmount:  autoSell,
-		TokenMint:       fields[7],
+		TokenMint:       get("token_mint"),
 		CreatedAt:       time.Now(),
 	}, nil
+}
+
+func parseUint32FieldStr(s string) (uint32, error) {
+	if s == "" {
+		return 0, nil
+	}
+	u, err := strconv.ParseUint(s, 10, 32)
+	return uint32(u), err
 }
 
 func parseOperation(s string) (OperationType, error) {
