@@ -3,6 +3,7 @@ package monitor
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
@@ -24,6 +25,7 @@ type PriceMonitor struct {
 	callback      PriceUpdateCallback // Callback for price updates
 	ctx           context.Context     // Context for cancellation
 	cancel        context.CancelFunc  // Cancel function
+	stopped       atomic.Bool         // Флаг остановки, используем atomic для безопасного доступа из разных горутин
 }
 
 // NewPriceMonitor создает новый монитор цены токена.
@@ -61,18 +63,43 @@ func (pm *PriceMonitor) Start() {
 			pm.logger.Info("PriceMonitor: context done, exiting loop")
 			return
 		case <-ticker.C:
+			// Проверяем флаг остановки перед обновлением цены
+			if pm.stopped.Load() {
+				pm.logger.Debug("PriceMonitor: stopped, skipping price update")
+				continue
+			}
 			pm.updatePrice()
 		}
 	}
 }
 
-// Stop отменяет контекст мониторинга
+// Stop отменяет контекст мониторинга и устанавливает флаг остановки
 func (pm *PriceMonitor) Stop() {
+	// Сначала устанавливаем флаг остановки, чтобы предотвратить вызов колбека
+	pm.stopped.Store(true)
+	pm.logger.Debug("PriceMonitor: stop flag set")
+
+	// Затем отменяем контекст
 	pm.cancel()
 }
 
-// updatePrice использует разделенный локальный контекст с таймаутом для RPC
+// updatePrice использует отдельный контекст с таймаутом для RPC
 func (pm *PriceMonitor) updatePrice() {
+	// Проверяем флаг остановки перед выполнением операции
+	if pm.stopped.Load() {
+		pm.logger.Debug("PriceMonitor: already stopped, skipping updatePrice")
+		return
+	}
+
+	// Проверяем, не отменен ли уже основной контекст
+	select {
+	case <-pm.ctx.Done():
+		pm.logger.Debug("PriceMonitor: context already done, skipping updatePrice")
+		return
+	default:
+		// продолжаем выполнение
+	}
+
 	// Создаем новый контекст для получения цены
 	cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -82,8 +109,22 @@ func (pm *PriceMonitor) updatePrice() {
 		pm.logger.Error("GetTokenPrice error", zap.Error(err))
 		return
 	}
-	// Вычисляем изменение цены и вызываем callback
-	pm.callback(price, pm.initialPrice, ((price-pm.initialPrice)/pm.initialPrice)*100, pm.tokenAmount)
+
+	// Еще раз проверяем флаг остановки перед вызовом колбека
+	if pm.stopped.Load() {
+		pm.logger.Debug("PriceMonitor: stopped after price retrieval, skipping callback")
+		return
+	}
+
+	// Еще раз проверяем, не отменен ли контекст перед вызовом колбека
+	select {
+	case <-pm.ctx.Done():
+		pm.logger.Debug("PriceMonitor: context done after price retrieval, skipping callback")
+		return
+	default:
+		// Вычисляем изменение цены и вызываем callback
+		pm.callback(price, pm.initialPrice, ((price-pm.initialPrice)/pm.initialPrice)*100, pm.tokenAmount)
+	}
 }
 
 // SetCallback устанавливает функцию обратного вызова для обновлений цены.

@@ -167,42 +167,56 @@ func (ms *MonitoringSession) Stop() {
 //
 // Метод координирует получение актуальной информации о балансе токена,
 // расчет прибыли/убытков и вывод этой информации в консоль.
+// onPriceUpdate вызывается при обновлении цены токена.
+//
+// Метод координирует получение актуальной информации о балансе токена,
+// расчет прибыли/убытков и вывод этой информации в консоль.
 func (ms *MonitoringSession) onPriceUpdate(currentPrice, initialPrice, percentChange, tokenAmount float64) {
-	// Если сессия уже отменена (например, Stop() был вызван), немедленно выходим.
-	// Это предотвратит попытки выполнить операции с уже отмененным главным контекстом.
+	// Проверяем состояние сессии перед выполнением операций
 	select {
 	case <-ms.ctx.Done():
-		ms.logger.Debug("Session context is done, skipping onPriceUpdate logic.")
+		ms.logger.Debug("Session context is done, skipping onPriceUpdate logic")
 		return
 	default:
+		// продолжаем выполнение только если контекст активен
 	}
 
-	// Используем ms.ctx для создания контекста с таймаутом для этой операции.
-	// Если ms.ctx будет отменен во время выполнения этой функции, этот ctx также будет отменен.
-	ctx, cancel := context.WithTimeout(ms.ctx, 5*time.Second)
+	// Создаем отдельный контекст для операций в этом методе,
+	// не связанный с основным контекстом сессии
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	// Шаг 1: Обновляем баланс и рассчитываем PnL
 	updatedBalance, pnlData, err := ms.updateBalanceAndCalculatePnL(ctx, tokenAmount)
 	if err != nil {
-		// updateBalanceAndCalculatePnL уже логирует ошибку.
-		// Если ошибка - это отмена контекста, это может быть ожидаемо при остановке.
 		if errors.Is(err, context.Canceled) {
 			ms.logger.Debug("onPriceUpdate: updateBalanceAndCalculatePnL was cancelled", zap.Error(err))
+		} else {
+			ms.logger.Error("Failed to update balance and calculate PnL", zap.Error(err))
 		}
 		return
 	}
 
-	// Шаг 2: Отображаем информацию
-	// displayMonitorInfo также имеет внутреннюю проверку ms.ctx.Done()
-	ms.displayMonitorInfo(currentPrice, initialPrice, percentChange, updatedBalance, pnlData)
+	// Еще раз проверяем состояние сессии перед обновлением UI
+	select {
+	case <-ms.ctx.Done():
+		ms.logger.Debug("Session context was canceled during onPriceUpdate, skipping display")
+		return
+	default:
+		// Шаг 2: Отображаем информацию
+		ms.displayMonitorInfo(currentPrice, initialPrice, percentChange, updatedBalance, pnlData)
+	}
 }
 
 // updateBalanceAndCalculatePnL обновляет баланс токенов и рассчитывает PnL.
 //
 // Функция запрашивает актуальный баланс токенов, обновляет его в конфигурации
 // и рассчитывает текущую прибыль/убыток на основе этой информации.
+// Принимает независимый контекст от вызывающей функции.
 func (ms *MonitoringSession) updateBalanceAndCalculatePnL(ctx context.Context, currentAmount float64) (float64, *model.PnLResult, error) {
+	// Важно: контекст ctx должен быть передан из вызывающей функции,
+	// и не должен быть связан с контекстом сессии ms.ctx
+
 	t := ms.config.Task
 
 	// Шаг 1: Пробуем получить актуальный баланс токена
@@ -297,17 +311,20 @@ func shortenAddress(address string) string {
 }
 
 // onEnterPressed вызывается при нажатии клавиши Enter.
+// onEnterPressed вызывается при нажатии клавиши Enter.
 func (ms *MonitoringSession) onEnterPressed(_ string) error {
 	t := ms.config.Task
 
 	fmt.Println("\nSelling tokens...")
 
-	// Сначала полностью останавливаем сессию мониторинга.
-	// ms.Stop() корректно остановит inputHandler, priceMonitor (дождется его завершения через wg.Wait),
-	// и отменит главный контекст ms.ctx.
-	// Это гарантирует, что onPriceUpdate не будет вызвана с уже отмененным ms.ctx
-	// после того, как PriceMonitor был остановлен.
-	ms.Stop() // <--- ИЗМЕНЕНИЕ ЗДЕСЬ
+	// Сначала останавливаем только priceMonitor, чтобы предотвратить вызов колбеков
+	if ms.priceMonitor != nil {
+		ms.priceMonitor.Stop()
+		ms.logger.Debug("Price monitor stop requested")
+	}
+
+	// Затем останавливаем остальную часть сессии
+	ms.Stop()
 
 	ms.logger.Info("Executing sell operation",
 		zap.String("token_mint", t.TokenMint),
@@ -316,14 +333,12 @@ func (ms *MonitoringSession) onEnterPressed(_ string) error {
 		zap.String("priority_fee", t.PriorityFeeSol),
 		zap.Uint32("compute_units", t.ComputeUnits))
 
-	// Для самой операции продажи используем новый, независимый контекст.
-	// Это уже сделано правильно в твоем коде.
-	// Дадим операции продажи достаточно времени (например, 30-60 секунд).
+	// Для операции продажи используем новый, независимый контекст
 	ctxSell, cancelSell := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancelSell()
 
 	err := ms.config.DEX.SellPercentTokens(
-		ctxSell, // Используем ctxSell
+		ctxSell,
 		t.TokenMint,
 		t.AutosellAmount,
 		t.SlippagePercent,
@@ -331,13 +346,11 @@ func (ms *MonitoringSession) onEnterPressed(_ string) error {
 		t.ComputeUnits,
 	)
 	if err != nil {
-		// Сессия уже остановлена, так что просто выводим ошибку и возвращаем ее.
 		fmt.Printf("Error selling tokens: %v\n", err)
 		return err
 	}
 
 	fmt.Println("Tokens sold successfully!")
-	// Сессия уже остановлена. handleMonitoredTask в worker.go выйдет из session.Wait().
 	return nil
 }
 
