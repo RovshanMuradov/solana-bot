@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -54,6 +55,13 @@ func (ih *InputHandler) Start() {
 				// Read a line non-blocking
 				line, err := reader.ReadString('\n')
 				if err != nil {
+					if err == io.EOF {
+						// EOF means stdin is closed or detached
+						ih.logger.Warn("Stdin closed or detached, stopping input handler")
+						ih.cancel() // Cancel the context
+						return
+					}
+
 					if ih.ctx.Err() == nil { // Only log if not canceled
 						ih.logger.Error("Error reading input", zap.Error(err))
 					}
