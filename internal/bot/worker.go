@@ -9,7 +9,6 @@ import (
 
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
-	"github.com/rovshanmuradov/solana-bot/internal/monitor"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
@@ -143,22 +142,34 @@ func (wp *WorkerPool) handleMonitoredTask(ctx context.Context, t *task.Task, dex
 		return nil
 	}
 
-	monitorConfig := &monitor.SessionConfig{
-		Task:            t,
-		TokenBalance:    tokenBalance,
-		InitialPrice:    0,
-		DEX:             dexAdapter,
-		Logger:          logger.Named("monitor"),
-		MonitorInterval: wp.config.MonitorDelay,
-	}
+	// Создаем SellFunc для продажи токенов
+	sellFn := CreateSellFunc(
+		dexAdapter,
+		t.TokenMint,
+		t.SlippagePercent,
+		t.PriorityFeeSol,
+		t.ComputeUnits,
+		logger.Named("sell"),
+	)
 
-	session := monitor.NewMonitoringSession(monitorConfig)
+	// Создаем и запускаем рабочий процесс мониторинга
+	worker := NewMonitorWorker(
+		ctx,
+		t,
+		dexAdapter,
+		logger,
+		tokenBalance,
+		0, // Initial price will be fetched by monitor
+		wp.config.MonitorDelay,
+		sellFn,
+	)
 
-	if err := session.Start(); err != nil {
-		logger.Error("Monitor session failed to start", zap.Error(err))
+	// Запускаем и ожидаем завершения рабочего процесса
+	err := worker.Start()
+	if err != nil {
+		logger.Error("Monitor worker failed", zap.Error(err))
 		return err
 	}
 
-	session.Wait()
 	return nil
 }

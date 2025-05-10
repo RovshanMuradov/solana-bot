@@ -10,8 +10,16 @@ import (
 	"go.uber.org/zap"
 )
 
+// PriceUpdate представляет обновление цены токена
+type PriceUpdate struct {
+	Current  float64 // Текущая цена токена
+	Initial  float64 // Начальная цена токена
+	Percent  float64 // Процентное изменение цены
+	Tokens   float64 // Количество токенов
+}
+
 // PriceUpdateCallback - функция обратного вызова, вызываемая при обновлении цены токена.
-type PriceUpdateCallback func(currentPriceSol float64, initialPriceSol float64, percentChange float64, tokenAmount float64)
+type PriceUpdateCallback func(update PriceUpdate)
 
 // PriceMonitor отслеживает изменения цены токена.
 type PriceMonitor struct {
@@ -100,8 +108,8 @@ func (pm *PriceMonitor) updatePrice() {
 		// продолжаем выполнение
 	}
 
-	// Создаем новый контекст для получения цены
-	cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Создаем новый контекст для получения цены, унаследованный от родительского
+	cctx, cancel := context.WithTimeout(pm.ctx, 10*time.Second)
 	defer cancel()
 
 	price, err := pm.dex.GetTokenPrice(cctx, pm.tokenMint)
@@ -122,8 +130,15 @@ func (pm *PriceMonitor) updatePrice() {
 		pm.logger.Debug("PriceMonitor: context done after price retrieval, skipping callback")
 		return
 	default:
-		// Вычисляем изменение цены и вызываем callback
-		pm.callback(price, pm.initialPrice, ((price-pm.initialPrice)/pm.initialPrice)*100, pm.tokenAmount)
+		// Вычисляем изменение цены и вызываем callback с объектом PriceUpdate
+		percentChange := ((price - pm.initialPrice) / pm.initialPrice) * 100
+		update := PriceUpdate{
+			Current: price,
+			Initial: pm.initialPrice,
+			Percent: percentChange,
+			Tokens:  pm.tokenAmount,
+		}
+		pm.callback(update)
 	}
 }
 

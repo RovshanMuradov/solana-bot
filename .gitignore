@@ -8,3 +8,5 @@ CLAUDE.md
 /configs/
 .idea/
 solana-bot
+
+**/.claude/settings.local.json
