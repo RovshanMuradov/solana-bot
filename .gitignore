@@ -2,6 +2,7 @@
 .env
 CLAUDE.md
 .golangci.yml
+TT.md
 
 
 # Игнорировать всю директорию configs и все её содержимое
