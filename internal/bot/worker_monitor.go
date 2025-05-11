@@ -137,7 +137,7 @@ func (mw *MonitorWorker) handleUIEvents(ctx context.Context) error {
 
 					fmt.Println("\nSelling tokens...")
 
-					if err := mw.sellFn(sellCtx, 100.0); err != nil {
+					if err := mw.sellFn(sellCtx, 100.0); err != nil { // TODO: percent hard coded
 						mw.logger.Error("Failed to sell tokens", zap.Error(err))
 						fmt.Printf("Error selling tokens: %v\n", err)
 					} else {
