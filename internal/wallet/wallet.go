@@ -6,6 +6,7 @@ package wallet
 import (
 	"encoding/csv"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/gagliardetto/solana-go"
@@ -40,7 +41,11 @@ func LoadWallets(path string) (map[string]*Wallet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			log.Printf("failed to close wallets file: %q: %v", path, err)
+		}
+	}()
 
 	reader := csv.NewReader(file)
 	records, err := reader.ReadAll()

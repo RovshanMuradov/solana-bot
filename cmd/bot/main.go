@@ -1,5 +1,5 @@
 // ====================================
-// File: cmd/bot/main.go ( исправленный)
+// File: cmd/bot/main.go
 // ====================================
 package main
 
@@ -21,7 +21,7 @@ func main() {
 	flag.Parse()
 
 	// Контекст с обработкой SIGINT / SIGTERM
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	// Загрузка конфига
@@ -41,7 +41,7 @@ func main() {
 
 	// Runner
 	runner := bot.NewRunner(cfg, logger)
-	if err := runner.Run(ctx); err != nil {
+	if err := runner.Run(rootCtx); err != nil && rootCtx.Err() == nil {
 		logger.Fatal("Runner failed", zap.Error(err))
 	}
 }

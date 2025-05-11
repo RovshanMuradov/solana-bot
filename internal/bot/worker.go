@@ -120,6 +120,8 @@ func (wp *WorkerPool) handleMonitoredTask(ctx context.Context, t *task.Task, dex
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
+	// Метка для выхода из цикла по условию
+tokenLoop:
 	for i := 0; i < 10; i++ {
 		bal, err := dexAdapter.GetTokenBalance(checkCtx, t.TokenMint)
 		if err != nil {
@@ -127,13 +129,15 @@ func (wp *WorkerPool) handleMonitoredTask(ctx context.Context, t *task.Task, dex
 		} else if bal > 0 {
 			tokenBalance = bal
 			logger.Info("Token received", zap.Uint64("balance", tokenBalance))
-			break
+			break tokenLoop // сразу выходим из цикла tokenLoop
 		}
+
 		select {
 		case <-checkCtx.Done():
 			logger.Warn("Timeout waiting for token", zap.String("token", t.TokenMint))
-			break
+			break tokenLoop // тут тоже выходим из внешнего цикла
 		case <-time.After(500 * time.Millisecond):
+			// ждем и идем на следующую итерацию
 		}
 	}
 

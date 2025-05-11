@@ -112,45 +112,45 @@ func (mw *MonitorWorker) Stop() {
 	}
 }
 
-// handleUIEvents обрабатывает события пользовательского интерфейса
+// handleUIEvents processes UI events and initiates sale or exit
 func (mw *MonitorWorker) handleUIEvents(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+
 		case event, ok := <-mw.uiHandle.Events():
 			if !ok {
-				return nil // Канал закрыт
+				return nil // channel closed
 			}
 
 			switch event.Type {
 			case ui.SellRequested:
 				mw.logger.Info("Sell requested by user")
-				// Продажа токенов в отдельной горутине
+				// Immediately stop UI updates and price monitoring
+				mw.Stop()
+
+				// Launch token sale independently of monitoring context
 				go func() {
 					sellCtx, cancel := context.WithCancel(context.Background())
 					defer cancel()
 
 					fmt.Println("\nSelling tokens...")
 
-					// Используем инжектированную функцию продажи
 					if err := mw.sellFn(sellCtx, 100.0); err != nil {
 						mw.logger.Error("Failed to sell tokens", zap.Error(err))
 						fmt.Printf("Error selling tokens: %v\n", err)
 					} else {
 						fmt.Println("Tokens sold successfully!")
 					}
-
-					// Останавливаем рабочий процесс после продажи
-					mw.Stop()
 				}()
-				return nil // Завершаем обработку и рабочий процесс
+				return nil
 
 			case ui.ExitRequested:
 				mw.logger.Info("Exit requested by user")
 				fmt.Println("\nExiting monitor mode without selling tokens.")
 				mw.Stop()
-				return nil // Выходим без ошибки
+				return nil
 			}
 		}
 	}

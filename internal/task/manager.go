@@ -30,7 +30,11 @@ func (m *Manager) LoadTasks(path string) ([]*Task, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open tasks file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			m.logger.Error("failed to close tasks file", zap.Error(err))
+		}
+	}()
 
 	r := csv.NewReader(file)
 	// Read header
