@@ -6,7 +6,6 @@ package pumpfun
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"github.com/gagliardetto/solana-go"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
@@ -39,12 +38,13 @@ func (d *DEX) deriveBondingCurveAccounts(_ context.Context) (solana.PublicKey, s
 const bcCacheTTL = 400 * time.Millisecond
 
 func (d *DEX) getBondingCurveData(ctx context.Context) (*BondingCurve, solana.PublicKey, error) {
+	// 1) Деривация PDA bondingCurve
 	bcAddr, _, err := d.deriveBondingCurveAccounts(ctx)
 	if err != nil {
 		return nil, solana.PublicKey{}, err
 	}
 
-	// быстрый путь — свежий кэш
+	// 2) Попытка взять из кэша
 	d.bcCache.mu.RLock()
 	if d.bcCache.data != nil && time.Since(d.bcCache.fetchedAt) < bcCacheTTL {
 		data := d.bcCache.data
@@ -53,7 +53,7 @@ func (d *DEX) getBondingCurveData(ctx context.Context) (*BondingCurve, solana.Pu
 	}
 	d.bcCache.mu.RUnlock()
 
-	// обновляем кэш одним batched‑запросом
+	// 3) Запрашиваем с цепочки
 	res, err := d.client.GetMultipleAccounts(ctx, []solana.PublicKey{bcAddr})
 	if err != nil {
 		return nil, bcAddr, err
@@ -63,15 +63,23 @@ func (d *DEX) getBondingCurveData(ctx context.Context) (*BondingCurve, solana.Pu
 	}
 
 	raw := res.Value[0].Data.GetBinary()
-	if len(raw) < 16 {
-		return nil, bcAddr, fmt.Errorf("invalid bonding curve data length")
+	const minLen = 8*5 + 1 + 32 // 5×u64 + bool + Pubkey
+	if len(raw) < minLen {
+		return nil, bcAddr, fmt.Errorf("bonding curve data too short: %d bytes", len(raw))
 	}
 
+	// 4) Десериализация полей
 	bc := &BondingCurve{
-		VirtualTokenReserves: binary.LittleEndian.Uint64(raw[:8]),
+		VirtualTokenReserves: binary.LittleEndian.Uint64(raw[0:8]),
 		VirtualSolReserves:   binary.LittleEndian.Uint64(raw[8:16]),
+		RealTokenReserves:    binary.LittleEndian.Uint64(raw[16:24]),
+		RealSolReserves:      binary.LittleEndian.Uint64(raw[24:32]),
+		TokenTotalSupply:     binary.LittleEndian.Uint64(raw[32:40]),
+		Complete:             raw[40] != 0,
+		Creator:              solana.PublicKeyFromBytes(raw[41:73]),
 	}
 
+	// 5) Обновляем кэш
 	d.bcCache.mu.Lock()
 	d.bcCache.data = bc
 	d.bcCache.fetchedAt = time.Now()
@@ -82,72 +90,73 @@ func (d *DEX) getBondingCurveData(ctx context.Context) (*BondingCurve, solana.Pu
 
 // FetchGlobalAccount получает и парсит данные глобального аккаунта Pump.fun.
 func FetchGlobalAccount(ctx context.Context, client *solbc.Client, globalAddr solana.PublicKey, logger *zap.Logger) (*GlobalAccount, error) {
-	// TODO: delete logging
-	// <<< ИЗМЕНЕНО: Логирование времени выполнения RPC с использованием переданного логгера >>>
+	// Получение информации об аккаунте с блокчейна
 	start := time.Now()
-	// Шаг 1: Получение информации об аккаунте с блокчейна
 	accountInfo, err := client.GetAccountInfo(ctx, globalAddr)
-	// <<< ИЗМЕНЕНО: Логирование времени выполнения RPC >>>
-	logger.Debug("RPC:GetAccountInfo (Global)",
-		zap.String("account", globalAddr.String()),
-		zap.Duration("took", time.Since(start)),
-		zap.Error(err))
+
+	if logger != nil {
+		logger.Debug("RPC:GetAccountInfo",
+			zap.String("account", globalAddr.String()),
+			zap.Duration("duration", time.Since(start)))
+	}
 
 	if err != nil {
-		// <<< ИЗМЕНЕНО: Логирование ошибки контекста с использованием переданного логгера >>>
-		if errors.Is(err, context.Canceled) {
-			logger.Warn("FetchGlobalAccount canceled by context", zap.Error(err), zap.String("account", globalAddr.String()))
-		} else if errors.Is(err, context.DeadlineExceeded) {
-			logger.Warn("FetchGlobalAccount context deadline exceeded", zap.Error(err), zap.String("account", globalAddr.String()))
-		}
-		// Шаг 2: Обработка ошибки при неудачном запросе
 		return nil, fmt.Errorf("failed to get global account: %w", err)
 	}
 
-	// Шаг 3: Проверка существования аккаунта
+	// Проверка существования аккаунта
 	if accountInfo == nil || accountInfo.Value == nil {
 		return nil, fmt.Errorf("global account not found: %s", globalAddr.String())
 	}
 
-	// Шаг 4: Проверка владельца аккаунта
+	// Проверка владельца аккаунта
 	if !accountInfo.Value.Owner.Equals(PumpFunProgramID) {
 		return nil, fmt.Errorf("global account has incorrect owner: expected %s, got %s",
 			PumpFunProgramID.String(), accountInfo.Value.Owner.String())
 	}
 
-	// Шаг 5: Извлечение бинарных данных из аккаунта
+	// Извлечение бинарных данных из аккаунта
 	data := accountInfo.Value.Data.GetBinary()
 
-	// Шаг 6: Проверка достаточности данных
-	// Минимальная длина: 8 (дискриминатор) + 1 (флаг) + 64 (два публичных ключа)
-	if len(data) < 8+1+64 {
+	// Проверка достаточности данных
+	minDataLen := 81 // 8 (дискриминатор) + 1 (флаг) + 32 (authority) + 32 (feeRecipient) + 8 (feeBasisPoints)
+	if len(data) < minDataLen {
 		return nil, fmt.Errorf("global account data too short: %d bytes", len(data))
 	}
 
-	// Шаг 7: Начало десериализации - создание структуры
+	// Десериализация данных
 	account := &GlobalAccount{}
 
-	// Шаг 8: Чтение дискриминатора (8 байт)
+	// Базовые поля
 	copy(account.Discriminator[:], data[0:8])
-
-	// Шаг 9: Чтение флага инициализации (1 байт)
 	account.Initialized = data[8] != 0
+	account.Authority = solana.PublicKeyFromBytes(data[9:41])
+	account.FeeRecipient = solana.PublicKeyFromBytes(data[41:73])
+	account.FeeBasisPoints = binary.LittleEndian.Uint64(data[73:81])
 
-	// Шаг 10: Чтение публичного ключа администратора (32 байта)
-	authorityBytes := make([]byte, 32)
-	copy(authorityBytes, data[9:41])
-	account.Authority = solana.PublicKeyFromBytes(authorityBytes)
+	// Расширенные поля (если достаточно данных)
+	offset := 81
 
-	// Шаг 11: Чтение публичного ключа получателя комиссий (32 байта)
-	feeRecipientBytes := make([]byte, 32)
-	copy(feeRecipientBytes, data[41:73])
-	account.FeeRecipient = solana.PublicKeyFromBytes(feeRecipientBytes)
+	// Проверяем доступность дополнительных полей перед чтением
+	if len(data) >= offset+32 {
+		account.WithdrawAuthority = solana.PublicKeyFromBytes(data[offset : offset+32])
+		offset += 32
 
-	// Шаг 12: Чтение размера комиссии в базовых пунктах (8 байт)
-	if len(data) >= 81 {
-		account.FeeBasisPoints = binary.LittleEndian.Uint64(data[73:81])
+		if len(data) >= offset+1 {
+			account.EnableMigrate = data[offset] != 0
+			offset++
+
+			if len(data) >= offset+8 {
+				account.PoolMigrationFee = binary.LittleEndian.Uint64(data[offset : offset+8])
+				offset += 8
+
+				if len(data) >= offset+8 {
+					account.CreatorFeeBasisPoints = binary.LittleEndian.Uint64(data[offset : offset+8])
+					// Дальнейший парсинг fee_recipients и set_creator_authority можно добавить по необходимости
+				}
+			}
+		}
 	}
 
-	// Шаг 13: Возврат заполненной структуры
 	return account, nil
 }

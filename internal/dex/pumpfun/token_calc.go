@@ -94,7 +94,7 @@ func (d *DEX) CalculatePnL(ctx context.Context, tokenAmount float64, initialInve
 	bondingCurveData, _, err := d.getBondingCurveData(ctx)
 	if err != nil {
 		d.logger.Warn("Failed to fetch bonding curve data, assuming zero reserves", zap.Error(err))
-		bondingCurveData = &BondingCurve{0, 0}
+		bondingCurveData = &BondingCurve{}
 	}
 
 	currentPrice, err := d.CalculateTokenPrice(ctx, bondingCurveData)

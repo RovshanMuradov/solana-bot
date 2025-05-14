@@ -13,35 +13,72 @@ import (
 )
 
 // prepareBuyTransaction подготавливает транзакцию для покупки токенов на Pump.fun.
-func (d *DEX) prepareBuyTransaction(ctx context.Context, solAmountLamports uint64, priorityFeeSol string, computeUnits uint32) ([]solana.Instruction, error) {
-	// Шаг 1: Подготавливаем базовые инструкции (установка приоритета и создание ATA)
+func (d *DEX) prepareBuyTransaction(
+	ctx context.Context,
+	solAmountLamports uint64,
+	priorityFeeSol string,
+	computeUnits uint32,
+) ([]solana.Instruction, error) {
+	// 1) Базовые инструкции: fee, compute budget, создание ATA
 	baseInstructions, userATA, err := d.prepareBaseInstructions(ctx, priorityFeeSol, computeUnits)
 	if err != nil {
 		return nil, err
 	}
 
-	// Шаг 2: Получаем адреса аккаунтов bonding curve для токена
-	bondingCurve, associatedBondingCurve, err := d.deriveBondingCurveAccounts(ctx)
+	// 2) Деривируем PDA bondingCurve
+	bcAddr, associatedBC, err := d.deriveBondingCurveAccounts(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// Шаг 3: Создаем инструкцию покупки с точным количеством SOL
+	// 3) Проверяем размер данных bondingCurve и, при необходимости, extend_account
+	info, err := d.client.GetAccountInfo(ctx, bcAddr)
+	if err != nil {
+		return nil, err
+	}
+	if len(info.Value.Data.GetBinary()) < 150 {
+		extIx := createExtendAccountInstruction(
+			bcAddr,
+			d.wallet.PublicKey,
+			d.config.EventAuthority,
+			d.config.ContractAddress,
+		)
+		baseInstructions = append(baseInstructions, extIx)
+	}
+
+	// 4) Получаем полную структуру bondingCurve, чтобы вытащить Creator
+	bcData, _, err := d.getBondingCurveData(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// 5) Деривим PDA creator_vault по seeds ["creator-vault", creator]
+	creatorVault, _, err := solana.FindProgramAddress(
+		[][]byte{[]byte("creator-vault"), bcData.Creator.Bytes()},
+		d.config.ContractAddress,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// 6) Формируем основную инструкцию buy, передавая creatorVault
 	buyIx := createBuyExactSolInstruction(
 		d.config.Global,
 		d.config.FeeRecipient,
 		d.config.Mint,
-		bondingCurve,
-		associatedBondingCurve,
+		bcAddr,
+		associatedBC,
 		userATA,
 		d.wallet.PublicKey,
+		creatorVault,
 		d.config.EventAuthority,
+		d.config.ContractAddress,
 		solAmountLamports,
 	)
 
-	// Шаг 4: Добавляем инструкцию покупки к базовым инструкциям
-	baseInstructions = append(baseInstructions, buyIx)
-	return baseInstructions, nil
+	// 7) Собираем и возвращаем все инструкции
+	txIxs := append(baseInstructions, buyIx)
+	return txIxs, nil
 }
 
 // prepareSellTransaction подготавливает транзакцию для продажи токенов на Pump.fun.
@@ -56,29 +93,52 @@ func (d *DEX) prepareSellTransaction(
 	priorityFeeSol string,
 	computeUnits uint32,
 ) ([]solana.Instruction, error) {
-
-	// базовые инструкции
-	baseIx, userATA, err := d.prepareBaseInstructions(ctx, priorityFeeSol, computeUnits)
+	// 1) Базовые инструкции: fee, compute budget, создание ATA
+	baseIxs, userATA, err := d.prepareBaseInstructions(ctx, priorityFeeSol, computeUnits)
 	if err != nil {
 		return nil, err
 	}
 
-	// адреса
+	// 2) Деривация PDA bondingCurve и associated token account
 	bondingCurve, associatedBC, err := d.deriveBondingCurveAccounts(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// ----- берём данные Bonding‑Curve через кеш -----
-	bcData, _, err := d.getBondingCurveData(ctx)
+	// 3) Проверяем размер данных bondingCurve и, при необходимости, extend_account
+	info, err := d.client.GetAccountInfo(ctx, bondingCurve)
 	if err != nil {
-		d.logger.Warn("Failed to fetch bonding curve data", zap.Error(err))
+		return nil, err
+	}
+	if len(info.Value.Data.GetBinary()) < 150 {
+		extIx := createExtendAccountInstruction(
+			bondingCurve,
+			d.wallet.PublicKey,
+			d.config.EventAuthority,
+			d.config.ContractAddress,
+		)
+		baseIxs = append(baseIxs, extIx)
 	}
 
-	// расчёт minSol
+	// 4) Получаем полную структуру bondingCurve, чтобы вытащить Creator
+	bcData, _, err := d.getBondingCurveData(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// 5) Деривим PDA creator_vault по seeds ["creator-vault", creator]
+	creatorVault, _, err := solana.FindProgramAddress(
+		[][]byte{[]byte("creator-vault"), bcData.Creator.Bytes()},
+		d.config.ContractAddress,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// 6) Рассчитываем минимальный выход SOL с учётом слиппэджа
 	minSolOutput := d.calculateMinSolOutput(tokenAmount, bcData, slippagePercent)
 
-	// формируем sell‑инструкцию
+	// 7) Формируем sell-инструкцию с новым creator_vault
 	sellIx := createSellInstruction(
 		d.config.ContractAddress,
 		d.config.Global,
@@ -88,12 +148,14 @@ func (d *DEX) prepareSellTransaction(
 		associatedBC,
 		userATA,
 		d.wallet.PublicKey,
+		creatorVault,
 		d.config.EventAuthority,
 		tokenAmount,
 		minSolOutput,
 	)
 
-	return append(baseIx, sellIx), nil
+	// 8) Собираем и возвращаем все инструкции
+	return append(baseIxs, sellIx), nil
 }
 
 // calculateMinSolOutput вычисляет минимальный ожидаемый выход SOL при продаже токенов
