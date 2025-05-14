@@ -88,6 +88,14 @@ func (d *DEX) getBondingCurveData(ctx context.Context) (*BondingCurve, solana.Pu
 	return bc, bcAddr, nil
 }
 
+// DeriveCreatorVaultPDA определяет адрес creator-vault PDA на основе адреса создателя токена
+func DeriveCreatorVaultPDA(programID, creator solana.PublicKey) (solana.PublicKey, uint8, error) {
+	return solana.FindProgramAddress(
+		[][]byte{[]byte("creator-vault"), creator.Bytes()},
+		programID,
+	)
+}
+
 // FetchGlobalAccount получает и парсит данные глобального аккаунта Pump.fun.
 func FetchGlobalAccount(ctx context.Context, client *solbc.Client, globalAddr solana.PublicKey, logger *zap.Logger) (*GlobalAccount, error) {
 	// Получение информации об аккаунте с блокчейна
@@ -132,29 +140,72 @@ func FetchGlobalAccount(ctx context.Context, client *solbc.Client, globalAddr so
 	account.Initialized = data[8] != 0
 	account.Authority = solana.PublicKeyFromBytes(data[9:41])
 	account.FeeRecipient = solana.PublicKeyFromBytes(data[41:73])
-	account.FeeBasisPoints = binary.LittleEndian.Uint64(data[73:81])
 
-	// Расширенные поля (если достаточно данных)
-	offset := 81
+	// Расширенные поля - обрабатываем более структурированно
+	offset := 73
 
-	// Проверяем доступность дополнительных полей перед чтением
+	// InitialVirtualTokenRes, InitialVirtualSolRes, InitialRealTokenRes, TokenTotalSupply
+	if len(data) >= offset+32 {
+		account.InitialVirtualTokenRes = binary.LittleEndian.Uint64(data[offset : offset+8])
+		offset += 8
+		account.InitialVirtualSolRes = binary.LittleEndian.Uint64(data[offset : offset+8])
+		offset += 8
+		account.InitialRealTokenRes = binary.LittleEndian.Uint64(data[offset : offset+8])
+		offset += 8
+		account.TokenTotalSupply = binary.LittleEndian.Uint64(data[offset : offset+8])
+		offset += 8
+	} else {
+		return nil, fmt.Errorf("global account data missing initial reserves fields")
+	}
+
+	// FeeBasisPoints
+	if len(data) >= offset+8 {
+		account.FeeBasisPoints = binary.LittleEndian.Uint64(data[offset : offset+8])
+		offset += 8
+	} else {
+		return nil, fmt.Errorf("global account data missing fee basis points")
+	}
+
+	// WithdrawAuthority
 	if len(data) >= offset+32 {
 		account.WithdrawAuthority = solana.PublicKeyFromBytes(data[offset : offset+32])
 		offset += 32
+	} else {
+		return nil, fmt.Errorf("global account data missing withdraw authority")
+	}
 
-		if len(data) >= offset+1 {
-			account.EnableMigrate = data[offset] != 0
-			offset++
+	// EnableMigrate
+	if len(data) >= offset+1 {
+		account.EnableMigrate = data[offset] != 0
+		offset++
+	} else {
+		return nil, fmt.Errorf("global account data missing enable migrate flag")
+	}
 
-			if len(data) >= offset+8 {
-				account.PoolMigrationFee = binary.LittleEndian.Uint64(data[offset : offset+8])
-				offset += 8
+	// PoolMigrationFee
+	if len(data) >= offset+8 {
+		account.PoolMigrationFee = binary.LittleEndian.Uint64(data[offset : offset+8])
+		offset += 8
+	} else {
+		return nil, fmt.Errorf("global account data missing pool migration fee")
+	}
 
-				if len(data) >= offset+8 {
-					account.CreatorFeeBasisPoints = binary.LittleEndian.Uint64(data[offset : offset+8])
-					// Дальнейший парсинг fee_recipients и set_creator_authority можно добавить по необходимости
-				}
+	// CreatorFeeBasisPoints
+	if len(data) >= offset+8 {
+		account.CreatorFeeBasisPoints = binary.LittleEndian.Uint64(data[offset : offset+8])
+		offset += 8
+
+		// Парсинг FeeRecipients (7 адресов по 32 байта)
+		if len(data) >= offset+7*32 {
+			for i := 0; i < 7; i++ {
+				account.FeeRecipients[i] = solana.PublicKeyFromBytes(data[offset : offset+32])
+				offset += 32
 			}
+		}
+
+		// SetCreatorAuthority
+		if len(data) >= offset+32 {
+			account.SetCreatorAuthority = solana.PublicKeyFromBytes(data[offset : offset+32])
 		}
 	}
 

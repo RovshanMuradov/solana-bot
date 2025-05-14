@@ -235,3 +235,31 @@ func (d *DEX) GetTokenBalance(ctx context.Context, commitment ...rpc.CommitmentT
 	// Шаг 8: Возврат полученного баланса
 	return balance, nil
 }
+
+// ----- Функции для расчёта комиссий -----
+
+// computeCreatorFee вычисляет комиссию создателя токена на основе глобального
+// процента creator_fee_basis_points и суммы транзакции
+func computeCreatorFee(global *GlobalAccount, bc *BondingCurve, amount uint64, isNewCoin bool) uint64 {
+	// Если это не новая монета и creator равен PublicKey{} (нулевой адрес), комиссия не берётся
+	isZeroCreator := bc.Creator.Equals(solana.PublicKey{})
+	if !isNewCoin && isZeroCreator {
+		return 0
+	}
+
+	// Иначе рассчитываем комиссию на основе basis points
+	// (basis point = 1/100 процента, т.е. 100 бейсис-поинтов = 1%)
+	return ceilDiv(amount*global.CreatorFeeBasisPoints, 10_000)
+}
+
+// computeTotalFee вычисляет общую комиссию, включая комиссию протокола и creator fee
+func computeTotalFee(global *GlobalAccount, bc *BondingCurve, amount uint64, isNewCoin bool) uint64 {
+	protocolFee := ceilDiv(amount*global.FeeBasisPoints, 10_000)
+	creatorFee := computeCreatorFee(global, bc, amount, isNewCoin)
+	return protocolFee + creatorFee
+}
+
+// ceilDiv выполняет деление с округлением вверх
+func ceilDiv(a, b uint64) uint64 {
+	return (a + b - 1) / b
+}

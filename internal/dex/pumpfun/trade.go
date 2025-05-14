@@ -53,12 +53,9 @@ func (d *DEX) prepareBuyTransaction(
 	}
 
 	// 5) Деривим PDA creator_vault по seeds ["creator-vault", creator]
-	creatorVault, _, err := solana.FindProgramAddress(
-		[][]byte{[]byte("creator-vault"), bcData.Creator.Bytes()},
-		d.config.ContractAddress,
-	)
+	creatorVault, _, err := DeriveCreatorVaultPDA(d.config.ContractAddress, bcData.Creator)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to derive creator vault PDA for buy: %w", err)
 	}
 
 	// 6) Формируем основную инструкцию buy, передавая creatorVault
@@ -127,12 +124,9 @@ func (d *DEX) prepareSellTransaction(
 	}
 
 	// 5) Деривим PDA creator_vault по seeds ["creator-vault", creator]
-	creatorVault, _, err := solana.FindProgramAddress(
-		[][]byte{[]byte("creator-vault"), bcData.Creator.Bytes()},
-		d.config.ContractAddress,
-	)
+	creatorVault, _, err := DeriveCreatorVaultPDA(d.config.ContractAddress, bcData.Creator)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to derive creator vault PDA for sell: %w", err)
 	}
 
 	// 6) Рассчитываем минимальный выход SOL с учётом слиппэджа
@@ -159,11 +153,28 @@ func (d *DEX) prepareSellTransaction(
 }
 
 // calculateMinSolOutput вычисляет минимальный ожидаемый выход SOL при продаже токенов
-// с учетом заданного допустимого проскальзывания.
+// с учетом заданного допустимого проскальзывания и комиссий (включая новую creator_fee).
 func (d *DEX) calculateMinSolOutput(tokenAmount uint64, bondingCurveData *BondingCurve, slippagePercent float64) uint64 {
+	// Получаем глобальные настройки для расчёта комиссий
+	ctx := context.Background()
+	globalAccount, err := FetchGlobalAccount(ctx, d.client, d.config.Global, d.logger)
+	if err != nil {
+		d.logger.Warn("Failed to fetch global account for fee calculation, using default fee values",
+			zap.Error(err))
+		// Создаём заглушку с базовыми значениями при ошибке
+		globalAccount = &GlobalAccount{
+			FeeBasisPoints:        100, // дефолтные 1%
+			CreatorFeeBasisPoints: 0,   // дефолтные 0%
+		}
+	}
+
 	// Вычисляем ожидаемый выход SOL на основе пропорции резервов в bonding curve
-	// Формула: (токены * виртуальные резервы SOL) / виртуальные резервы токенов
-	expectedSolValueLamports := (tokenAmount * bondingCurveData.VirtualSolReserves) / bondingCurveData.VirtualTokenReserves // TODO:  work with virtual balance
+	// Формула: (токены * виртуальные резервы SOL) / (виртуальные резервы токенов + токены)
+	solAmount := (tokenAmount * bondingCurveData.VirtualSolReserves) / (bondingCurveData.VirtualTokenReserves + tokenAmount)
+
+	// Вычитаем комиссии (протокол + creator fee)
+	totalFee := computeTotalFee(globalAccount, bondingCurveData, solAmount, false)
+	expectedSolValueLamports := solAmount - totalFee
 
 	// Применяем допустимое проскальзывание к ожидаемому выходу
 	// Например, при проскальзывании 1% получим 99% от ожидаемого значения
