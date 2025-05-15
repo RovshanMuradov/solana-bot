@@ -235,3 +235,41 @@ func (d *DEX) GetTokenBalance(ctx context.Context, commitment ...rpc.CommitmentT
 	// Шаг 8: Возврат полученного баланса
 	return balance, nil
 }
+
+// calculateMinSolOutput вычисляет минимальный ожидаемый выход SOL при продаже токенов
+// с учетом заданного допустимого проскальзывания. Упрощено в соответствии с Python SDK.
+func (d *DEX) calculateMinSolOutput(tokenAmount uint64, bondingCurveData *BondingCurve, slippagePercent float64) uint64 {
+	// Проверка на нулевые резервы, как в Python-коде
+	if bondingCurveData.VirtualTokenReserves == 0 || bondingCurveData.VirtualSolReserves == 0 {
+		d.logger.Warn("Invalid reserve state with zero reserves",
+			zap.Uint64("VirtualTokenReserves", bondingCurveData.VirtualTokenReserves),
+			zap.Uint64("VirtualSolReserves", bondingCurveData.VirtualSolReserves))
+		return 0
+	}
+
+	// Формула из Python SDK: (tokens * virtual_sol_reserves) / (virtual_token_reserves + tokens)
+	// Это прямое соответствие формуле из Python кода
+	solAmount := (tokenAmount * bondingCurveData.VirtualSolReserves) /
+		(bondingCurveData.VirtualTokenReserves + tokenAmount)
+
+	// Применяем фиксированные комиссии - упрощенный подход
+	feePercentage := 1.0 // Базовая комиссия протокола 1%
+	if bondingCurveData.Creator != (solana.PublicKey{}) {
+		feePercentage += 0.0 // В текущий момент creator_fee = 0, но можно добавить в будущем
+	}
+
+	// Учитываем комиссию
+	expectedSolValueLamports := uint64(float64(solAmount) * (1.0 - (feePercentage / 100.0)))
+
+	// Логируем расчет в упрощенном виде
+	d.logger.Debug("Calculated min SOL output (simplified)",
+		zap.Uint64("token_amount", tokenAmount),
+		zap.Uint64("sol_amount_before_fee", solAmount),
+		zap.Float64("fee_percentage", feePercentage),
+		zap.Uint64("expected_sol_after_fee", expectedSolValueLamports),
+		zap.Float64("slippage_percent", slippagePercent))
+
+	// Применяем допустимое проскальзывание, как в Python-коде
+	slippageFactor := 1.0 - (slippagePercent / 100.0)
+	return uint64(float64(expectedSolValueLamports) * slippageFactor)
+}
