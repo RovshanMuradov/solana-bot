@@ -142,89 +142,39 @@ func FetchGlobalAccount(ctx context.Context, client *solbc.Client, globalAddr so
 			PumpFunProgramID.String(), accountInfo.Value.Owner.String())
 	}
 
-	// Извлечение бинарных данных из аккаунта
+	// Извлечение бинарных данных и пропуск дискриминатора (первые 8 байт)
 	data := accountInfo.Value.Data.GetBinary()
-
-	// Проверка достаточности данных
-	minDataLen := 81 // 8 (дискриминатор) + 1 (флаг) + 32 (authority) + 32 (feeRecipient) + 8 (feeBasisPoints)
-	if len(data) < minDataLen {
-		return nil, fmt.Errorf("global account data too short: %d bytes", len(data))
+	if len(data) < 8 {
+		return nil, fmt.Errorf("global account data too short, missing discriminator")
 	}
 
-	// Десериализация данных
+	// Пропускаем дискриминатор как в Python SDK
+	data = data[8:]
+
+	// Создаем пустой аккаунт и заполняем только те поля, которые нам реально нужны
 	account := &GlobalAccount{}
 
-	// Базовые поля
-	copy(account.Discriminator[:], data[0:8])
-	account.Initialized = data[8] != 0
-	account.Authority = solana.PublicKeyFromBytes(data[9:41])
-	account.FeeRecipient = solana.PublicKeyFromBytes(data[41:73])
+	// Минимально необходимые данные для работы с creator fee
+	if len(data) >= 1+32+32+32+8+8 { // initialized + authority + feeRecipient + минимальные поля
+		account.Initialized = data[0] != 0
+		account.Authority = solana.PublicKeyFromBytes(data[1:33])
+		account.FeeRecipient = solana.PublicKeyFromBytes(data[33:65])
 
-	// Расширенные поля - обрабатываем более структурированно
-	offset := 73
+		// Для расчета комиссий нам особенно важны эти поля, поэтому их обязательно парсим
+		offset := 97 // Пропускаем другие поля, которые мы не используем
 
-	// InitialVirtualTokenRes, InitialVirtualSolRes, InitialRealTokenRes, TokenTotalSupply
-	if len(data) >= offset+32 {
-		account.InitialVirtualTokenRes = binary.LittleEndian.Uint64(data[offset : offset+8])
-		offset += 8
-		account.InitialVirtualSolRes = binary.LittleEndian.Uint64(data[offset : offset+8])
-		offset += 8
-		account.InitialRealTokenRes = binary.LittleEndian.Uint64(data[offset : offset+8])
-		offset += 8
-		account.TokenTotalSupply = binary.LittleEndian.Uint64(data[offset : offset+8])
-		offset += 8
-	} else {
-		return nil, fmt.Errorf("global account data missing initial reserves fields")
-	}
+		if len(data) >= offset+8 {
+			account.FeeBasisPoints = binary.LittleEndian.Uint64(data[offset : offset+8])
+			offset += 8
 
-	// FeeBasisPoints
-	if len(data) >= offset+8 {
-		account.FeeBasisPoints = binary.LittleEndian.Uint64(data[offset : offset+8])
-		offset += 8
-	} else {
-		return nil, fmt.Errorf("global account data missing fee basis points")
-	}
+			// Пропускаем WithdrawAuthority (32 байта) + EnableMigrate (1 байт) + PoolMigrationFee (8 байт)
+			offset += 41
 
-	// WithdrawAuthority
-	if len(data) >= offset+32 {
-		account.WithdrawAuthority = solana.PublicKeyFromBytes(data[offset : offset+32])
-		offset += 32
-	} else {
-		return nil, fmt.Errorf("global account data missing withdraw authority")
-	}
-
-	// EnableMigrate
-	if len(data) >= offset+1 {
-		account.EnableMigrate = data[offset] != 0
-		offset++
-	} else {
-		return nil, fmt.Errorf("global account data missing enable migrate flag")
-	}
-
-	// PoolMigrationFee
-	if len(data) >= offset+8 {
-		account.PoolMigrationFee = binary.LittleEndian.Uint64(data[offset : offset+8])
-		offset += 8
-	} else {
-		return nil, fmt.Errorf("global account data missing pool migration fee")
-	}
-
-	// CreatorFeeBasisPoints
-	if len(data) >= offset+8 {
-		account.CreatorFeeBasisPoints = binary.LittleEndian.Uint64(data[offset : offset+8])
-		offset += 8
-
-		// Парсинг FeeRecipients (7 адресов по 32 байта)
-		if len(data) >= offset+7*32 {
-			for i := 0; i < 7; i++ {
-				account.FeeRecipients[i] = solana.PublicKeyFromBytes(data[offset : offset+32])
-				offset += 32
+			if len(data) >= offset+8 {
+				account.CreatorFeeBasisPoints = binary.LittleEndian.Uint64(data[offset : offset+8])
+				logger.Debug("Parsed creator fee basis points",
+					zap.Uint64("basis_points", account.CreatorFeeBasisPoints))
 			}
-		}
-
-		// SetCreatorAuthority
-		if len(data) >= offset+32 {
-			account.SetCreatorAuthority = solana.PublicKeyFromBytes(data[offset : offset+32])
 		}
 	}
 
