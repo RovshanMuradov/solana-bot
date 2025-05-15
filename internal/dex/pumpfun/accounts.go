@@ -63,20 +63,38 @@ func (d *DEX) getBondingCurveData(ctx context.Context) (*BondingCurve, solana.Pu
 	}
 
 	raw := res.Value[0].Data.GetBinary()
-	const minLen = 8*5 + 1 + 32 // 5×u64 + bool + Pubkey
-	if len(raw) < minLen {
-		return nil, bcAddr, fmt.Errorf("bonding curve data too short: %d bytes", len(raw))
+
+	// Проверяем, что у нас достаточно данных для дискриминатора и базовых полей
+	// 8 (дискриминатор) + 8*5 (u64*5) + 1 (bool) = 49 байт минимум
+	if len(raw) < 49 {
+		return nil, bcAddr, fmt.Errorf("bonding curve data too short for basic fields: %d bytes", len(raw))
 	}
 
-	// 4) Десериализация полей
+	// Пропускаем первые 8 байт (дискриминатор)
+	dataWithoutDiscriminator := raw[8:]
+
+	// 4) Десериализация полей (без дискриминатора)
 	bc := &BondingCurve{
-		VirtualTokenReserves: binary.LittleEndian.Uint64(raw[0:8]),
-		VirtualSolReserves:   binary.LittleEndian.Uint64(raw[8:16]),
-		RealTokenReserves:    binary.LittleEndian.Uint64(raw[16:24]),
-		RealSolReserves:      binary.LittleEndian.Uint64(raw[24:32]),
-		TokenTotalSupply:     binary.LittleEndian.Uint64(raw[32:40]),
-		Complete:             raw[40] != 0,
-		Creator:              solana.PublicKeyFromBytes(raw[41:73]),
+		VirtualTokenReserves: binary.LittleEndian.Uint64(dataWithoutDiscriminator[0:8]),
+		VirtualSolReserves:   binary.LittleEndian.Uint64(dataWithoutDiscriminator[8:16]),
+		RealTokenReserves:    binary.LittleEndian.Uint64(dataWithoutDiscriminator[16:24]),
+		RealSolReserves:      binary.LittleEndian.Uint64(dataWithoutDiscriminator[24:32]),
+		TokenTotalSupply:     binary.LittleEndian.Uint64(dataWithoutDiscriminator[32:40]),
+		Complete:             dataWithoutDiscriminator[40] != 0,
+	}
+
+	// Проверяем, есть ли данные для поля Creator (должно быть минимум 40+1+32 байт)
+	if len(dataWithoutDiscriminator) >= 41+32 {
+		bc.Creator = solana.PublicKeyFromBytes(dataWithoutDiscriminator[41:73])
+		d.logger.Debug("Parsed creator from bonding curve",
+			zap.String("creator", bc.Creator.String()),
+			zap.String("bonding_curve", bcAddr.String()))
+	} else {
+		// Если данных недостаточно, устанавливаем Creator в пустой PublicKey
+		bc.Creator = solana.PublicKey{}
+		d.logger.Warn("Bonding curve data too short to include Creator field",
+			zap.Int("data_length", len(dataWithoutDiscriminator)),
+			zap.String("bonding_curve", bcAddr.String()))
 	}
 
 	// 5) Обновляем кэш
@@ -89,6 +107,7 @@ func (d *DEX) getBondingCurveData(ctx context.Context) (*BondingCurve, solana.Pu
 }
 
 // DeriveCreatorVaultPDA определяет адрес creator-vault PDA на основе адреса создателя токена
+// Реализация соответствует Python-коду для поиска creator-vault
 func DeriveCreatorVaultPDA(programID, creator solana.PublicKey) (solana.PublicKey, uint8, error) {
 	return solana.FindProgramAddress(
 		[][]byte{[]byte("creator-vault"), creator.Bytes()},
