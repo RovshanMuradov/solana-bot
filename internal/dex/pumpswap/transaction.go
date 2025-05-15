@@ -10,6 +10,7 @@ import (
 	"github.com/gagliardetto/solana-go"
 	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
 	"github.com/gagliardetto/solana-go/rpc"
+	"go.uber.org/zap"
 	"strconv"
 	"strings"
 	"time"
@@ -69,8 +70,10 @@ func (d *DEX) createSignedTransaction(ctx context.Context, instructions []solana
 // (SlippageExceeded) и постоянные. Для временных ошибок возможен повторный запуск,
 // для постоянных - операция прерывается.
 func (d *DEX) submitAndConfirmTransaction(ctx context.Context, tx *solana.Transaction) (solana.Signature, error) {
+	// Отправляем транзакцию с SkipPreflight для ускорения
 	sig, err := d.client.SendTransaction(ctx, tx)
 	if err != nil {
+		// Проверяем на специфичные временные ошибки
 		if strings.Contains(err.Error(), "BlockhashNotFound") {
 			return solana.Signature{}, err // Временная ошибка для retry
 		}
@@ -91,6 +94,7 @@ func (d *DEX) submitAndConfirmTransaction(ctx context.Context, tx *solana.Transa
 		return sig, fmt.Errorf("transaction confirmed but with error: %w", err)
 	}
 
+	d.logger.Info("Transaction confirmed successfully", zap.String("signature", sig.String()))
 	return sig, nil
 }
 
