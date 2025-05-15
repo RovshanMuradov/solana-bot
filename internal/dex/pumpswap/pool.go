@@ -20,9 +20,6 @@ import (
 )
 
 const (
-	MinimumLiquidity         uint64 = 1000
-	TokenAccountMintOffset   uint64 = 0
-	TokenAccountOwnerOffset  uint64 = 32
 	TokenAccountAmountOffset uint64 = 64
 	TokenAccountAmountSize   uint64 = 8
 )
