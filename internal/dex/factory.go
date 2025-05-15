@@ -45,6 +45,16 @@ func GetDEXByName(name string, client *solbc.Client, w *wallet.Wallet, logger *z
 			},
 		}, nil
 
+	case "snipe":
+		return &smartDEXAdapter{
+			baseDEXAdapter: baseDEXAdapter{
+				client: client,
+				wallet: w,
+				logger: logger.Named("smart_dex"),
+				name:   "Smart DEX",
+			},
+		}, nil
+
 	default:
 		return nil, fmt.Errorf("exchange %s is not supported", name)
 	}

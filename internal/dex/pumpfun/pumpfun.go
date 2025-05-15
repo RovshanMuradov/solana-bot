@@ -180,3 +180,16 @@ func (d *DEX) SellPercentTokens(ctx context.Context, percentToSell float64, slip
 	// Выполняем продажу рассчитанного количества токенов
 	return d.ExecuteSell(ctx, tokensToSell, slippagePercent, priorityFeeSol, computeUnits)
 }
+
+// IsBondingCurveComplete проверяет, завершена ли bonding curve для токена.
+// Возвращает true, если bonding curve завершена, иначе false.
+func (d *DEX) IsBondingCurveComplete(ctx context.Context) (bool, error) {
+	// Получаем данные bonding curve
+	bc, _, err := d.getBondingCurveData(ctx)
+	if err != nil {
+		return false, fmt.Errorf("failed to get bonding curve data: %w", err)
+	}
+
+	// Проверяем поле Complete
+	return bc.Complete, nil
+}
