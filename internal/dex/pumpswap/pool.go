@@ -286,6 +286,7 @@ func (pm *PoolManager) findPoolByProgramAccounts(ctx context.Context, baseMint, 
 			LPMint:                pool.LPMint,
 			PoolBaseTokenAccount:  pool.PoolBaseTokenAccount,
 			PoolQuoteTokenAccount: pool.PoolQuoteTokenAccount,
+			CoinCreator:           pool.CoinCreator,
 		}, nil
 	}
 
@@ -333,6 +334,7 @@ func (pm *PoolManager) FetchPoolInfo(ctx context.Context, poolAddress solana.Pub
 		LPMint:                pool.LPMint,
 		PoolBaseTokenAccount:  pool.PoolBaseTokenAccount,
 		PoolQuoteTokenAccount: pool.PoolQuoteTokenAccount,
+		CoinCreator:           pool.CoinCreator,
 	}, nil
 }
 
@@ -494,5 +496,12 @@ func ParsePool(data []byte) (*Pool, error) {
 	pos += 32
 
 	pool.LPSupply = binary.LittleEndian.Uint64(data[pos : pos+8])
+	pos += 8
+
+	// Парсим CoinCreator, если есть
+	if len(data) >= pos+32 {
+		pool.CoinCreator = solana.PublicKeyFromBytes(data[pos : pos+32])
+	}
+
 	return pool, nil
 }

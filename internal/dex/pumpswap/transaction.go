@@ -150,6 +150,8 @@ func (d *DEX) prepareSwapParams(
 		QuoteTokenProgram:                TokenProgramID,
 		EventAuthority:                   d.config.EventAuthority,
 		ProgramID:                        d.config.ProgramID,
+		CoinCreatorVaultATA:              accounts.CoinCreatorVaultATA,
+		CoinCreatorVaultAuthority:        accounts.CoinCreatorVaultAuthority,
 		Amount1:                          baseAmount,
 		Amount2:                          quoteAmount,
 	}
@@ -220,12 +222,35 @@ func (d *DEX) prepareTokenAccounts(ctx context.Context, pool *PoolInfo) (*Prepar
 		return nil, err
 	}
 
+	// Вычисляем адрес авторитета хранилища создателя монеты (creator_vault PDA)
+	coinCreatorSeed := [][]byte{[]byte("creator_vault"), pool.CoinCreator.Bytes()}
+
+	// Находим PDA для авторитета хранилища создателя
+	coinCreatorVaultAuthority, _, err := solana.FindProgramAddress(
+		coinCreatorSeed,
+		d.config.ProgramID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Находим ATA этого авторитета для квотного токена
+	coinCreatorVaultATA, _, err := solana.FindAssociatedTokenAddress(
+		coinCreatorVaultAuthority,
+		pool.QuoteMint,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	return &PreparedTokenAccounts{
-		UserBaseATA:             userBaseATA,
-		UserQuoteATA:            userQuoteATA,
-		ProtocolFeeRecipientATA: protocolFeeRecipientATA,
-		ProtocolFeeRecipient:    protocolFeeRecipient,
-		CreateBaseATAIx:         createBaseATAIx,
-		CreateQuoteATAIx:        createQuoteATAIx,
+		UserBaseATA:               userBaseATA,
+		UserQuoteATA:              userQuoteATA,
+		ProtocolFeeRecipientATA:   protocolFeeRecipientATA,
+		ProtocolFeeRecipient:      protocolFeeRecipient,
+		CoinCreatorVaultATA:       coinCreatorVaultATA,
+		CoinCreatorVaultAuthority: coinCreatorVaultAuthority,
+		CreateBaseATAIx:           createBaseATAIx,
+		CreateQuoteATAIx:          createQuoteATAIx,
 	}, nil
 }
