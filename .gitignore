@@ -9,5 +9,6 @@ TT.md
 /configs/
 .idea/
 solana-bot
+/pump-fun-bot-main
 
 **/.claude/settings.local.json
