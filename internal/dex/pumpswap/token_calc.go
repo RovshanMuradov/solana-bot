@@ -104,7 +104,9 @@ func (d *DEX) calculateEstimate(ctx context.Context, tokenAmount float64) (float
 
 // GetTokenPrice возвращает текущую цену токена в SOL, используя данные о резервах пула
 // и кэширование для оптимизации производительности.
-func (d *DEX) GetTokenPrice(ctx context.Context) (float64, error) {
+// Для совместимости с интерфейсом DEX принимает tokenMint, но не использует его
+// так как мы уже храним эту информацию в конфигурации DEX.
+func (d *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
 	// Используем кэшированную цену, если она актуальна
 	if time.Since(d.cachedPriceTime) < d.cacheValidPeriod {
 		d.logger.Debug("Using cached price", zap.Float64("price", d.cachedPrice))
@@ -155,7 +157,9 @@ func (d *DEX) GetTokenPrice(ctx context.Context) (float64, error) {
 }
 
 // GetTokenBalance получает баланс токена в кошельке пользователя.
-func (d *DEX) GetTokenBalance(ctx context.Context) (uint64, error) {
+// Для совместимости с интерфейсом DEX принимает tokenMint, но не использует его
+// так как мы уже храним эту информацию в конфигурации DEX.
+func (d *DEX) GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error) {
 	// Получаем информацию о токене
 	effBase, _ := d.effectiveMints()
 
@@ -213,7 +217,7 @@ func (d *DEX) CalculatePnL(ctx context.Context, tokenAmount float64, initialInve
 	costBasis := initialInvestment - buyFee
 
 	// 2. Получаем текущую цену
-	price, err := d.GetTokenPrice(ctx)
+	price, err := d.GetTokenPrice(ctx, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get current price: %w", err)
 	}
@@ -266,7 +270,9 @@ func (d *DEX) CalculatePnL(ctx context.Context, tokenAmount float64, initialInve
 // SellPercentTokens продает указанный процент от доступного баланса токенов.
 // Метод получает баланс токена, рассчитывает сумму для продажи в соответствии
 // с указанным процентом и выполняет операцию продажи.
-func (d *DEX) SellPercentTokens(ctx context.Context, percentToSell float64,
+// Для совместимости с интерфейсом DEX принимает tokenMint, но не использует его
+// так как мы уже храним эту информацию в конфигурации DEX.
+func (d *DEX) SellPercentTokens(ctx context.Context, tokenMint string, percentToSell float64,
 	slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
 	// Проверка валидности параметра percentToSell
 	if percentToSell <= 0 || percentToSell > 100 {
@@ -274,7 +280,7 @@ func (d *DEX) SellPercentTokens(ctx context.Context, percentToSell float64,
 	}
 
 	// Получаем текущий баланс токена
-	tokenBalance, err := d.GetTokenBalance(ctx)
+	tokenBalance, err := d.GetTokenBalance(ctx, tokenMint)
 	if err != nil {
 		return fmt.Errorf("не удалось получить баланс токена: %w", err)
 	}

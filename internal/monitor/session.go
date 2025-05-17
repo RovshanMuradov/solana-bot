@@ -57,21 +57,28 @@ func (ms *MonitoringSession) Start() error {
 		zap.Float64("initial_investment_sol", t.AmountSol))
 
 	initialPrice := ms.config.InitialPrice
-	initialTokens := t.AutosellAmount
 
-	if initialPrice == 0 {
-		ctx, cancel := context.WithTimeout(ms.ctx, 5*time.Second)
-		initialPrice, _ = ms.config.DEX.GetTokenPrice(ctx, t.TokenMint)
-		cancel()
+	// 1. Get token balance through the DEX adapter
+	ctx, cancel := context.WithTimeout(ms.ctx, 5*time.Second)
+	raw, err := ms.config.DEX.GetTokenBalance(ctx, t.TokenMint)
+	if err != nil {
+		ms.logger.Error("Failed to fetch token balance", zap.Error(err))
+	} else {
+		ms.config.TokenBalance = raw
 	}
-	if initialTokens == 0 && ms.config.TokenBalance == 0 {
-		ctx, cancel := context.WithTimeout(ms.ctx, 5*time.Second)
-		bal, err := ms.config.DEX.GetTokenBalance(ctx, t.TokenMint)
-		cancel()
-		if err == nil {
-			ms.config.TokenBalance = bal
-			initialTokens = float64(bal) / 1e6
-		}
+
+	// 3. Calculate actual token amount with correct decimals
+	initialTokens := 0.0
+	if ms.config.TokenBalance > 0 {
+		// Use fixed decimals based on token type (typically 6 for most tokens)
+		dec := 6 // Default token decimals
+		initialTokens = float64(ms.config.TokenBalance) / math.Pow10(int(dec))
+	}
+	cancel()
+
+	// 2. Calculate actual purchase price from SOL spent / tokens received
+	if initialPrice == 0 && initialTokens > 0 {
+		initialPrice = t.AmountSol / initialTokens
 	}
 
 	ms.logger.Info("Monitor start",
@@ -81,7 +88,11 @@ func (ms *MonitoringSession) Start() error {
 		zap.Uint64("initial_tokens_raw", ms.config.TokenBalance))
 
 	ms.config.InitialPrice = initialPrice
-	t.AutosellAmount = initialTokens
+
+	// Only update AutosellAmount if we've determined a valid token amount
+	if initialTokens > 0 {
+		t.AutosellAmount = initialTokens
+	}
 
 	// Создаем монитор цен
 	ms.priceMonitor = NewPriceMonitor(

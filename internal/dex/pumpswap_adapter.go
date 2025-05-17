@@ -65,7 +65,7 @@ func (d *pumpswapDEXAdapter) Execute(ctx context.Context, t *task.Task) error {
 		// Note: We changed ExecuteSell to executeSell (private), so now we need to use SellPercentTokens
 		// with 100% to sell the exact amount of tokens
 		percentToSell := 100.0 // 100% of tokens
-		return d.inner.SellPercentTokens(ctx, percentToSell, t.SlippagePercent, t.PriorityFeeSol, t.ComputeUnits)
+		return d.inner.SellPercentTokens(ctx, t.TokenMint, percentToSell, t.SlippagePercent, t.PriorityFeeSol, t.ComputeUnits)
 
 	default:
 		return fmt.Errorf("operation %s is not supported on Pump.swap", t.Operation)
@@ -77,7 +77,7 @@ func (d *pumpswapDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint stri
 	if err := d.init(ctx, tokenMint, d.makeInitPumpSwap(tokenMint)); err != nil {
 		return 0, fmt.Errorf("init Pump.swap: %w", err)
 	}
-	return d.inner.GetTokenBalance(ctx)
+	return d.inner.GetTokenBalance(ctx, tokenMint)
 }
 
 // SellPercentTokens продаёт процент токенов, предварительно инициализировав DEX.
@@ -85,7 +85,7 @@ func (d *pumpswapDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint st
 	if err := d.init(ctx, tokenMint, d.makeInitPumpSwap(tokenMint)); err != nil {
 		return fmt.Errorf("init Pump.swap: %w", err)
 	}
-	return d.inner.SellPercentTokens(ctx, percentToSell, slippage, priorityFee, computeUnits)
+	return d.inner.SellPercentTokens(ctx, tokenMint, percentToSell, slippage, priorityFee, computeUnits)
 }
 
 // GetTokenPrice возвращает цену, предварительно инициализировав DEX.
@@ -93,7 +93,7 @@ func (d *pumpswapDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string
 	if err := d.init(ctx, tokenMint, d.makeInitPumpSwap(tokenMint)); err != nil {
 		return 0, fmt.Errorf("init Pump.swap: %w", err)
 	}
-	return d.inner.GetTokenPrice(ctx)
+	return d.inner.GetTokenPrice(ctx, tokenMint)
 }
 
 // CalculatePnL рассчитывает PnL, предварительно инициализировав DEX.
