@@ -54,7 +54,7 @@ func (d *DEX) ExecuteSwap(ctx context.Context, params SwapParams) error {
 	}
 
 	// Вычисляем параметры для свапа
-	amounts := d.calculateSwapAmounts(pool, params.IsBuy, params.Amount, params.SlippagePercent)
+	amounts := d.calculateSwapAmounts(pool, params.IsBuy, params.Amount)
 
 	// Подготавливаем инструкции для транзакции
 	instructions, err := d.prepareSwapInstructions(pool, accounts, params, amounts)
