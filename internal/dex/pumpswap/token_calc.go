@@ -6,7 +6,6 @@ package pumpswap
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
@@ -19,8 +18,6 @@ import (
 )
 
 const (
-	// DefaultSlippagePercent стандартное проскальзывание для расчетов
-	DefaultSlippagePercent = 0.5 // 0.5% проскальзывание по умолчанию
 	// DexFeePercent комиссия DEX при обмене токенов
 	DexFeePercent = 0.25 // 0.25% комиссия PumpSwap DEX
 	// MinPriceThreshold минимальная цена для предотвращения деления на ноль
@@ -55,74 +52,9 @@ func (d *DEX) getPool(ctx context.Context) (*PoolInfo, error) {
 	return pool, nil
 }
 
-// calculatePrice - внутренний метод для расчета цены на основе резервов пула
-// baseReserves - резервы базового токена (BFI/нашего токена)
-// quoteReserves - резервы quote токена (SOL/WSOL)
-// baseDecimals - количество десятичных знаков у базового токена
-// quoteDecimals - количество десятичных знаков у quote токена
-func (d *DEX) calculatePrice(baseReserves, quoteReserves uint64, baseDecimals, quoteDecimals int) (float64, error) {
-	if baseReserves == 0 {
-		return MinPriceThreshold, errors.New("base reserves are zero, cannot calculate accurate price")
-	}
-
-	// Расчет цены с учетом десятичных знаков
-	// Формула: (quoteReserves/baseReserves) * 10^(baseDecimals - quoteDecimals)
-	price := float64(quoteReserves) / float64(baseReserves) *
-		math.Pow10(baseDecimals-quoteDecimals)
-
-	// Применяем нижнюю границу цены для предотвращения слишком малых значений
-	if price < MinPriceThreshold {
-		d.logger.Debug("Calculated price below minimum threshold, adjusting",
-			zap.Float64("raw_price", price),
-			zap.Float64("min_threshold", MinPriceThreshold))
-		price = MinPriceThreshold
-	}
-
-	d.logger.Debug("Calculated token price",
-		zap.Uint64("base_reserves", baseReserves),
-		zap.Uint64("quote_reserves", quoteReserves),
-		zap.Float64("price", price))
-
-	return price, nil
-}
-
-// GetCurrentPrice returns the current token price in SOL, using pool reserves and caching.
-func (d *DEX) GetCurrentPrice(ctx context.Context) (float64, error) {
-	// Return cached price if still valid
-	if time.Since(d.cachedPriceTime) < d.cacheValidPeriod {
-		d.logger.Debug("cache hit for current price", zap.Float64("price", d.cachedPrice))
-		return d.cachedPrice, nil
-	}
-
-	// Fetch latest pool info
-	pool, err := d.getPool(ctx)
-	if err != nil {
-		return 0, err
-	}
-
-	// Determine decimals for base (BFI) and quote (WSOL)
-	effBase, _ := d.effectiveMints()
-	baseDecimals := int(d.getTokenDecimals(ctx, effBase, DefaultTokenDecimals))
-	quoteDecimals := int(WSOLDecimals) // WSOL has 9 decimals
-
-	// Calculate price using common method
-	price, err := d.calculatePrice(pool.BaseReserves, pool.QuoteReserves, baseDecimals, quoteDecimals)
-	if err != nil {
-		d.logger.Warn("Price calculation warning", zap.Error(err))
-		// Но продолжаем использовать полученную цену, даже если там были предупреждения
-	}
-
-	// Update cache
-	d.cachedPrice = price
-	d.cachedPriceTime = time.Now()
-	d.logger.Debug("calculated current price", zap.Float64("price", price))
-
-	return price, nil
-}
-
-// calculateExpectedSolOutput вычисляет ожидаемый выход SOL при продаже токенов
-// с учетом формулы Constant Product AMM, комиссий DEX и проскальзывания
-func (d *DEX) calculateExpectedSolOutput(ctx context.Context, tokenAmount float64, slippagePercent float64) (float64, error) {
+// calculateEstimate вычисляет ожидаемый выход SOL при продаже указанного количества токенов
+// с учетом формулы Constant Product AMM и комиссий DEX
+func (d *DEX) calculateEstimate(ctx context.Context, tokenAmount float64) (float64, error) {
 	// Получаем пул
 	pool, err := d.getPool(ctx)
 	if err != nil {
@@ -130,7 +62,10 @@ func (d *DEX) calculateExpectedSolOutput(ctx context.Context, tokenAmount float6
 	}
 
 	if pool.BaseReserves == 0 || pool.QuoteReserves == 0 {
-		return 0, errors.New("invalid pool reserves")
+		d.logger.Warn("Invalid pool reserves, using zero estimate",
+			zap.Uint64("base_reserves", pool.BaseReserves),
+			zap.Uint64("quote_reserves", pool.QuoteReserves))
+		return 0, nil
 	}
 
 	// Определяем десятичные знаки
@@ -153,12 +88,8 @@ func (d *DEX) calculateExpectedSolOutput(ctx context.Context, tokenAmount float6
 	// Учитываем комиссию DEX
 	solAfterFees := solAmountRaw * (1.0 - (DexFeePercent / 100.0))
 
-	// Применяем проскальзывание
-	slippageFactor := 1.0 - (slippagePercent / 100.0)
-	solAmountWithSlippage := solAfterFees * slippageFactor
-
 	// Конвертируем в SOL
-	solOutput := solAmountWithSlippage / math.Pow10(int(WSOLDecimals))
+	solOutput := solAfterFees / math.Pow10(int(WSOLDecimals))
 
 	d.logger.Debug("Calculated expected SOL output",
 		zap.Float64("token_amount", tokenAmount),
@@ -166,119 +97,70 @@ func (d *DEX) calculateExpectedSolOutput(ctx context.Context, tokenAmount float6
 		zap.Float64("sol_amount_raw", solAmountRaw),
 		zap.Float64("sol_after_fees", solAfterFees),
 		zap.Float64("dex_fee_percent", DexFeePercent),
-		zap.Float64("slippage_percent", slippagePercent),
 		zap.Float64("sol_output", solOutput))
 
 	return solOutput, nil
 }
 
-// CalculatePnL computes profit and loss metrics for a given token amount and initial investment in SOL.
-func (d *DEX) CalculatePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*model.PnLResult, error) {
-	// 1. Get current price
-	price, err := d.GetCurrentPrice(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get current price: %w", err)
-	}
-
-	// 2. Compute theoretical value in SOL (без учета комиссий и проскальзывания)
-	theoreticalValue := tokenAmount * price
-
-	// 3. Compute expected sell value with fees and slippage
-	sellEstimate, err := d.calculateExpectedSolOutput(ctx, tokenAmount, DefaultSlippagePercent)
-	if err != nil {
-		d.logger.Warn("Error calculating sell estimate, using theoretical value", zap.Error(err))
-		sellEstimate = theoreticalValue
-	}
-
-	// 4. Compute net PnL
-	netPnL := sellEstimate - initialInvestment
-
-	// 5. Compute PnL percentage
-	pnlPercentage := 0.0
-	if initialInvestment > 0 {
-		pnlPercentage = (netPnL / initialInvestment) * 100
-	} else if netPnL > 0 {
-		// Если начальная инвестиция 0, а PnL положительный, это бесконечный процент
-		pnlPercentage = math.Inf(1)
-	}
-
-	// 6. Log detailed calculation info
-	d.logger.Debug("PnL calculation completed",
-		zap.Float64("token_amount", tokenAmount),
-		zap.Float64("initial_investment", initialInvestment),
-		zap.Float64("current_price", price),
-		zap.Float64("theoretical_value", theoreticalValue),
-		zap.Float64("sell_estimate_with_fees_and_slippage", sellEstimate),
-		zap.Float64("net_pnl", netPnL),
-		zap.Float64("pnl_percentage", pnlPercentage))
-
-	// 7. Build result
-	result := &model.PnLResult{
-		SellEstimate:      sellEstimate,
-		InitialInvestment: initialInvestment,
-		NetPnL:            netPnL,
-		PnLPercentage:     pnlPercentage,
-	}
-
-	return result, nil
-}
-
-// GetTokenPrice returns the current price of the given tokenMint (must be the base mint) in SOL.
-func (d *DEX) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
-	// Parse and verify mint
-	effBase, _ := d.effectiveMints()
-	mintKey, err := solana.PublicKeyFromBase58(tokenMint)
-	if err != nil {
-		return 0, fmt.Errorf("invalid token mint: %w", err)
-	}
-	if !mintKey.Equals(effBase) {
-		return 0, fmt.Errorf("token mint mismatch: expected %s, got %s", effBase, mintKey)
-	}
-
-	// Используем кэшированную цену, если доступна
-	if time.Since(d.cachedPriceTime) < d.cacheValidPeriod && d.cachedPrice > 0 {
-		d.logger.Debug("Using cached price for GetTokenPrice", zap.Float64("cached_price", d.cachedPrice))
+// GetTokenPrice возвращает текущую цену токена в SOL, используя данные о резервах пула
+// и кэширование для оптимизации производительности.
+func (d *DEX) GetTokenPrice(ctx context.Context) (float64, error) {
+	// Используем кэшированную цену, если она актуальна
+	if time.Since(d.cachedPriceTime) < d.cacheValidPeriod {
+		d.logger.Debug("Using cached price", zap.Float64("price", d.cachedPrice))
 		return d.cachedPrice, nil
 	}
 
-	// Retrieve pool reserves
+	// Получаем актуальную информацию о пуле
 	pool, err := d.getPool(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("failed to find pool: %w", err)
+		return 0, err
 	}
 
-	// Determine decimals
+	// Определяем десятичные знаки для базового токена и WSOL
+	effBase, _ := d.effectiveMints()
 	baseDecimals := int(d.getTokenDecimals(ctx, effBase, DefaultTokenDecimals))
-	quoteDecimals := WSOLDecimals
+	quoteDecimals := int(WSOLDecimals) // WSOL имеет 9 десятичных знаков
 
-	// Compute price using common method
-	price, err := d.calculatePrice(pool.BaseReserves, pool.QuoteReserves, baseDecimals, quoteDecimals)
-	if err != nil {
-		d.logger.Warn("Price calculation warning in GetTokenPrice", zap.Error(err))
-		// Но продолжаем использовать полученную цену, даже если там были предупреждения
+	// Проверяем, что у нас есть валидные резервы
+	if pool.BaseReserves == 0 {
+		d.logger.Warn("Base reserves are zero, using minimum price threshold")
+		d.cachedPrice = MinPriceThreshold
+		d.cachedPriceTime = time.Now()
+		return MinPriceThreshold, nil
 	}
 
-	// Update cache
+	// Расчет цены с учетом десятичных знаков
+	// Формула: (quoteReserves/baseReserves) * 10^(baseDecimals - quoteDecimals)
+	price := float64(pool.QuoteReserves) / float64(pool.BaseReserves) *
+		math.Pow10(baseDecimals-quoteDecimals)
+
+	// Применяем нижнюю границу цены для предотвращения слишком малых значений
+	if price < MinPriceThreshold {
+		d.logger.Debug("Calculated price below minimum threshold, adjusting",
+			zap.Float64("raw_price", price),
+			zap.Float64("min_threshold", MinPriceThreshold))
+		price = MinPriceThreshold
+	}
+
+	// Обновляем кэш
 	d.cachedPrice = price
 	d.cachedPriceTime = time.Now()
+	d.logger.Debug("Updated price cache",
+		zap.Float64("price", price),
+		zap.Uint64("base_reserves", pool.BaseReserves),
+		zap.Uint64("quote_reserves", pool.QuoteReserves))
 
 	return price, nil
 }
 
 // GetTokenBalance получает баланс токена в кошельке пользователя.
-func (d *DEX) GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error) {
-	// Проверка токена на соответствие с тем, что используется в DEX
+func (d *DEX) GetTokenBalance(ctx context.Context) (uint64, error) {
+	// Получаем информацию о токене
 	effBase, _ := d.effectiveMints()
-	mintKey, err := solana.PublicKeyFromBase58(tokenMint)
-	if err != nil {
-		return 0, fmt.Errorf("invalid token mint: %w", err)
-	}
-	if !mintKey.Equals(effBase) {
-		return 0, fmt.Errorf("token mint mismatch: expected %s, got %s", effBase, mintKey)
-	}
 
 	// Находим ATA адрес для токена
-	userATA, _, err := solana.FindAssociatedTokenAddress(d.wallet.PublicKey, d.config.QuoteMint)
+	userATA, _, err := solana.FindAssociatedTokenAddress(d.wallet.PublicKey, effBase)
 	if err != nil {
 		return 0, fmt.Errorf("failed to derive associated token account: %w", err)
 	}
@@ -290,7 +172,7 @@ func (d *DEX) GetTokenBalance(ctx context.Context, tokenMint string) (uint64, er
 	// При неудаче пробуем с Confirmed commitment
 	if err != nil {
 		d.logger.Debug("Failed to get balance with Processed commitment, trying Confirmed",
-			zap.String("token_mint", d.config.QuoteMint.String()),
+			zap.String("token_mint", effBase.String()),
 			zap.String("user_ata", userATA.String()),
 			zap.Error(err))
 
@@ -316,34 +198,83 @@ func (d *DEX) GetTokenBalance(ctx context.Context, tokenMint string) (uint64, er
 
 	d.logger.Debug("Got token balance",
 		zap.Uint64("balance", balance),
-		zap.String("token_mint", tokenMint),
+		zap.String("token_mint", effBase.String()),
 		zap.String("user_ata", userATA.String()),
 		zap.String("commitment", string(commitmentLevel)))
 
 	return balance, nil
 }
 
+// CalculatePnL вычисляет метрики прибыли и убытков для заданного количества токенов
+// и начальной инвестиции в SOL. Учитывает комиссию при покупке для расчета чистой инвестиции.
+func (d *DEX) CalculatePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*model.PnLResult, error) {
+	// 1. Из начальной инвестиции вычитаем комиссию при покупке
+	buyFee := initialInvestment * (DexFeePercent / 100.0)
+	costBasis := initialInvestment - buyFee
+
+	// 2. Получаем текущую цену
+	price, err := d.GetTokenPrice(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current price: %w", err)
+	}
+
+	// 3. Вычисляем теоретическую стоимость в SOL (без учета комиссий)
+	theoreticalValue := tokenAmount * price
+
+	// 4. Вычисляем ожидаемую стоимость продажи с учетом комиссий
+	sellEstimate, err := d.calculateEstimate(ctx, tokenAmount)
+	if err != nil {
+		d.logger.Warn("Error calculating sell estimate, using theoretical value", zap.Error(err))
+		sellEstimate = theoreticalValue
+	}
+
+	// 5. Вычисляем чистую прибыль/убыток относительно скорректированной начальной инвестиции
+	netPnL := sellEstimate - costBasis
+
+	// 6. Вычисляем процент прибыли/убытка
+	pnlPercentage := 0.0
+	if costBasis > 0 {
+		pnlPercentage = (netPnL / costBasis) * 100
+	} else if netPnL > 0 {
+		// Если начальная инвестиция 0, а PnL положительный, это бесконечный процент
+		pnlPercentage = math.Inf(1)
+	}
+
+	// 7. Логируем детальную информацию о расчетах
+	d.logger.Debug("PnL calculation completed",
+		zap.Float64("token_amount", tokenAmount),
+		zap.Float64("initial_investment", initialInvestment),
+		zap.Float64("buy_fee", buyFee),
+		zap.Float64("cost_basis", costBasis),
+		zap.Float64("current_price", price),
+		zap.Float64("theoretical_value", theoreticalValue),
+		zap.Float64("sell_estimate_with_fees", sellEstimate),
+		zap.Float64("net_pnl", netPnL),
+		zap.Float64("pnl_percentage", pnlPercentage))
+
+	// 8. Формируем результат
+	result := &model.PnLResult{
+		SellEstimate:      sellEstimate,
+		InitialInvestment: costBasis, // Теперь возвращаем уже "чистую" сумму
+		NetPnL:            netPnL,
+		PnLPercentage:     pnlPercentage,
+	}
+
+	return result, nil
+}
+
 // SellPercentTokens продает указанный процент от доступного баланса токенов.
 // Метод получает баланс токена, рассчитывает сумму для продажи в соответствии
 // с указанным процентом и выполняет операцию продажи.
-func (d *DEX) SellPercentTokens(ctx context.Context, tokenMint string, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
-	// Проверка токена на соответствие с тем, что используется в DEX
-	effBase, _ := d.effectiveMints()
-	mintKey, err := solana.PublicKeyFromBase58(tokenMint)
-	if err != nil {
-		return fmt.Errorf("invalid token mint: %w", err)
-	}
-	if !mintKey.Equals(effBase) {
-		return fmt.Errorf("token mint mismatch: expected %s, got %s", effBase, mintKey)
-	}
-
+func (d *DEX) SellPercentTokens(ctx context.Context, percentToSell float64,
+	slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
 	// Проверка валидности параметра percentToSell
 	if percentToSell <= 0 || percentToSell > 100 {
 		return fmt.Errorf("percentToSell должен быть в пределах от 0 до 100, получено: %f", percentToSell)
 	}
 
 	// Получаем текущий баланс токена
-	tokenBalance, err := d.GetTokenBalance(ctx, tokenMint)
+	tokenBalance, err := d.GetTokenBalance(ctx)
 	if err != nil {
 		return fmt.Errorf("не удалось получить баланс токена: %w", err)
 	}
@@ -364,9 +295,8 @@ func (d *DEX) SellPercentTokens(ctx context.Context, tokenMint string, percentTo
 	d.logger.Info("Продажа токенов",
 		zap.Uint64("current_balance", tokenBalance),
 		zap.Float64("percent_to_sell", percentToSell),
-		zap.Uint64("amount_to_sell", amountToSell),
-		zap.Float64("slippage_percent", slippagePercent))
+		zap.Uint64("amount_to_sell", amountToSell))
 
 	// Выполняем продажу указанного количества токенов
-	return d.ExecuteSell(ctx, amountToSell, slippagePercent, priorityFeeSol, computeUnits)
+	return d.executeSell(ctx, amountToSell, slippagePercent, priorityFeeSol, computeUnits)
 }

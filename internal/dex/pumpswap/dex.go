@@ -87,8 +87,9 @@ func (d *DEX) prepareSwapInstructions(pool *PoolInfo, accounts *PreparedTokenAcc
 		amounts.QuoteAmount, priorityInstructions), nil
 }
 
-// ExecuteSell выполняет операцию продажи токена за WSOL.
-func (d *DEX) ExecuteSell(ctx context.Context, tokenAmount uint64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
+// executeSell выполняет операцию продажи токена за WSOL.
+// Это приватная функция, которая используется внутри SellPercentTokens.
+func (d *DEX) executeSell(ctx context.Context, tokenAmount uint64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
 	params := SwapParams{
 		IsBuy:           false,
 		Amount:          tokenAmount,
