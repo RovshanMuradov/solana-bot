@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
 	"sync"
 	"time"
 
@@ -143,42 +142,6 @@ func (d *DEX) ExecuteSell(ctx context.Context, tokenAmount uint64, slippagePerce
 	}
 
 	return nil
-}
-
-// SellPercentTokens продает указанный процент от доступного баланса токенов.
-func (d *DEX) SellPercentTokens(ctx context.Context, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
-	// Проверяем, что процент находится в допустимом диапазоне
-	if percentToSell <= 0 || percentToSell > 100 {
-		return fmt.Errorf("percent to sell must be between 0 and 100")
-	}
-
-	// Создаем контекст с увеличенным таймаутом для надежности получения баланса
-	balanceCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	// Получаем актуальный баланс токенов с максимальным уровнем подтверждения
-	tokenBalance, err := d.GetTokenBalance(balanceCtx, rpc.CommitmentFinalized)
-	if err != nil {
-		return fmt.Errorf("failed to get token balance: %w", err)
-	}
-
-	// Проверяем, что у пользователя есть токены для продажи
-	if tokenBalance == 0 {
-		return fmt.Errorf("no tokens to sell")
-	}
-
-	// Рассчитываем количество токенов для продажи на основе процента
-	tokensToSell := uint64(float64(tokenBalance) * (percentToSell / 100.0))
-
-	// Логируем информацию о продаже
-	d.logger.Info("Selling tokens",
-		zap.String("token_mint", d.config.Mint.String()),
-		zap.Uint64("total_balance", tokenBalance),
-		zap.Float64("percent", percentToSell),
-		zap.Uint64("tokens_to_sell", tokensToSell))
-
-	// Выполняем продажу рассчитанного количества токенов
-	return d.ExecuteSell(ctx, tokensToSell, slippagePercent, priorityFeeSol, computeUnits)
 }
 
 // IsBondingCurveComplete проверяет, завершена ли bonding curve для токена.
