@@ -13,7 +13,8 @@ import (
 )
 
 // calculateSwapAmounts вычисляет параметры для операции свапа в зависимости от типа операции (покупка/продажа).
-func (d *DEX) calculateSwapAmounts(pool *PoolInfo, isBuy bool, amount uint64) *SwapAmounts {
+// slippagePercent - допустимый процент проскальзывания (например, 20.0 означает 20%).
+func (d *DEX) calculateSwapAmounts(pool *PoolInfo, isBuy bool, amount uint64, slippagePercent float64) *SwapAmounts {
 	isBaseToQuote := !isBuy
 	outputAmount, price := d.poolManager.CalculateSwapQuote(pool, amount, isBaseToQuote)
 

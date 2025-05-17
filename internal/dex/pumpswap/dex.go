@@ -54,7 +54,7 @@ func (d *DEX) ExecuteSwap(ctx context.Context, params SwapParams) error {
 	}
 
 	// Вычисляем параметры для свапа
-	amounts := d.calculateSwapAmounts(pool, params.IsBuy, params.Amount)
+	amounts := d.calculateSwapAmounts(pool, params.IsBuy, params.Amount, params.SlippagePercent)
 
 	// Подготавливаем инструкции для транзакции
 	instructions, err := d.prepareSwapInstructions(pool, accounts, params, amounts)
@@ -84,7 +84,7 @@ func (d *DEX) prepareSwapInstructions(pool *PoolInfo, accounts *PreparedTokenAcc
 	}
 
 	return d.buildSwapTransaction(pool, accounts, params.IsBuy, amounts.BaseAmount,
-		amounts.QuoteAmount, priorityInstructions), nil
+		amounts.QuoteAmount, params.SlippagePercent, priorityInstructions), nil
 }
 
 // executeSell выполняет операцию продажи токена за WSOL.

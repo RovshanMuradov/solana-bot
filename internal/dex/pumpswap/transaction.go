@@ -173,17 +173,44 @@ func (d *DEX) buildSwapTransaction(
 	accounts *PreparedTokenAccounts,
 	isBuy bool,
 	baseAmount, quoteAmount uint64,
+	slippagePercent float64,
 	priorityInstructions []solana.Instruction,
 ) []solana.Instruction {
-	var instructions []solana.Instruction
-	instructions = append(instructions, priorityInstructions...)
-	instructions = append(instructions, accounts.CreateBaseATAIx, accounts.CreateQuoteATAIx)
+	instructions := append(priorityInstructions,
+		accounts.CreateBaseATAIx,
+		accounts.CreateQuoteATAIx,
+	)
 
+	// Сохраняем оригинальные значения для логирования
+	origBaseAmount := baseAmount
+	origQuoteAmount := quoteAmount
+
+	// Скорректированные под slippage amounts:
+	if isBuy {
+		// Для buy: quoteAmount — это сколько мы платим → делаем буфер сверху
+		maxQuoteIn := uint64(float64(quoteAmount) * (1 + slippagePercent/100.0))
+		quoteAmount = maxQuoteIn
+		// baseAmount (ожидаемый выход) оставляем как есть
+	} else {
+		// Для sell: quoteAmount — это ожидаемый выход → убираем буфер снизу
+		minQuoteOut := uint64(float64(quoteAmount) * (1 - slippagePercent/100.0))
+		quoteAmount = minQuoteOut
+		// baseAmount (сколько мы отдаем) оставляем как есть
+	}
+
+	d.logger.Debug("Swap with slippage",
+		zap.Bool("is_buy", isBuy),
+		zap.Uint64("orig_base_amount", origBaseAmount),
+		zap.Uint64("orig_quote_amount", origQuoteAmount),
+		zap.Uint64("adjusted_base_amount", baseAmount),
+		zap.Uint64("adjusted_quote_amount", quoteAmount),
+		zap.Float64("slippage_percent", slippagePercent))
+
+	// Собираем параметры так, чтобы в instruction ушли скорректированные суммы
 	swapParams := d.prepareSwapParams(pool, accounts, isBuy, baseAmount, quoteAmount)
 	swapIx := createSwapInstruction(swapParams)
-	instructions = append(instructions, swapIx)
 
-	return instructions
+	return append(instructions, swapIx)
 }
 
 // prepareTokenAccounts подготавливает ATA пользователя и инструкции для их создания.
