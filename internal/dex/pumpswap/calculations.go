@@ -13,43 +13,35 @@ import (
 )
 
 // calculateSwapAmounts вычисляет параметры для операции свапа в зависимости от типа операции (покупка/продажа).
-func (d *DEX) calculateSwapAmounts(pool *PoolInfo, isBuy bool, amount uint64, slippage float64) *SwapAmounts {
+func (d *DEX) calculateSwapAmounts(pool *PoolInfo, isBuy bool, amount uint64) *SwapAmounts {
 	isBaseToQuote := !isBuy
 	outputAmount, price := d.poolManager.CalculateSwapQuote(pool, amount, isBaseToQuote)
 
 	if isBuy {
-		return calculateBuySwap(amount, outputAmount, slippage, price, d.logger)
+		return calculateBuySwap(amount, outputAmount, price, d.logger)
 	}
 
-	return calculateSellSwap(amount, outputAmount, slippage, price, d.logger)
+	return calculateSellSwap(amount, outputAmount, price, d.logger)
 }
 
 // calculateBuySwap вычисляет параметры для операции покупки токена.
-func calculateBuySwap(input, output uint64, slippage, price float64, logger *zap.Logger) *SwapAmounts {
-	maxAmountWithBuffer := uint64(float64(input) * (1.0 + slippage/100.0))
-	minOut := uint64(float64(output) * (1.0 - slippage/100.0))
-
+func calculateBuySwap(input, output uint64, price float64, logger *zap.Logger) *SwapAmounts {
 	logger.Debug("Buy swap calculation",
 		zap.Uint64("input_amount", input),
-		zap.Uint64("max_amount_with_buffer", maxAmountWithBuffer),
 		zap.Uint64("expected_output", output),
-		zap.Uint64("min_out_amount", minOut),
 		zap.Float64("price", price))
 
-	return &SwapAmounts{BaseAmount: minOut, QuoteAmount: maxAmountWithBuffer, Price: price}
+	return &SwapAmounts{BaseAmount: output, QuoteAmount: input, Price: price}
 }
 
 // calculateSellSwap вычисляет параметры для операции продажи токена.
-func calculateSellSwap(input, output uint64, slippage, price float64, logger *zap.Logger) *SwapAmounts {
-	minOut := uint64(float64(output) * (1.0 - slippage/100.0))
-
+func calculateSellSwap(input, output uint64, price float64, logger *zap.Logger) *SwapAmounts {
 	logger.Debug("Sell swap calculation",
 		zap.Uint64("input_amount", input),
 		zap.Uint64("expected_output", output),
-		zap.Uint64("min_out_amount", minOut),
 		zap.Float64("price", price))
 
-	return &SwapAmounts{BaseAmount: input, QuoteAmount: minOut, Price: price}
+	return &SwapAmounts{BaseAmount: input, QuoteAmount: output, Price: price}
 }
 
 // calculateOutput вычисляет выходное количество токенов для операции свапа по формуле пула ликвидности.

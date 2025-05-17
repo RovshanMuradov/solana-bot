@@ -52,13 +52,13 @@ func (d *DEX) getPool(ctx context.Context) (*PoolInfo, error) {
 	return pool, nil
 }
 
-// calculateEstimate вычисляет ожидаемый выход SOL при продаже указанного количества токенов
-// с учетом формулы Constant Product AMM и комиссий DEX
-func (d *DEX) calculateEstimate(ctx context.Context, tokenAmount float64) (float64, error) {
-	// Получаем пул
-	pool, err := d.getPool(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get pool: %w", err)
+// calculateEstimate возвращает прогнозный выход SOL за tokenAmount,
+// с учётом только протокольной/DEX-комиссии.
+func (d *DEX) calculateEstimate(ctx context.Context, tokenAmount float64, reserves interface{}) (float64, error) {
+	// Приводим reserves к типу PoolInfo
+	pool, ok := reserves.(*PoolInfo)
+	if !ok {
+		return 0, fmt.Errorf("invalid reserves type for pumpswap: %T", reserves)
 	}
 
 	if pool.BaseReserves == 0 || pool.QuoteReserves == 0 {
@@ -210,27 +210,26 @@ func (d *DEX) GetTokenBalance(ctx context.Context, tokenMint string) (uint64, er
 }
 
 // CalculatePnL вычисляет метрики прибыли и убытков для заданного количества токенов
-// и начальной инвестиции в SOL. Учитывает комиссию при покупке для расчета чистой инвестиции.
+// и начальной инвестиции в SOL. Учитывает только комиссию DEX.
 func (d *DEX) CalculatePnL(ctx context.Context, tokenAmount float64, initialInvestment float64) (*model.PnLResult, error) {
 	// 1. Из начальной инвестиции вычитаем комиссию при покупке
 	buyFee := initialInvestment * (DexFeePercent / 100.0)
 	costBasis := initialInvestment - buyFee
 
-	// 2. Получаем текущую цену
-	price, err := d.GetTokenPrice(ctx, "")
+	// 2. Получаем пул
+	pool, err := d.getPool(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get current price: %w", err)
+		return nil, fmt.Errorf("failed to get pool: %w", err)
 	}
 
-	// 3. Вычисляем теоретическую стоимость в SOL (без учета комиссий)
-	theoreticalValue := tokenAmount * price
-
-	// 4. Вычисляем ожидаемую стоимость продажи с учетом комиссий
-	sellEstimate, err := d.calculateEstimate(ctx, tokenAmount)
+	// 3. Вычисляем ожидаемую стоимость продажи с учетом комиссий DEX
+	sellEstimate, err := d.calculateEstimate(ctx, tokenAmount, pool)
 	if err != nil {
-		d.logger.Warn("Error calculating sell estimate, using theoretical value", zap.Error(err))
-		sellEstimate = theoreticalValue
+		d.logger.Warn("Error calculating sell estimate", zap.Error(err))
+		return nil, fmt.Errorf("failed to calculate sell estimate: %w", err)
 	}
+
+	// Расчет чистой прибыли/убытка
 
 	// 5. Вычисляем чистую прибыль/убыток относительно скорректированной начальной инвестиции
 	netPnL := sellEstimate - costBasis
@@ -250,9 +249,7 @@ func (d *DEX) CalculatePnL(ctx context.Context, tokenAmount float64, initialInve
 		zap.Float64("initial_investment", initialInvestment),
 		zap.Float64("buy_fee", buyFee),
 		zap.Float64("cost_basis", costBasis),
-		zap.Float64("current_price", price),
-		zap.Float64("theoretical_value", theoreticalValue),
-		zap.Float64("sell_estimate_with_fees", sellEstimate),
+		zap.Float64("sell_estimate", sellEstimate),
 		zap.Float64("net_pnl", netPnL),
 		zap.Float64("pnl_percentage", pnlPercentage))
 

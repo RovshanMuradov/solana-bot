@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
 
-	"github.com/gagliardetto/solana-go/rpc"
 	"go.uber.org/zap"
 
 	"github.com/rovshanmuradov/solana-bot/internal/dex/model"
@@ -40,8 +39,8 @@ func (d *pumpfunDEXAdapter) Execute(ctx context.Context, t *task.Task) error {
 		)
 		return d.inner.ExecuteSnipe(ctx, t.AmountSol, t.SlippagePercent, t.PriorityFeeSol, t.ComputeUnits)
 
-	case t.Operation:
-		bal, err := d.inner.GetTokenBalance(ctx, rpc.CommitmentConfirmed)
+	case task.OperationSell:
+		bal, err := d.inner.GetTokenBalance(ctx, t.TokenMint)
 		if err != nil {
 			return fmt.Errorf("get balance: %w", err)
 		}
@@ -69,7 +68,7 @@ func (d *pumpfunDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint strin
 	if err := d.init(ctx, tokenMint, d.makeInitPumpFun(tokenMint)); err != nil {
 		return 0, err
 	}
-	return d.inner.GetTokenBalance(ctx)
+	return d.inner.GetTokenBalance(ctx, tokenMint)
 }
 
 // SellPercentTokens продаёт процент, гарантируя init.
@@ -77,7 +76,7 @@ func (d *pumpfunDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint str
 	if err := d.init(ctx, tokenMint, d.makeInitPumpFun(tokenMint)); err != nil {
 		return err
 	}
-	return d.inner.SellPercentTokens(ctx, pct, slip, fee, cu)
+	return d.inner.SellPercentTokens(ctx, tokenMint, pct, slip, fee, cu)
 }
 
 // CalculatePnL считает PnL, гарантируя init.
