@@ -37,6 +37,11 @@ func (d *smartDEXAdapter) Execute(ctx context.Context, t *task.Task) error {
 		return fmt.Errorf("token mint is required")
 	}
 
+	// Сохраняем tokenMint для последующего использования (важно для мониторинга)
+	d.mu.Lock()
+	d.tokenMint = t.TokenMint
+	d.mu.Unlock()
+
 	// Определяем, какой DEX использовать
 	dex, err := d.determineDEX(ctx, t.TokenMint)
 	if err != nil {
@@ -143,6 +148,11 @@ func (d *smartDEXAdapter) determineDEX(ctx context.Context, tokenMint string) (D
 
 // GetTokenPrice получает цену токена, автоматически выбирая подходящий DEX.
 func (d *smartDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string) (float64, error) {
+	// Сохраняем tokenMint для последующего использования
+	d.mu.Lock()
+	d.tokenMint = tokenMint
+	d.mu.Unlock()
+
 	dex, err := d.determineDEX(ctx, tokenMint)
 	if err != nil {
 		return 0, fmt.Errorf("determine DEX: %w", err)
@@ -152,6 +162,11 @@ func (d *smartDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string) (
 
 // GetTokenBalance получает баланс токена, автоматически выбирая подходящий DEX.
 func (d *smartDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint string) (uint64, error) {
+	// Сохраняем tokenMint для последующего использования
+	d.mu.Lock()
+	d.tokenMint = tokenMint
+	d.mu.Unlock()
+
 	dex, err := d.determineDEX(ctx, tokenMint)
 	if err != nil {
 		return 0, fmt.Errorf("determine DEX: %w", err)
@@ -161,6 +176,11 @@ func (d *smartDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint string)
 
 // SellPercentTokens продает процент токенов, автоматически выбирая подходящий DEX.
 func (d *smartDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint string, pct, slip float64, fee string, cu uint32) error {
+	// Сохраняем tokenMint для последующего использования
+	d.mu.Lock()
+	d.tokenMint = tokenMint
+	d.mu.Unlock()
+
 	dex, err := d.determineDEX(ctx, tokenMint)
 	if err != nil {
 		return fmt.Errorf("determine DEX: %w", err)
@@ -174,6 +194,22 @@ func (d *smartDEXAdapter) CalculatePnL(ctx context.Context, amount, invest float
 	tokenMint := d.tokenMint
 	d.mu.Unlock()
 
+	// Если tokenMint пуст, сразу вернем ошибку
+	if tokenMint == "" {
+		return nil, fmt.Errorf("token mint is not set in smart adapter, cannot calculate PnL")
+	}
+
+	// Используем кэшированный DEX если есть
+	d.cacheMu.Lock()
+	if d.determinedDEX != nil && d.cacheData.tokenMint == tokenMint {
+		cachedDEX := d.determinedDEX
+		d.cacheMu.Unlock()
+		d.logger.Debug("Using cached DEX for PnL calculation", zap.String("tokenMint", tokenMint))
+		return cachedDEX.CalculatePnL(ctx, amount, invest)
+	}
+	d.cacheMu.Unlock()
+
+	// Если нет кэшированного DEX, определяем его
 	dex, err := d.determineDEX(ctx, tokenMint)
 	if err != nil {
 		return nil, fmt.Errorf("determine DEX: %w", err)
