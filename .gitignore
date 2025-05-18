@@ -4,6 +4,7 @@ CLAUDE.md
 .golangci.yml
 TT.md
 Tasks.md
+main
 
 
 # Игнорировать всю директорию configs и все её содержимое
