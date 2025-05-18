@@ -74,15 +74,7 @@ func (d *DEX) sendAndConfirmTransaction(ctx context.Context, instructions []sola
 		return solana.Signature{}, fmt.Errorf("sign transaction: %w", err)
 	}
 
-	// 4) симуляция (оставляем ваш код)
-	simResult, simErr := d.client.SimulateTransaction(ctx, tx)
-	if simErr != nil || (simResult != nil && simResult.Err != nil) {
-		d.logger.Warn("Transaction simulation failed", zap.Error(simErr), zap.Any("sim_error", simResult != nil && simResult.Err != nil))
-	} else {
-		d.logger.Info("Transaction simulation successful", zap.Uint64("compute_units", simResult.UnitsConsumed))
-	}
-
-	// 5) отправка с опциями для ускорения обработки
+	// 4) отправка с опциями для ускорения обработки
 	txOpts := blockchain.TransactionOptions{
 		SkipPreflight:       true,
 		PreflightCommitment: rpc.CommitmentProcessed,
@@ -93,7 +85,7 @@ func (d *DEX) sendAndConfirmTransaction(ctx context.Context, instructions []sola
 	}
 	d.logger.Info("Transaction sent", zap.String("signature", sig.String()))
 
-	// 6) ожидание подтверждения (используем CommitmentProcessed для быстрого подтверждения)
+	// 5) ожидание подтверждения (используем CommitmentProcessed для быстрого подтверждения)
 	if err := d.client.WaitForTransactionConfirmation(ctx, sig, rpc.CommitmentProcessed); err != nil {
 		d.logger.Warn("Confirm failed", zap.String("signature", sig.String()), zap.Error(err))
 		return sig, fmt.Errorf("confirmation failed: %w", err)

@@ -130,35 +130,27 @@ func (mw *MonitorWorker) handleUIEvents(ctx context.Context) error {
 				// Immediately stop UI updates and price monitoring
 				mw.Stop()
 
-				// Launch token sale independently of monitoring context
-				go func() {
-					sellCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-					defer cancel()
+				fmt.Println("\nPreparing to sell tokens...")
 
-					fmt.Println("\nPreparing to sell tokens...")
+				// Создаем контекст, привязанный к родительскому контексту
+				sellCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+				defer cancel()
 
-					// Добавляем небольшую задержку, чтобы убедиться, что транзакция покупки подтверждена
-					sellDelay := 2 * time.Second
-					mw.logger.Info("Waiting before selling to ensure buy transaction is confirmed",
-						zap.Duration("delay", sellDelay))
-					fmt.Printf("Waiting %s before selling to ensure transaction is confirmed...\n", sellDelay)
+				// RPC-имплементация уже ждет CommitmentProcessed
+				mw.logger.Info("Processing sell request",
+					zap.String("token_mint", mw.task.TokenMint))
 
-					select {
-					case <-time.After(sellDelay):
-						fmt.Println("Selling tokens now...")
-					case <-sellCtx.Done():
-						mw.logger.Error("Sell operation cancelled", zap.Error(sellCtx.Err()))
-						fmt.Printf("Sell operation cancelled: %v\n", sellCtx.Err())
-						return
-					}
+				fmt.Println("Selling tokens now...")
 
-					if err := mw.sellFn(sellCtx, 100.0); err != nil { // TODO: percent hard coded
-						mw.logger.Error("Failed to sell tokens", zap.Error(err))
-						fmt.Printf("Error selling tokens: %v\n", err)
-					} else {
-						fmt.Println("Tokens sold successfully!")
-					}
-				}()
+				// Выполняем продажу синхронно, чтобы дождаться результата
+				if err := mw.sellFn(sellCtx, 100.0); err != nil { // TODO: percent hard coded
+					mw.logger.Error("Failed to sell tokens", zap.Error(err))
+					fmt.Printf("Error selling tokens: %v\n", err)
+					return err // Возвращаем ошибку наверх, чтобы она попала в errgroup
+				}
+
+				mw.logger.Info("Tokens sold successfully!")
+				fmt.Println("Tokens sold successfully!")
 				return nil
 
 			case ui.ExitRequested:
