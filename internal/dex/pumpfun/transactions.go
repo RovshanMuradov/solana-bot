@@ -10,6 +10,7 @@ import (
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"go.uber.org/zap"
 )
 
@@ -81,15 +82,19 @@ func (d *DEX) sendAndConfirmTransaction(ctx context.Context, instructions []sola
 		d.logger.Info("Transaction simulation successful", zap.Uint64("compute_units", simResult.UnitsConsumed))
 	}
 
-	// 5) отправка
-	sig, err := d.client.SendTransaction(ctx, tx)
+	// 5) отправка с опциями для ускорения обработки
+	txOpts := blockchain.TransactionOptions{
+		SkipPreflight:       true,
+		PreflightCommitment: rpc.CommitmentProcessed,
+	}
+	sig, err := d.client.SendTransactionWithOpts(ctx, tx, txOpts)
 	if err != nil {
 		return solana.Signature{}, fmt.Errorf("send transaction: %w", err)
 	}
 	d.logger.Info("Transaction sent", zap.String("signature", sig.String()))
 
-	// 6) ожидание подтверждения
-	if err := d.client.WaitForTransactionConfirmation(ctx, sig, rpc.CommitmentConfirmed); err != nil {
+	// 6) ожидание подтверждения (используем CommitmentProcessed для быстрого подтверждения)
+	if err := d.client.WaitForTransactionConfirmation(ctx, sig, rpc.CommitmentProcessed); err != nil {
 		d.logger.Warn("Confirm failed", zap.String("signature", sig.String()), zap.Error(err))
 		return sig, fmt.Errorf("confirmation failed: %w", err)
 	}

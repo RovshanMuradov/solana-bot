@@ -36,9 +36,15 @@ func (c *Client) GetRecentBlockhash(ctx context.Context) (solana.Hash, error) {
 	return result.Value.Blockhash, nil
 }
 
-// SendTransaction отправляет транзакцию.
+// SendTransaction отправляет транзакцию c параметрами по умолчанию.
 func (c *Client) SendTransaction(ctx context.Context, tx *solana.Transaction) (solana.Signature, error) {
-	sig, err := c.rpc.SendTransaction(ctx, tx)
+	// Используем TransactionOpts с SkipPreflight=true для ускорения обработки транзакции
+	opts := rpc.TransactionOpts{
+		SkipPreflight:       true,
+		PreflightCommitment: rpc.CommitmentProcessed,
+	}
+
+	sig, err := c.rpc.SendTransactionWithOpts(ctx, tx, opts)
 	if err != nil {
 		c.logger.Error("SendTransaction error", zap.Error(err))
 		return solana.Signature{}, err
@@ -169,7 +175,7 @@ func (c *Client) GetProgramAccountsWithOpts(
 
 // GetSignatureStatuses получает статусы транзакций.
 func (c *Client) GetSignatureStatuses(ctx context.Context, signatures ...solana.Signature) (*rpc.GetSignatureStatusesResult, error) {
-	result, err := c.rpc.GetSignatureStatuses(ctx, false, signatures...)
+	result, err := c.rpc.GetSignatureStatuses(ctx, true, signatures...)
 	if err != nil {
 		c.logger.Error("GetSignatureStatuses error", zap.Error(err))
 		return nil, err
@@ -218,31 +224,82 @@ func (c *Client) GetBalance(ctx context.Context, pubkey solana.PublicKey, commit
 	return result.Value, nil
 }
 
-// WaitForTransactionConfirmation ожидает подтверждения транзакции (с простым polling‑механизмом).
-func (c *Client) WaitForTransactionConfirmation(ctx context.Context, signature solana.Signature, _ rpc.CommitmentType) error {
-	ticker := time.NewTicker(500 * time.Millisecond)
+// WaitForTransactionConfirmation ожидает подтверждения транзакции с возможностью указать уровень подтверждения.
+// Таймаут и интервал между проверками
+const (
+	confirmationTimeout = 45 * time.Second
+	checkInterval       = 200 * time.Millisecond
+)
+
+// Для каждого уровня commitment — набор допустимых confirmation statuses
+var okStatuses = map[rpc.CommitmentType][]rpc.ConfirmationStatusType{
+	rpc.CommitmentProcessed: {rpc.ConfirmationStatusProcessed, rpc.ConfirmationStatusConfirmed, rpc.ConfirmationStatusFinalized},
+	rpc.CommitmentConfirmed: {rpc.ConfirmationStatusConfirmed, rpc.ConfirmationStatusFinalized},
+	rpc.CommitmentFinalized: {rpc.ConfirmationStatusFinalized},
+}
+
+// contains проверяет, есть ли val в slice
+func contains(slice []rpc.ConfirmationStatusType, val rpc.ConfirmationStatusType) bool {
+	for _, v := range slice {
+		if v == val {
+			return true
+		}
+	}
+	return false
+}
+
+// WaitForTransactionConfirmation ожидает нужного уровня подтверждения транзакции.
+func (c *Client) WaitForTransactionConfirmation(
+	ctx context.Context,
+	signature solana.Signature,
+	commitment rpc.CommitmentType,
+) error {
+	// По умолчанию — минимум Confirmed
+	if commitment == "" {
+		commitment = rpc.CommitmentConfirmed
+	}
+
+	// Обрезаем общий ctx таймаутом
+	ctx, cancel := context.WithTimeout(ctx, confirmationTimeout)
+	defer cancel()
+
+	ticker := time.NewTicker(checkInterval)
 	defer ticker.Stop()
-	timeout := time.After(30 * time.Second)
+
+	c.logger.Info("Waiting for transaction confirmation",
+		zap.String("signature", signature.String()),
+		zap.String("commitment", string(commitment)),
+	)
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-timeout:
-			return fmt.Errorf("confirmation timeout")
 		case <-ticker.C:
-			statuses, err := c.GetSignatureStatuses(ctx, signature)
+			resp, err := c.rpc.GetSignatureStatuses(ctx, true, signature)
 			if err != nil {
-				c.logger.Warn("Error getting signature statuses", zap.Error(err))
+				c.logger.Warn("Error getting signature statuses",
+					zap.String("signature", signature.String()),
+					zap.Error(err),
+				)
 				continue
 			}
-			if statuses != nil && len(statuses.Value) > 0 && statuses.Value[0] != nil {
-				status := statuses.Value[0]
-				// Сравниваем с rpc.ConfirmationStatusFinalized и rpc.ConfirmationStatusConfirmed,
-				// которые имеют тип rpc.ConfirmationStatusType.
-				if status.ConfirmationStatus == rpc.ConfirmationStatusFinalized ||
-					status.ConfirmationStatus == rpc.ConfirmationStatusConfirmed {
-					return nil
-				}
+			if resp == nil || len(resp.Value) == 0 || resp.Value[0] == nil {
+				continue
+			}
+
+			status := resp.Value[0]
+			// Если транзакция упала — сразу возвращаем ошибку
+			if status.Err != nil {
+				return fmt.Errorf("transaction failed: %w", status.Err)
+			}
+			// Если дошли до нужного статуса — выходим
+			if contains(okStatuses[commitment], status.ConfirmationStatus) {
+				c.logger.Info("Transaction confirmed",
+					zap.String("signature", signature.String()),
+					zap.String("status", string(status.ConfirmationStatus)),
+				)
+				return nil
 			}
 		}
 	}

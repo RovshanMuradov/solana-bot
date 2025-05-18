@@ -10,6 +10,7 @@ import (
 	"github.com/gagliardetto/solana-go"
 	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
 	"github.com/gagliardetto/solana-go/rpc"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"go.uber.org/zap"
 	"strconv"
 	"strings"
@@ -70,8 +71,12 @@ func (d *DEX) createSignedTransaction(ctx context.Context, instructions []solana
 // (SlippageExceeded) и постоянные. Для временных ошибок возможен повторный запуск,
 // для постоянных - операция прерывается.
 func (d *DEX) submitAndConfirmTransaction(ctx context.Context, tx *solana.Transaction) (solana.Signature, error) {
-	// Отправляем транзакцию с SkipPreflight для ускорения
-	sig, err := d.client.SendTransaction(ctx, tx)
+	// Отправляем транзакцию с опциями для ускорения обработки
+	txOpts := blockchain.TransactionOptions{
+		SkipPreflight:       true,
+		PreflightCommitment: rpc.CommitmentProcessed,
+	}
+	sig, err := d.client.SendTransactionWithOpts(ctx, tx, txOpts)
 	if err != nil {
 		// Проверяем на специфичные временные ошибки
 		if strings.Contains(err.Error(), "BlockhashNotFound") {
@@ -89,8 +94,12 @@ func (d *DEX) submitAndConfirmTransaction(ctx context.Context, tx *solana.Transa
 		return solana.Signature{}, backoff.Permanent(fmt.Errorf("transaction failed: %w", err))
 	}
 
-	err = d.client.WaitForTransactionConfirmation(ctx, sig, rpc.CommitmentConfirmed)
+	d.logger.Info("Transaction sent, waiting for confirmation", zap.String("signature", sig.String()))
+
+	// Используем CommitmentProcessed для быстрого подтверждения транзакции при продаже
+	err = d.client.WaitForTransactionConfirmation(ctx, sig, rpc.CommitmentProcessed)
 	if err != nil {
+		d.logger.Warn("Transaction confirmation failed", zap.String("signature", sig.String()), zap.Error(err))
 		return sig, fmt.Errorf("transaction confirmed but with error: %w", err)
 	}
 

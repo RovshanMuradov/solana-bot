@@ -19,7 +19,7 @@ type EventType int
 
 const (
 	SellRequested EventType = iota // Запрос на продажу токенов (пустая строка)
-	ExitRequested                 // Запрос на выход без продажи (q/exit)
+	ExitRequested                  // Запрос на выход без продажи (q/exit)
 )
 
 // Event представляет событие от пользовательского интерфейса
@@ -79,7 +79,7 @@ func (h *Handler) Start() {
 
 				// Process the command
 				command := strings.TrimSpace(line)
-				
+
 				// Обрабатываем команды
 				switch command {
 				case "":

@@ -132,10 +132,25 @@ func (mw *MonitorWorker) handleUIEvents(ctx context.Context) error {
 
 				// Launch token sale independently of monitoring context
 				go func() {
-					sellCtx, cancel := context.WithCancel(context.Background())
+					sellCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 					defer cancel()
 
-					fmt.Println("\nSelling tokens...")
+					fmt.Println("\nPreparing to sell tokens...")
+
+					// Добавляем небольшую задержку, чтобы убедиться, что транзакция покупки подтверждена
+					sellDelay := 2 * time.Second
+					mw.logger.Info("Waiting before selling to ensure buy transaction is confirmed",
+						zap.Duration("delay", sellDelay))
+					fmt.Printf("Waiting %s before selling to ensure transaction is confirmed...\n", sellDelay)
+
+					select {
+					case <-time.After(sellDelay):
+						fmt.Println("Selling tokens now...")
+					case <-sellCtx.Done():
+						mw.logger.Error("Sell operation cancelled", zap.Error(sellCtx.Err()))
+						fmt.Printf("Sell operation cancelled: %v\n", sellCtx.Err())
+						return
+					}
 
 					if err := mw.sellFn(sellCtx, 100.0); err != nil { // TODO: percent hard coded
 						mw.logger.Error("Failed to sell tokens", zap.Error(err))
