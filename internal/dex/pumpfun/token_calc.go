@@ -254,21 +254,6 @@ func (d *DEX) CalculatePnL(ctx context.Context, tokenAmount float64, initialInve
 	}, nil
 }
 
-// getTokenDecimals получает количество десятичных знаков для токена.
-func (d *DEX) getTokenDecimals(ctx context.Context, mint solana.PublicKey, defaultDec uint8) uint8 {
-	// Запрашиваем данные о токене
-	var mintInfo struct {
-		Decimals uint8
-	}
-	err := d.client.GetAccountDataInto(ctx, mint, &mintInfo)
-	if err != nil {
-		d.logger.Warn("Using default decimals", zap.Error(err), zap.String("mint", mint.String()))
-		return defaultDec
-	}
-
-	return mintInfo.Decimals
-}
-
 // SellPercentTokens продает указанный процент от доступного баланса токенов.
 func (d *DEX) SellPercentTokens(ctx context.Context, tokenMint string, percentToSell float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
 	// Проверяем, что процент находится в допустимом диапазоне

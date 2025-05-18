@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
 	"go.uber.org/zap"
@@ -73,15 +72,10 @@ func (ms *MonitoringSession) Start() error {
 	// 2. Calculate actual token amount with correct decimals through DEX
 	initialTokens := 0.0
 	if ms.config.TokenBalance > 0 {
-		// Get token decimals from the blockchain
-		tokenPK := solana.MustPublicKeyFromBase58(t.TokenMint)
-		dec, err := getTokenDecimals(ctx, ms.config.DEX, tokenPK, minTokenDecimals)
-		if err != nil {
-			ms.logger.Warn("Failed to get token decimals, using default", zap.Error(err), zap.Uint8("default_decimals", minTokenDecimals))
-			dec = minTokenDecimals
-		}
-
-		initialTokens = float64(ms.config.TokenBalance) / math.Pow10(int(dec))
+		// Convert the raw balance to a float with the default decimals
+		// In a future update this could be enhanced to query token metadata
+		initialTokens = float64(ms.config.TokenBalance) / math.Pow10(int(minTokenDecimals))
+		ms.logger.Debug("Using default token decimals", zap.Uint8("decimals", minTokenDecimals))
 	}
 	cancel()
 
@@ -235,20 +229,6 @@ func (ms *MonitoringSession) onPriceUpdate(update PriceUpdate) {
 	}
 }
 
-// getTokenDecimals обертка для получения десятичных знаков токена от DEX
-func getTokenDecimals(ctx context.Context, dexAdapter dex.DEX, tokenMint solana.PublicKey, defaultDecimals uint8) (uint8, error) {
-	// Проверяем тип DEX
-	switch d := dexAdapter.(type) {
-	case interface {
-		getTokenDecimals(context.Context, solana.PublicKey, uint8) uint8
-	}:
-		// Используем метод, если он есть
-		return d.getTokenDecimals(ctx, tokenMint, defaultDecimals), nil
-	default:
-		return defaultDecimals, errors.New("DEX adapter does not support getTokenDecimals")
-	}
-}
-
 // updateTokenBalance обновляет баланс токенов.
 //
 // Функция запрашивает актуальный баланс токенов и обновляет его в конфигурации.
@@ -266,21 +246,16 @@ func (ms *MonitoringSession) updateTokenBalance(ctx context.Context, currentAmou
 	// Если получили — обновим локальную переменную
 	updatedBalance := currentAmount
 	if tokenBalanceRaw > 0 {
-		// Получаем правильную десятичную точность
-		tokenPK := solana.MustPublicKeyFromBase58(t.TokenMint)
+		// Using default decimals - in a real implementation this should
+		// ideally come from token metadata
 		var defaultDecimals uint8 = 6
-		dec, err := getTokenDecimals(ctx, ms.config.DEX, tokenPK, defaultDecimals)
-		if err != nil {
-			ms.logger.Warn("Using default decimals for balance update", zap.Error(err))
-			dec = defaultDecimals
-		}
+		newBalance := float64(tokenBalanceRaw) / math.Pow10(int(defaultDecimals))
 
-		newBalance := float64(tokenBalanceRaw) / math.Pow10(int(dec))
 		if math.Abs(newBalance-currentAmount) > 0.000001 && newBalance > 0 {
 			ms.logger.Debug("Token balance changed",
 				zap.Float64("old_balance", currentAmount),
 				zap.Float64("new_balance", newBalance),
-				zap.Uint8("decimals", dec))
+				zap.Uint8("decimals", defaultDecimals))
 			ms.config.TokenBalance = tokenBalanceRaw
 			updatedBalance = newBalance
 		}
