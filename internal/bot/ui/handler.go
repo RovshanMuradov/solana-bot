@@ -120,6 +120,15 @@ func (h *Handler) publishEvent(eventType EventType, data string) {
 }
 
 // Render отображает информацию о мониторинге в консоли
+// shortenAddress возвращает усечённый вид адреса вида "6QwKg…JVuJpump"
+func shortenAddress(addr string) string {
+	if len(addr) <= 12 {
+		return addr
+	}
+	return addr[:6] + "…" + addr[len(addr)-6:]
+}
+
+// Render выводит в консоль аккуратно выровненный бокс с данными мониторинга
 func Render(update monitor.PriceUpdate, pnl model.PnLResult, tokenMint string) {
 	// Форматирование процента изменения цены
 	changeStr := fmt.Sprintf("%.2f%%", update.Percent)
@@ -141,22 +150,14 @@ func Render(update monitor.PriceUpdate, pnl model.PnLResult, tokenMint string) {
 	fmt.Println("\n╔════════════════ TOKEN MONITOR ════════════════╗")
 	fmt.Printf("║ Token: %-38s ║\n", shortenAddress(tokenMint))
 	fmt.Println("╟───────────────────────────────────────────────╢")
-	fmt.Printf("║ Current Price:       %-14.8f SOL ║\n", update.Current)
-	fmt.Printf("║ Initial Price:       %-14.8f SOL ║\n", update.Initial)
-	fmt.Printf("║ Price Change:        %-25s ║\n", changeStr)
-	fmt.Printf("║ Tokens Owned:        %-14.6f      ║\n", update.Tokens)
+	fmt.Printf("║ Current Price:       %-20.8f SOL ║\n", update.Current)
+	fmt.Printf("║ Initial Price:       %-20.8f SOL ║\n", update.Initial)
+	fmt.Printf("║ Price Change:        %-33s ║\n", changeStr)
+	fmt.Printf("║ Tokens Owned:        %-19.6f      ║\n", update.Tokens)
 	fmt.Println("╟───────────────────────────────────────────────╢")
-	fmt.Printf("║ Sold (Estimate):     %-14.8f SOL ║\n", pnl.SellEstimate)
-	fmt.Printf("║ Invested:            %-14.8f SOL ║\n", pnl.InitialInvestment)
+	fmt.Printf("║ Sold (Estimate):     %-20.8f SOL ║\n", pnl.SellEstimate)
+	fmt.Printf("║ Invested:            %-20.8f SOL ║\n", pnl.InitialInvestment)
 	fmt.Printf("║ P&L:                 %-25s ║\n", pnlStr)
 	fmt.Println("╚═══════════════════════════════════════════════╝")
 	fmt.Println("Press Enter to sell tokens, 'q' to exit without selling")
-}
-
-// shortenAddress сокращает длинный адрес токена для лучшего отображения
-func shortenAddress(address string) string {
-	if len(address) <= 20 {
-		return address
-	}
-	return address[:8] + "..." + address[len(address)-8:]
 }
