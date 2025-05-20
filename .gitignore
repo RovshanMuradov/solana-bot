@@ -1,7 +1,6 @@
 # Игнорировать конкретные файлы
 .env
 CLAUDE.md
-.golangci.yml
 TT.md
 Tasks.md
 main
