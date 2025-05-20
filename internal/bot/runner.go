@@ -4,7 +4,7 @@ package bot
 import (
 	"context"
 	"fmt"
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
@@ -16,7 +16,7 @@ import (
 type Runner struct {
 	logger        *zap.Logger
 	config        *task.Config
-	solClient     *solbc.Client
+	solClient     *blockchain.Client
 	taskManager   *task.Manager
 	wallets       map[string]*wallet.Wallet
 	defaultWallet *wallet.Wallet
@@ -40,7 +40,7 @@ func NewRunner(cfg *task.Config, logger *zap.Logger) *Runner {
 	return &Runner{
 		logger:        logger,
 		config:        cfg,
-		solClient:     solbc.NewClient(cfg.RPCList[0], logger),
+		solClient:     blockchain.NewClient(cfg.RPCList[0], logger),
 		taskManager:   task.NewManager(logger),
 		wallets:       wallets,
 		defaultWallet: defaultW,

@@ -4,10 +4,10 @@ package bot
 import (
 	"context"
 	"fmt"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"sync"
 	"time"
 
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
@@ -20,7 +20,7 @@ type WorkerPool struct {
 	tasks     <-chan *task.Task
 	logger    *zap.Logger
 	config    *task.Config
-	solClient *solbc.Client
+	solClient *blockchain.Client
 	wallets   map[string]*wallet.Wallet
 }
 
@@ -28,7 +28,7 @@ func NewWorkerPool(
 	ctx context.Context,
 	cfg *task.Config,
 	logger *zap.Logger,
-	solClient *solbc.Client,
+	solClient *blockchain.Client,
 	wallets map[string]*wallet.Wallet,
 	tasks <-chan *task.Task,
 ) *WorkerPool {

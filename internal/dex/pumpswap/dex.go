@@ -7,7 +7,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/gagliardetto/solana-go"
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
 	"time"
@@ -15,7 +15,7 @@ import (
 
 // NewDEX создаёт новый экземпляр DEX для PumpSwap с кешированием и отложенным логированием RPC.
 func NewDEX(
-	client *solbc.Client,
+	client *blockchain.Client,
 	w *wallet.Wallet,
 	logger *zap.Logger,
 	config *Config,

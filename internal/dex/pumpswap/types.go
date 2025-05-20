@@ -4,7 +4,7 @@
 package pumpswap
 
 import (
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"time"
 
@@ -84,7 +84,7 @@ type PreparedTokenAccounts struct {
 
 // DEX реализует операции для PumpSwap.
 type DEX struct {
-	client       *solbc.Client
+	client       *blockchain.Client
 	wallet       *wallet.Wallet
 	logger       *zap.Logger
 	config       *Config

@@ -8,7 +8,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/gagliardetto/solana-go"
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"go.uber.org/zap"
 	"time"
 )
@@ -116,7 +116,7 @@ func DeriveCreatorVaultPDA(programID, creator solana.PublicKey) (solana.PublicKe
 }
 
 // FetchGlobalAccount получает и парсит данные глобального аккаунта Pump.fun.
-func FetchGlobalAccount(ctx context.Context, client *solbc.Client, globalAddr solana.PublicKey, logger *zap.Logger) (*GlobalAccount, error) {
+func FetchGlobalAccount(ctx context.Context, client *blockchain.Client, globalAddr solana.PublicKey, logger *zap.Logger) (*GlobalAccount, error) {
 	// Получение информации об аккаунте с блокчейна
 	start := time.Now()
 	accountInfo, err := client.GetAccountInfo(ctx, globalAddr)

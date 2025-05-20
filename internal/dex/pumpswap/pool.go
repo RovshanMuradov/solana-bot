@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"golang.org/x/sync/errgroup"
 	"sync"
 	"time"
@@ -15,8 +16,6 @@ import (
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 	"go.uber.org/zap"
-
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 )
 
 const (
@@ -38,7 +37,7 @@ type PoolManagerInterface interface {
 
 // PoolManager отвечает за операции с пулами PumpSwap.
 type PoolManager struct {
-	client     *solbc.Client
+	client     *blockchain.Client
 	logger     *zap.Logger
 	programID  solana.PublicKey
 	maxRetries int
@@ -67,7 +66,7 @@ func DefaultPoolManagerOptions() PoolManagerOptions {
 }
 
 // NewPoolManager создаёт новый PoolManager с заданными опциями.
-func NewPoolManager(client *solbc.Client, logger *zap.Logger, opts ...PoolManagerOptions) *PoolManager {
+func NewPoolManager(client *blockchain.Client, logger *zap.Logger, opts ...PoolManagerOptions) *PoolManager {
 	var options PoolManagerOptions
 	if len(opts) > 0 {
 		options = opts[0]

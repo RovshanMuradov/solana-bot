@@ -7,10 +7,10 @@ import (
 	"context"
 	"fmt"
 	"github.com/gagliardetto/solana-go"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"sync"
 	"time"
 
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
@@ -18,7 +18,7 @@ import (
 
 // DEX представляет собой имплементацию интерфейса для взаимодействия с Pump.fun.
 type DEX struct {
-	client          *solbc.Client
+	client          *blockchain.Client
 	wallet          *wallet.Wallet
 	logger          *zap.Logger
 	config          *Config
@@ -37,7 +37,7 @@ type DEX struct {
 }
 
 // NewDEX создает новый экземпляр DEX для работы с Pump.fun.
-func NewDEX(client *solbc.Client, w *wallet.Wallet, logger *zap.Logger, config *Config, _ string) (*DEX, error) {
+func NewDEX(client *blockchain.Client, w *wallet.Wallet, logger *zap.Logger, config *Config, _ string) (*DEX, error) {
 	// Проверяем, что адрес контракта Pump.fun указан
 	if config.ContractAddress.IsZero() {
 		return nil, fmt.Errorf("pump.fun contract address is required")

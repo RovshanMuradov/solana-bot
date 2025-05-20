@@ -5,14 +5,14 @@ package dex
 
 import (
 	"fmt"
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
 	"strings"
 )
 
 // GetDEXByName создаёт адаптер для DEX по имени биржи.
-func GetDEXByName(name string, client *solbc.Client, w *wallet.Wallet, logger *zap.Logger) (DEX, error) {
+func GetDEXByName(name string, client *blockchain.Client, w *wallet.Wallet, logger *zap.Logger) (DEX, error) {
 	if client == nil {
 		return nil, fmt.Errorf("client cannot be nil")
 	}

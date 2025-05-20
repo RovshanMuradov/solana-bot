@@ -1,5 +1,5 @@
-// internal/blockchain/solbc/client.go
-package solbc
+// internal/blockchain/solbc/rpc.go
+package blockchain
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"go.uber.org/zap"
 )
 
@@ -184,7 +183,7 @@ func (c *Client) GetSignatureStatuses(ctx context.Context, signatures ...solana.
 }
 
 // SendTransactionWithOpts отправляет транзакцию с заданными опциями.
-func (c *Client) SendTransactionWithOpts(ctx context.Context, tx *solana.Transaction, opts blockchain.TransactionOptions) (solana.Signature, error) {
+func (c *Client) SendTransactionWithOpts(ctx context.Context, tx *solana.Transaction, opts TransactionOptions) (solana.Signature, error) {
 	sig, err := c.rpc.SendTransactionWithOpts(ctx, tx, rpc.TransactionOpts{
 		SkipPreflight:       opts.SkipPreflight,
 		PreflightCommitment: opts.PreflightCommitment,
@@ -197,7 +196,7 @@ func (c *Client) SendTransactionWithOpts(ctx context.Context, tx *solana.Transac
 }
 
 // SimulateTransaction симулирует транзакцию и возвращает результат симуляции.
-func (c *Client) SimulateTransaction(ctx context.Context, tx *solana.Transaction) (*blockchain.SimulationResult, error) {
+func (c *Client) SimulateTransaction(ctx context.Context, tx *solana.Transaction) (*SimulationResult, error) {
 	result, err := c.rpc.SimulateTransaction(ctx, tx)
 	if err != nil {
 		c.logger.Error("SimulateTransaction error", zap.Error(err))
@@ -207,7 +206,7 @@ func (c *Client) SimulateTransaction(ctx context.Context, tx *solana.Transaction
 	if result.Value.UnitsConsumed != nil {
 		units = *result.Value.UnitsConsumed
 	}
-	return &blockchain.SimulationResult{
+	return &SimulationResult{
 		Err:           result.Value.Err,
 		Logs:          result.Value.Logs,
 		UnitsConsumed: units,
@@ -323,4 +322,4 @@ func (c *Client) GetTokenAccountBalance(ctx context.Context, account solana.Publ
 }
 
 // Гарантируем, что Client реализует интерфейс blockchain.Client.
-var _ blockchain.Client = (*Client)(nil)
+var _ Rpc = (*Client)(nil)
