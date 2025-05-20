@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -26,7 +27,12 @@ func NewManager(logger *zap.Logger) *Manager {
 
 // LoadTasks reads tasks from CSV at path. Returns parsed Task slice.
 func (m *Manager) LoadTasks(path string) ([]*Task, error) {
-	file, err := os.Open(path)
+	// Validate file path to prevent path traversal
+	if filepath.IsAbs(path) {
+		m.logger.Warn("Using absolute path for tasks file", zap.String("path", path))
+	}
+
+	file, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("open tasks file: %w", err)
 	}

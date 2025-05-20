@@ -1,7 +1,7 @@
 # Makefile
 export
 
-.PHONY: run rebuild
+.PHONY: run rebuild lint lint-fix
 
 # Локальный запуск
 run:
@@ -10,17 +10,12 @@ run:
 	go build -o solana-bot ./cmd/bot/main.go
 	./solana-bot
 
-# Полная пересборка проекта
-rebuild:
-	@echo "Cleaning up Docker volumes..."
-	docker volume rm -f solana-bot_postgres_data || true
-	docker volume prune -f
-	@echo "Building application in Docker..."
-	docker-compose build app
-	@echo "Starting PostgreSQL..."
-	docker-compose up -d postgres
-	@echo "Waiting for PostgreSQL to be ready..."
-	@sleep 10
-	@echo "Running migrations..."
-	docker-compose run --rm app ./bot
-	@echo "=== Rebuild completed successfully ==="
+# Линтинг
+lint: ## Запустить линтер локально
+	golangci-lint run
+
+lint-fix: ## Запустить линтер с автоисправлениями
+	golangci-lint run --fix
+
+help: ## Показать справку по командам
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'

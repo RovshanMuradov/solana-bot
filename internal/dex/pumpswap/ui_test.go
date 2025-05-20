@@ -104,6 +104,7 @@ func RenderRealUIMonitor(dex *RealDEXMock) string {
 	// Получаем токен минт или используем дефолтный
 	tokenMint := dex.tokenMint
 	if tokenMint == "" {
+		// #nosec G101 - это тестовый код с не настоящим адресом
 		tokenMint = "GuKMr2mA...GSudgos9"
 	}
 

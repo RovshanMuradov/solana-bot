@@ -77,7 +77,6 @@ func (d *DEX) ExecuteSwap(ctx context.Context, params SwapParams) error {
 // prepareSwapInstructions подготавливает инструкции для выполнения операции свапа.
 func (d *DEX) prepareSwapInstructions(pool *PoolInfo, accounts *PreparedTokenAccounts,
 	params SwapParams, amounts *SwapAmounts) ([]solana.Instruction, error) {
-
 	priorityInstructions, err := d.preparePriorityInstructions(params.ComputeUnits, params.PriorityFeeSol)
 	if err != nil {
 		return nil, err

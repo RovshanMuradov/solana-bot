@@ -12,7 +12,6 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"go.uber.org/zap"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -111,25 +110,41 @@ func (d *DEX) submitAndConfirmTransaction(ctx context.Context, tx *solana.Transa
 //
 // Метод создает инструкции для управления вычислительными ресурсами транзакции:
 // установка лимита вычислительных единиц и их стоимости (приоритетная комиссия).
-// Приоритетная комиссия преобразуется из SOL в лампорты (1 SOL = 1e9 лампортов).
+// Приоритетная комиссия преобразуется из SOL в микро-лампорты (1 SOL = 1e12 микро-лампортов).
 func (d *DEX) preparePriorityInstructions(computeUnits uint32, priorityFeeSol string) ([]solana.Instruction, error) {
 	var instructions []solana.Instruction
-	if computeUnits > 0 {
-		instructions = append(instructions,
-			computebudget.NewSetComputeUnitLimitInstruction(computeUnits).Build())
+
+	// Set compute unit limit, использовать значение по умолчанию если не указано
+	if computeUnits == 0 {
+		computeUnits = 200_000 // Default compute units (как в pumpfun)
 	}
-	if priorityFeeSol != "" {
-		fee, err := strconv.ParseFloat(priorityFeeSol, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid priority fee: %w", err)
+	instructions = append(instructions,
+		computebudget.NewSetComputeUnitLimitInstruction(computeUnits).Build())
+
+	// Handle priority fee
+	var priorityFee uint64
+	if priorityFeeSol == "default" || priorityFeeSol == "" {
+		priorityFee = 5_000 // Default priority fee (5000 micro-lamports)
+		d.logger.Debug("Using default priority fee",
+			zap.Uint64("micro_lamports", priorityFee),
+			zap.Float64("sol", float64(priorityFee)/1_000_000_000_000))
+	} else {
+		var solValue float64
+		// Используем fmt.Sscanf вместо strconv.ParseFloat
+		if _, err := fmt.Sscanf(priorityFeeSol, "%f", &solValue); err != nil {
+			return nil, fmt.Errorf("invalid priority fee format: %w", err)
 		}
-		// Перевод SOL в лампорты (1 SOL = 1e9 лампортов)
-		feeLamports := uint64(fee * 1e9)
-		if feeLamports > 0 {
-			instructions = append(instructions,
-				computebudget.NewSetComputeUnitPriceInstruction(feeLamports).Build())
-		}
+
+		// ИСПРАВЛЕНИЕ: используем правильный множитель для микро-лампортов
+		priorityFee = uint64(solValue * 1_000_000_000_000) // SOL to micro-lamports (1e12)
+		d.logger.Debug("Custom priority fee",
+			zap.Float64("sol_input", solValue),
+			zap.Uint64("micro_lamports", priorityFee))
 	}
+
+	instructions = append(instructions,
+		computebudget.NewSetComputeUnitPriceInstruction(priorityFee).Build())
+
 	return instructions, nil
 }
 

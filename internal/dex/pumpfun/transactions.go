@@ -6,6 +6,7 @@ package pumpfun
 import (
 	"context"
 	"fmt"
+	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
@@ -21,29 +22,36 @@ func (d *DEX) prepareTransactionContext(ctx context.Context, timeout time.Durati
 
 // prepareBaseInstructions подготавливает базовые инструкции для транзакции.
 func (d *DEX) prepareBaseInstructions(_ context.Context, priorityFeeSol string, computeUnits uint32) ([]solana.Instruction, solana.PublicKey, error) {
-	// Шаг 1: Создаем инструкции для установки приоритета транзакции
-	// Эти инструкции позволяют указать, сколько SOL валидаторы получат за обработку транзакции
-	// и лимит вычислительных единиц (computeUnits), которые транзакция может использовать
-	priorityInstructions, err := d.priorityManager.CreatePriorityInstructions(priorityFeeSol, computeUnits) // TODO: чекнуть работу CreatePriorityInstructions
-	if err != nil {
-		return nil, solana.PublicKey{}, fmt.Errorf("failed to create priority instructions: %w", err)
+	var instructions []solana.Instruction
+
+	// Set compute unit limit
+	if computeUnits == 0 {
+		computeUnits = 200_000 // Default compute units
+	}
+	instructions = append(instructions, computebudget.NewSetComputeUnitLimitInstruction(computeUnits).Build())
+
+	// Handle priority fee
+	var priorityFee uint64
+	if priorityFeeSol == "default" {
+		priorityFee = 5_000 // Default priority fee (5000 micro-lamports)
+	} else {
+		var solValue float64
+		if _, err := fmt.Sscanf(priorityFeeSol, "%f", &solValue); err != nil {
+			return nil, solana.PublicKey{}, fmt.Errorf("invalid priority fee format: %w", err)
+		}
+		priorityFee = uint64(solValue * 1_000_000_000_000) // SOL to micro-lamports
 	}
 
-	// Шаг 2: Вычисляем адрес ассоциированного токен-аккаунта (ATA) пользователя
-	// ATA - это детерминированный адрес, который вычисляется на основе адреса кошелька пользователя и минта токена
+	instructions = append(instructions, computebudget.NewSetComputeUnitPriceInstruction(priorityFee).Build())
+
+	// Create ATA instruction
 	userATA, _, err := solana.FindAssociatedTokenAddress(d.wallet.PublicKey, d.config.Mint)
 	if err != nil {
 		return nil, solana.PublicKey{}, fmt.Errorf("failed to derive associated token account: %w", err)
 	}
 
-	// Шаг 3: Создаем инструкцию для проверки существования ATA и создания его при необходимости
-	// Idempotent-инструкция не выдаст ошибку, если аккаунт уже существует
 	ataInstruction := d.wallet.CreateAssociatedTokenAccountIdempotentInstruction(
 		d.wallet.PublicKey, d.wallet.PublicKey, d.config.Mint)
-
-	// Шаг 4: Объединяем все инструкции в единый массив
-	var instructions []solana.Instruction
-	instructions = append(instructions, priorityInstructions...)
 	instructions = append(instructions, ataInstruction)
 
 	return instructions, userATA, nil

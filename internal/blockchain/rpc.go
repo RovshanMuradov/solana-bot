@@ -290,7 +290,7 @@ func (c *Client) WaitForTransactionConfirmation(
 			status := resp.Value[0]
 			// Если транзакция упала — сразу возвращаем ошибку
 			if status.Err != nil {
-				return fmt.Errorf("transaction failed: %w", status.Err)
+				return fmt.Errorf("transaction failed: %v", status.Err)
 			}
 			// Если дошли до нужного статуса — выходим
 			if contains(okStatuses[commitment], status.ConfirmationStatus) {

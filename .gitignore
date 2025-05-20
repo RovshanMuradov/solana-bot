@@ -16,5 +16,6 @@ final.md
 .idea/
 solana-bot
 /pump-fun-bot-main
+/bin/  # Директория для локальных бинарных файлов, включая golangci-lint
 
 **/.claude/settings.local.json

@@ -127,8 +127,6 @@ func (mw *MonitorWorker) handleUIEvents(ctx context.Context) error {
 			switch event.Type {
 			case ui.SellRequested:
 				mw.logger.Info("Sell requested by user")
-				// Immediately stop UI updates and price monitoring
-				mw.Stop()
 
 				fmt.Println("\nPreparing to sell tokens...")
 
@@ -141,6 +139,10 @@ func (mw *MonitorWorker) handleUIEvents(ctx context.Context) error {
 					zap.String("token_mint", mw.task.TokenMint))
 
 				fmt.Println("Selling tokens now...")
+
+				// Stop UI updates and price monitoring AFTER preparing the sell request
+				// but BEFORE executing the sell operation
+				mw.Stop()
 
 				// Выполняем продажу синхронно, чтобы дождаться результата
 				if err := mw.sellFn(sellCtx, 100.0); err != nil { // TODO: percent hard coded

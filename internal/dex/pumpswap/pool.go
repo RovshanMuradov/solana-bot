@@ -388,7 +388,6 @@ func (pm *PoolManager) CalculateSwapQuote(pool *PoolInfo, inputAmount uint64, is
 
 // FindPoolWithRetry ищет пул для пары токенов с повторными попытками.
 func (pm *PoolManager) FindPoolWithRetry(ctx context.Context, baseMint, quoteMint solana.PublicKey, maxRetries int, retryDelay time.Duration) (*PoolInfo, error) {
-
 	// Используем значения по умолчанию, если параметры не заданы
 	if maxRetries <= 0 {
 		maxRetries = pm.maxRetries
@@ -409,8 +408,13 @@ func (pm *PoolManager) FindPoolWithRetry(ctx context.Context, baseMint, quoteMin
 		pool, err := pm.FindPool(ctx, baseMint, quoteMint)
 		return pool, err
 	}
-
-	maxTries := uint(maxRetries)
+	// Converting safely to avoid potential integer overflow
+	var maxTries uint
+	if maxRetries > 0 {
+		maxTries = uint(maxRetries)
+	} else {
+		maxTries = 1 // Default to at least one try
+	}
 	pool, err := backoff.Retry(ctx, operation,
 		backoff.WithBackOff(backoffPolicy),
 		backoff.WithMaxTries(maxTries),

@@ -84,7 +84,10 @@ func (d *smartDEXAdapter) determineDEX(ctx context.Context, tokenMint string) (D
 	}
 
 	if err := d.pumpfunAdapter.init(ctx, tokenMint, d.pumpfunAdapter.makeInitPumpFun(tokenMint)); err != nil {
-		return d.pumpswapAdapter, nil
+		d.logger.Warn("Failed to initialize PumpFun adapter, falling back to PumpSwap",
+			zap.String("token_mint", tokenMint),
+			zap.Error(err))
+		return d.pumpswapAdapter, fmt.Errorf("pumpfun initialization failed: %w", err)
 	}
 	if d.pumpfunAdapter.inner == nil {
 		return d.pumpswapAdapter, nil
@@ -92,7 +95,10 @@ func (d *smartDEXAdapter) determineDEX(ctx context.Context, tokenMint string) (D
 
 	isComplete, err := d.pumpfunAdapter.inner.IsBondingCurveComplete(ctx)
 	if err != nil {
-		return d.pumpswapAdapter, nil
+		d.logger.Warn("Failed to check if bonding curve is complete, falling back to PumpSwap",
+			zap.String("token_mint", tokenMint),
+			zap.Error(err))
+		return d.pumpswapAdapter, fmt.Errorf("checking bonding curve status failed: %w", err)
 	}
 	if isComplete {
 		return d.pumpswapAdapter, nil

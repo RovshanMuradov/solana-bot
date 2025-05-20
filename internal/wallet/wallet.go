@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/gagliardetto/solana-go"
 )
@@ -37,7 +38,10 @@ func NewWallet(privateKeyBase58 string) (*Wallet, error) {
 
 // LoadWallets загружает кошельки из CSV-файла с колонками: [Name, PrivateKeyBase58].
 func LoadWallets(path string) (map[string]*Wallet, error) {
-	file, err := os.Open(path)
+	// Clean the path to prevent path traversal issues
+	cleanPath := filepath.Clean(path)
+
+	file, err := os.Open(cleanPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
 	}

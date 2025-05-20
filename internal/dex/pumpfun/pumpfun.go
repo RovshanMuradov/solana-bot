@@ -11,18 +11,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rovshanmuradov/solana-bot/internal/types"
 	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
 )
 
 // DEX представляет собой имплементацию интерфейса для взаимодействия с Pump.fun.
 type DEX struct {
-	client          *blockchain.Client
-	wallet          *wallet.Wallet
-	logger          *zap.Logger
-	config          *Config
-	priorityManager *types.PriorityManager
+	client *blockchain.Client
+	wallet *wallet.Wallet
+	logger *zap.Logger
+	config *Config
 
 	// ---------- bonding‑curve cache ----------
 	bcOnce                 sync.Once
@@ -54,11 +52,10 @@ func NewDEX(client *blockchain.Client, w *wallet.Wallet, logger *zap.Logger, con
 
 	// Создаем экземпляр DEX с базовыми параметрами
 	dex := &DEX{
-		client:          client,
-		wallet:          w,
-		logger:          logger.Named("pumpfun"),
-		config:          config,
-		priorityManager: types.NewPriorityManager(logger.Named("priority")),
+		client: client,
+		wallet: w,
+		logger: logger.Named("pumpfun"),
+		config: config,
 	}
 
 	// Создаем контекст с таймаутом для получения данных о глобальном аккаунте
