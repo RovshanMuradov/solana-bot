@@ -10,7 +10,6 @@ import (
 
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
-	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
 )
 
@@ -21,7 +20,7 @@ type WorkerPool struct {
 	logger    *zap.Logger
 	config    *task.Config
 	solClient *blockchain.Client
-	wallets   map[string]*wallet.Wallet
+	wallets   map[string]*task.Wallet
 }
 
 func NewWorkerPool(
@@ -29,7 +28,7 @@ func NewWorkerPool(
 	cfg *task.Config,
 	logger *zap.Logger,
 	solClient *blockchain.Client,
-	wallets map[string]*wallet.Wallet,
+	wallets map[string]*task.Wallet,
 	tasks <-chan *task.Task,
 ) *WorkerPool {
 	return &WorkerPool{

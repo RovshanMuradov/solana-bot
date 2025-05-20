@@ -5,7 +5,7 @@ package pumpswap
 
 import (
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
-	"github.com/rovshanmuradov/solana-bot/internal/wallet"
+	"github.com/rovshanmuradov/solana-bot/internal/task"
 	"time"
 
 	"go.uber.org/zap"
@@ -85,7 +85,7 @@ type PreparedTokenAccounts struct {
 // DEX реализует операции для PumpSwap.
 type DEX struct {
 	client       *blockchain.Client
-	wallet       *wallet.Wallet
+	wallet       *task.Wallet
 	logger       *zap.Logger
 	config       *Config
 	poolManager  PoolManagerInterface

@@ -5,16 +5,16 @@ package dex
 import (
 	"context"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+	"github.com/rovshanmuradov/solana-bot/internal/task"
 	"sync"
 
-	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
 )
 
 // baseDEXAdapter содержит общую логику для всех адаптеров DEX
 type baseDEXAdapter struct {
 	client *blockchain.Client
-	wallet *wallet.Wallet
+	wallet *task.Wallet
 	logger *zap.Logger
 	name   string
 

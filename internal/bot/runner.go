@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
-	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
 	"os"
 	"os/signal"
@@ -18,20 +17,20 @@ type Runner struct {
 	config        *task.Config
 	solClient     *blockchain.Client
 	taskManager   *task.Manager
-	wallets       map[string]*wallet.Wallet
-	defaultWallet *wallet.Wallet
+	wallets       map[string]*task.Wallet
+	defaultWallet *task.Wallet
 	shutdownCh    chan os.Signal
 }
 
 // NewRunner NewRunner: принимает cfg и logger
 func NewRunner(cfg *task.Config, logger *zap.Logger) *Runner {
 	// Загружаем кошельки
-	wallets, err := wallet.LoadWallets("configs/wallets.csv")
+	wallets, err := task.LoadWallets("configs/wallets.csv")
 	if err != nil {
 		logger.Fatal("Failed to load wallets", zap.Error(err))
 	}
 
-	var defaultW *wallet.Wallet
+	var defaultW *task.Wallet
 	for _, w := range wallets {
 		defaultW = w
 		break

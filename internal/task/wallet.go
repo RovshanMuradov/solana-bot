@@ -1,7 +1,7 @@
 // ==================================
 // File: internal/wallet/wallet.go
 // ==================================
-package wallet
+package task
 
 import (
 	"encoding/csv"
