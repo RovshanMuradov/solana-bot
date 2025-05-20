@@ -1,5 +1,4 @@
 # Makefile
-include .env
 export
 
 .PHONY: run rebuild
