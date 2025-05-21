@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"golang.org/x/sync/errgroup"
+	"strings"
 	"sync"
 	"time"
 
@@ -129,8 +130,13 @@ func (pm *PoolManager) getAccountBinaryDataMultiple(ctx context.Context, account
 	// Perform the batch request
 	resp, err := pm.client.GetMultipleAccounts(cctx, accounts)
 	if err != nil {
-		pm.logger.Error("GetMultipleAccounts failed", zap.Error(err))
-		return nil, fmt.Errorf("failed to get multiple accounts info: %w", err)
+		// Проверяем, является ли ошибка отменой контекста
+		if strings.Contains(err.Error(), "context canceled") {
+			pm.logger.Debug("GetMultipleAccounts canceled", zap.Error(err))
+		} else {
+			pm.logger.Error("GetMultipleAccounts failed", zap.Error(err))
+		}
+		return nil, fmt.Errorf("rpc call getMultipleAccounts(): %w", err)
 	}
 
 	// Extract binary slices, skipping nil entries
@@ -421,9 +427,15 @@ func (pm *PoolManager) FindPoolWithRetry(ctx context.Context, baseMint, quoteMin
 		backoff.WithNotify(notify))
 
 	if err != nil {
-		pm.logger.Error("Не удалось найти пул после всех попыток", zap.String("base_mint", baseMint.String()),
-			zap.String("quote_mint", quoteMint.String()), zap.Error(err))
-		return nil, err
+		// Проверяем, не является ли ошибка отменой контекста
+		if strings.Contains(err.Error(), "context canceled") {
+			pm.logger.Info("Поиск пула отменен (контекст завершен)", zap.String("base_mint", baseMint.String()),
+				zap.String("quote_mint", quoteMint.String()), zap.Error(err))
+		} else {
+			pm.logger.Error("Не удалось найти пул после всех попыток", zap.String("base_mint", baseMint.String()),
+				zap.String("quote_mint", quoteMint.String()), zap.Error(err))
+		}
+		return nil, fmt.Errorf("failed to find pool: %w", err)
 	}
 
 	return pool, nil

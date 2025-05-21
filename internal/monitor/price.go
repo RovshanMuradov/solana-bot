@@ -3,6 +3,8 @@ package monitor
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -114,7 +116,12 @@ func (pm *PriceMonitor) updatePrice() {
 
 	price, err := pm.dex.GetTokenPrice(cctx, pm.tokenMint)
 	if err != nil {
-		pm.logger.Error("GetTokenPrice error", zap.Error(err))
+		// Проверяем, не является ли ошибка отменой контекста
+		if isContextCanceled(err) {
+			pm.logger.Debug("GetTokenPrice canceled due to context", zap.Error(err))
+		} else {
+			pm.logger.Error("GetTokenPrice error", zap.Error(err))
+		}
 		return
 	}
 
@@ -145,4 +152,10 @@ func (pm *PriceMonitor) updatePrice() {
 // SetCallback устанавливает функцию обратного вызова для обновлений цены.
 func (pm *PriceMonitor) SetCallback(callback PriceUpdateCallback) {
 	pm.callback = callback
+}
+
+// isContextCanceled проверяет, является ли ошибка результатом отмены контекста
+func isContextCanceled(err error) bool {
+	return err != nil && (err == context.Canceled || errors.Is(err, context.Canceled) ||
+		strings.Contains(err.Error(), "context canceled"))
 }
