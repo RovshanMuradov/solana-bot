@@ -92,10 +92,8 @@ func (ms *MonitoringSession) Start() error {
 
 	ms.config.InitialPrice = initialPrice
 
-	// Only update AutosellAmount if we've determined a valid token amount
-	if initialTokens > 0 {
-		t.AutosellAmount = initialTokens
-	}
+	// We don't need to update AutosellAmount here
+	// AutosellAmount is already set properly in the task and represents the percentage to sell
 
 	// Создаем монитор цен
 	ms.priceMonitor = NewPriceMonitor(

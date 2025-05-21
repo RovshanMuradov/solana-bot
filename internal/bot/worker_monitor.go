@@ -145,7 +145,7 @@ func (mw *MonitorWorker) handleUIEvents(ctx context.Context) error {
 				mw.Stop()
 
 				// Выполняем продажу синхронно, чтобы дождаться результата
-				if err := mw.sellFn(sellCtx, 100.0); err != nil { // TODO: percent hard coded
+				if err := mw.sellFn(sellCtx, mw.task.AutosellAmount); err != nil {
 					mw.logger.Error("Failed to sell tokens", zap.Error(err))
 					fmt.Printf("Error selling tokens: %v\n", err)
 					return err // Возвращаем ошибку наверх, чтобы она попала в errgroup

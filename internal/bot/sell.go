@@ -32,6 +32,18 @@ func SellTokens(
 	// Создаем канал для ошибок, который будет передан вызывающему коду
 	errChan := make(chan error, 1)
 
+	// Валидируем процент продажи перед отправкой в DEX
+	//if percent <= 0 || percent > 100 {
+	//	logger.Warn("Invalid sell percentage, clamping to valid range (1-99)",
+	//		zap.Float64("original_percent", percent))
+	//	// Ограничиваем значение диапазоном 1-99%
+	//	if percent <= 0 {
+	//		percent = 1.0
+	//	} else if percent > 100 {
+	//		percent = 99.0
+	//	}
+	//}
+
 	// Запускаем продажу в отдельной горутине
 	go func() {
 		defer close(errChan)
