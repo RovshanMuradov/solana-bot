@@ -1,5 +1,5 @@
 // ==================================
-// File: internal/wallet/wallet.go
+// File: internal/task/wallet.go
 // ==================================
 package task
 
