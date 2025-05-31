@@ -46,9 +46,9 @@ func NewDEX(client *blockchain.Client, w *task.Wallet, logger *zap.Logger, confi
 	}
 
 	// Логируем информацию о создании DEX
-	logger.Info("Creating PumpFun DEX",
-		zap.String("contract", config.ContractAddress.String()),
-		zap.String("token_mint", config.Mint.String()))
+	logger.Info(fmt.Sprintf("🏗️  Creating PumpFun DEX for %s...%s",
+		config.Mint.String()[:4],
+		config.Mint.String()[len(config.Mint.String())-4:]))
 
 	// Создаем экземпляр DEX с базовыми параметрами
 	dex := &DEX{
@@ -65,12 +65,11 @@ func NewDEX(client *blockchain.Client, w *task.Wallet, logger *zap.Logger, confi
 	// Получаем информацию о глобальном аккаунте для определения получателя комиссий
 	globalAccount, err := FetchGlobalAccount(fetchCtx, client, config.Global, logger)
 	if err != nil {
-		logger.Warn("Failed to fetch global account data, using default fee recipient",
-			zap.Error(err))
+		logger.Warn("⚠️  Failed to fetch global account data, using default fee recipient: " + err.Error())
 	} else if globalAccount != nil {
 		// Обновляем адрес получателя комиссий из глобального аккаунта
 		config.FeeRecipient = globalAccount.FeeRecipient
-		logger.Info("Updated fee recipient", zap.String("address", config.FeeRecipient.String()))
+		logger.Info("📧 Updated fee recipient: " + config.FeeRecipient.String())
 	}
 
 	return dex, nil
@@ -79,11 +78,7 @@ func NewDEX(client *blockchain.Client, w *task.Wallet, logger *zap.Logger, confi
 // ExecuteSnipe выполняет операцию покупки токена на Pump.fun с точным количеством SOL.
 func (d *DEX) ExecuteSnipe(ctx context.Context, amountSol float64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
 	// Логируем информацию о начале операции
-	d.logger.Info("Starting Pump.fun exact-sol buy operation",
-		zap.Float64("amount_sol", amountSol),
-		zap.Float64("slippage_percent", slippagePercent),
-		zap.String("priority_fee_sol", priorityFeeSol),
-		zap.Uint32("compute_units", computeUnits))
+	d.logger.Info(fmt.Sprintf("💰 Starting Pump.fun buy: %.3f SOL (%.1f%% slippage)", amountSol, slippagePercent))
 
 	// Создаем контекст с таймаутом для выполнения транзакции
 	opCtx, cancel := d.prepareTransactionContext(ctx, 45*time.Second)
@@ -93,9 +88,7 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amountSol float64, slippagePerce
 	solAmountLamports := uint64(amountSol * 1_000_000_000)
 
 	// Логируем точное количество SOL для покупки
-	d.logger.Info("Using exact SOL amount",
-		zap.Uint64("sol_amount_lamports", solAmountLamports),
-		zap.String("sol_amount", fmt.Sprintf("%.9f SOL", float64(solAmountLamports)/1_000_000_000)))
+	d.logger.Info(fmt.Sprintf("📊 Using exact SOL amount: %.9f SOL", float64(solAmountLamports)/1_000_000_000))
 
 	// Подготавливаем инструкции для транзакции покупки
 	instructions, err := d.prepareBuyTransaction(opCtx, solAmountLamports, priorityFeeSol, computeUnits)
@@ -113,11 +106,7 @@ func (d *DEX) ExecuteSnipe(ctx context.Context, amountSol float64, slippagePerce
 // ExecuteSell выполняет операцию продажи токена на Pump.fun.
 func (d *DEX) ExecuteSell(ctx context.Context, tokenAmount uint64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
 	// Логируем информацию о начале операции продажи
-	d.logger.Info("Starting Pump.fun sell operation",
-		zap.Uint64("token_amount", tokenAmount),
-		zap.Float64("slippage_percent", slippagePercent),
-		zap.String("priority_fee_sol", priorityFeeSol),
-		zap.Uint32("compute_units", computeUnits))
+	d.logger.Info(fmt.Sprintf("💱 Starting Pump.fun sell: %d tokens (%.1f%% slippage)", tokenAmount, slippagePercent))
 
 	// Создаем контекст с таймаутом для выполнения транзакции
 	opCtx, cancel := d.prepareTransactionContext(ctx, 45*time.Second)

@@ -43,17 +43,17 @@ func (d *smartDEXAdapter) Execute(ctx context.Context, t *task.Task) error {
 	adaptedTask := *t
 	if d.dex == d.pumpfunAdapter {
 		adaptedTask.Operation = task.OperationSnipe
-		d.logger.Info("Using Pump.fun for snipe", zap.String("token", t.TokenMint))
+		d.logger.Info("🎯 Smart DEX selected: Pump.fun (bonding curve active)", zap.String("token", t.TokenMint[:4]+"..."+t.TokenMint[len(t.TokenMint)-4:]))
 	} else {
 		adaptedTask.Operation = task.OperationSwap
-		d.logger.Info("Using Pump.swap for swap", zap.String("token", t.TokenMint))
+		d.logger.Info("🎯 Smart DEX selected: Pump.swap (bonding curve completed)", zap.String("token", t.TokenMint[:4]+"..."+t.TokenMint[len(t.TokenMint)-4:]))
 	}
 
 	// выполняем
 	err := d.dex.Execute(ctx, &adaptedTask)
 	// fallback по AnchorError 6005 (BondingCurveComplete)
 	if isBondingCurveCompleteError(err) && d.dex == d.pumpfunAdapter {
-		d.logger.Info("Caught BondingCurveComplete, falling back to Pump.swap", zap.String("token", t.TokenMint))
+		d.logger.Info("🔄 Bonding curve completed, switching to Pump.swap", zap.String("token", t.TokenMint[:4]+"..."+t.TokenMint[len(t.TokenMint)-4:]))
 		d.dex = d.pumpswapAdapter
 		adaptedTask.Operation = task.OperationSwap
 		return d.dex.Execute(ctx, &adaptedTask)

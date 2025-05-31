@@ -28,7 +28,7 @@ func NewRunner(cfg *task.Config, logger *zap.Logger) *Runner {
 	// Загружаем кошельки
 	wallets, err := task.LoadWallets("configs/wallets.csv")
 	if err != nil {
-		logger.Fatal("Failed to load wallets", zap.Error(err))
+		logger.Fatal("💥 Failed to load wallets: " + err.Error())
 	}
 
 	var defaultW *task.Wallet
@@ -55,7 +55,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	go func() {
 		sig := <-r.shutdownCh
-		r.logger.Info("Signal received", zap.String("signal", sig.String()))
+		r.logger.Info("📡 Signal received: " + sig.String())
 		cancel()
 	}()
 
@@ -68,7 +68,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	r.logger.Info("Tasks loaded", zap.Int("count", len(tasks)))
+	r.logger.Info(fmt.Sprintf("📋 Loaded %d trading tasks", len(tasks)))
 
 	taskCh := make(chan *task.Task, len(tasks))
 	for _, t := range tasks {
@@ -80,7 +80,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	if numWorkers <= 0 {
 		numWorkers = 1
 	}
-	r.logger.Info("Starting task execution", zap.Int("workers", numWorkers))
+	r.logger.Info(fmt.Sprintf("🚀 Starting execution with %d workers", numWorkers))
 
 	workerPool := NewWorkerPool(
 		shutdownCtx,
@@ -94,12 +94,12 @@ func (r *Runner) Run(ctx context.Context) error {
 	workerPool.Start(numWorkers)
 	workerPool.Wait()
 
-	r.logger.Info("All workers finished")
+	r.logger.Info("✅ All workers finished")
 	return nil
 }
 
 func (r *Runner) Shutdown() {
-	r.logger.Info("Bot shutting down gracefully")
+	r.logger.Info("👋 Bot shutting down gracefully")
 
 	if err := r.logger.Sync(); err != nil {
 		if !os.IsNotExist(err) &&
@@ -112,7 +112,7 @@ func (r *Runner) Shutdown() {
 
 func (r *Runner) WaitForShutdown() {
 	sig := <-r.shutdownCh
-	r.logger.Info("Signal received", zap.String("signal", sig.String()))
+	r.logger.Info("📡 Signal received: " + sig.String())
 	r.Shutdown()
 }
 
@@ -122,20 +122,20 @@ func (r *Runner) validateLicense(ctx context.Context) error {
 	if r.config.KeygenAccountID != "" && r.config.KeygenProductToken != "" && r.config.KeygenProductID != "" {
 		return r.validateWithKeygen(ctx)
 	}
-	
+
 	// Fallback to simple validation
 	return r.validateSimple()
 }
 
 // validateWithKeygen validates license using Keygen.sh
 func (r *Runner) validateWithKeygen(ctx context.Context) error {
-	r.logger.Info("Validating license with Keygen.sh")
-	
+	r.logger.Info("🔑 Validating license with Keygen.sh")
+
 	// Use hardcoded Keygen credentials if not in config
 	accountID := r.config.KeygenAccountID
 	productToken := r.config.KeygenProductToken
 	productID := r.config.KeygenProductID
-	
+
 	// Fallback to hardcoded values (for distribution)
 	if accountID == "" {
 		accountID = "c88da307-e118-4c8c-a8da-9cada169477b"
@@ -146,19 +146,19 @@ func (r *Runner) validateWithKeygen(ctx context.Context) error {
 	if productID == "" {
 		productID = "60f40015-88e4-49e3-93a4-58303a91ee48"
 	}
-	
+
 	validator := license.NewKeygenValidator(
 		accountID,
 		productToken,
 		productID,
 		r.logger,
 	)
-	
+
 	if err := validator.ValidateLicense(ctx, r.config.License); err != nil {
 		return fmt.Errorf("Keygen validation failed: %w", err)
 	}
-	
-	r.logger.Info("License validated successfully with Keygen")
+
+	r.logger.Info("✅ License validated with Keygen.sh")
 	return nil
 }
 
@@ -167,11 +167,11 @@ func (r *Runner) validateSimple() error {
 	if r.config.License == "" {
 		return fmt.Errorf("license key is required")
 	}
-	
+
 	if len(r.config.License) < 8 {
 		return fmt.Errorf("license key is too short")
 	}
-	
-	r.logger.Info("License validated with basic validation")
+
+	r.logger.Info("✅ License validated (basic mode)")
 	return nil
 }

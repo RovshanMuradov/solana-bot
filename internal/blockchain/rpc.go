@@ -29,7 +29,7 @@ func NewClient(rpcURL string, logger *zap.Logger) *Client {
 func (c *Client) GetRecentBlockhash(ctx context.Context) (solana.Hash, error) {
 	result, err := c.rpc.GetLatestBlockhash(ctx, rpc.CommitmentFinalized)
 	if err != nil {
-		c.logger.Error("GetRecentBlockhash error", zap.Error(err))
+		c.logger.Error("❌ GetRecentBlockhash error: " + err.Error())
 		return solana.Hash{}, err
 	}
 	return result.Value.Blockhash, nil
@@ -45,7 +45,7 @@ func (c *Client) SendTransaction(ctx context.Context, tx *solana.Transaction) (s
 
 	sig, err := c.rpc.SendTransactionWithOpts(ctx, tx, opts)
 	if err != nil {
-		c.logger.Error("SendTransaction error", zap.Error(err))
+		c.logger.Error("❌ SendTransaction error: " + err.Error())
 		return solana.Signature{}, err
 	}
 	return sig, nil
@@ -55,9 +55,7 @@ func (c *Client) SendTransaction(ctx context.Context, tx *solana.Transaction) (s
 func (c *Client) GetAccountDataInto(ctx context.Context, pubkey solana.PublicKey, dst interface{}) error {
 	err := c.rpc.GetAccountDataInto(ctx, pubkey, dst)
 	if err != nil {
-		c.logger.Debug("GetAccountDataInto error",
-			zap.String("pubkey", pubkey.String()),
-			zap.Error(err))
+		c.logger.Debug("GetAccountDataInto error for " + pubkey.String() + ": " + err.Error())
 		return err
 	}
 	return nil
@@ -67,9 +65,7 @@ func (c *Client) GetAccountDataInto(ctx context.Context, pubkey solana.PublicKey
 func (c *Client) GetAccountInfo(ctx context.Context, pubkey solana.PublicKey) (*rpc.GetAccountInfoResult, error) {
 	result, err := c.rpc.GetAccountInfo(ctx, pubkey)
 	if err != nil {
-		c.logger.Debug("GetAccountInfo error",
-			zap.String("pubkey", pubkey.String()),
-			zap.Error(err))
+		c.logger.Debug("GetAccountInfo error for " + pubkey.String() + ": " + err.Error())
 		return nil, err
 	}
 	return result, nil
@@ -98,8 +94,7 @@ func (c *Client) GetMultipleAccounts(
 	)
 
 	if err != nil {
-		c.logger.Debug("GetMultipleAccounts error",
-			zap.Error(err))
+		c.logger.Debug("GetMultipleAccounts error: " + err.Error())
 		return nil, err
 	}
 
@@ -147,9 +142,7 @@ func (c *Client) GetProgramAccounts(
 	)
 
 	if err != nil {
-		c.logger.Debug("GetProgramAccounts error",
-			zap.String("program_id", programID.String()),
-			zap.Error(err))
+		c.logger.Debug("GetProgramAccounts error for " + programID.String() + ": " + err.Error())
 		return nil, err
 	}
 
@@ -164,9 +157,7 @@ func (c *Client) GetProgramAccountsWithOpts(
 ) (rpc.GetProgramAccountsResult, error) {
 	accounts, err := c.rpc.GetProgramAccountsWithOpts(ctx, programID, opts)
 	if err != nil {
-		c.logger.Debug("GetProgramAccountsWithOpts error",
-			zap.String("program_id", programID.String()),
-			zap.Error(err))
+		c.logger.Debug("GetProgramAccountsWithOpts error for " + programID.String() + ": " + err.Error())
 		return nil, err
 	}
 	return accounts, nil
@@ -176,7 +167,7 @@ func (c *Client) GetProgramAccountsWithOpts(
 func (c *Client) GetSignatureStatuses(ctx context.Context, signatures ...solana.Signature) (*rpc.GetSignatureStatusesResult, error) {
 	result, err := c.rpc.GetSignatureStatuses(ctx, true, signatures...)
 	if err != nil {
-		c.logger.Error("GetSignatureStatuses error", zap.Error(err))
+		c.logger.Error("❌ GetSignatureStatuses error: " + err.Error())
 		return nil, err
 	}
 	return result, nil
@@ -189,7 +180,7 @@ func (c *Client) SendTransactionWithOpts(ctx context.Context, tx *solana.Transac
 		PreflightCommitment: opts.PreflightCommitment,
 	})
 	if err != nil {
-		c.logger.Error("SendTransactionWithOpts error", zap.Error(err))
+		c.logger.Error("❌ SendTransactionWithOpts error: " + err.Error())
 		return solana.Signature{}, err
 	}
 	return sig, nil
@@ -199,7 +190,7 @@ func (c *Client) SendTransactionWithOpts(ctx context.Context, tx *solana.Transac
 func (c *Client) SimulateTransaction(ctx context.Context, tx *solana.Transaction) (*SimulationResult, error) {
 	result, err := c.rpc.SimulateTransaction(ctx, tx)
 	if err != nil {
-		c.logger.Error("SimulateTransaction error", zap.Error(err))
+		c.logger.Error("❌ SimulateTransaction error: " + err.Error())
 		return nil, err
 	}
 	units := uint64(0)
@@ -217,7 +208,7 @@ func (c *Client) SimulateTransaction(ctx context.Context, tx *solana.Transaction
 func (c *Client) GetBalance(ctx context.Context, pubkey solana.PublicKey, commitment rpc.CommitmentType) (uint64, error) {
 	result, err := c.rpc.GetBalance(ctx, pubkey, commitment)
 	if err != nil {
-		c.logger.Error("GetBalance error", zap.Error(err))
+		c.logger.Error("❌ GetBalance error: " + err.Error())
 		return 0, err
 	}
 	return result.Value, nil
@@ -265,10 +256,7 @@ func (c *Client) WaitForTransactionConfirmation(
 	ticker := time.NewTicker(checkInterval)
 	defer ticker.Stop()
 
-	c.logger.Info("Waiting for transaction confirmation",
-		zap.String("signature", signature.String()),
-		zap.String("commitment", string(commitment)),
-	)
+	c.logger.Info("⏳ Waiting for confirmation: " + signature.String()[:8] + "...")
 
 	for {
 		select {
@@ -277,10 +265,7 @@ func (c *Client) WaitForTransactionConfirmation(
 		case <-ticker.C:
 			resp, err := c.rpc.GetSignatureStatuses(ctx, true, signature)
 			if err != nil {
-				c.logger.Warn("Error getting signature statuses",
-					zap.String("signature", signature.String()),
-					zap.Error(err),
-				)
+				c.logger.Warn("⚠️  Error getting signature status for " + signature.String()[:8] + "...: " + err.Error())
 				continue
 			}
 			if resp == nil || len(resp.Value) == 0 || resp.Value[0] == nil {
@@ -294,10 +279,7 @@ func (c *Client) WaitForTransactionConfirmation(
 			}
 			// Если дошли до нужного статуса — выходим
 			if contains(okStatuses[commitment], status.ConfirmationStatus) {
-				c.logger.Info("Transaction confirmed",
-					zap.String("signature", signature.String()),
-					zap.String("status", string(status.ConfirmationStatus)),
-				)
+				c.logger.Info("✅ Transaction confirmed: " + signature.String()[:8] + "...")
 				return nil
 			}
 		}
@@ -313,9 +295,7 @@ func (c *Client) GetTokenAccountBalance(ctx context.Context, account solana.Publ
 
 	result, err := c.rpc.GetTokenAccountBalance(ctx, account, commitment)
 	if err != nil {
-		c.logger.Debug("GetTokenAccountBalance error",
-			zap.String("account", account.String()),
-			zap.Error(err))
+		c.logger.Debug("GetTokenAccountBalance error for " + account.String() + ": " + err.Error())
 		return nil, err
 	}
 	return result, nil

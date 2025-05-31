@@ -9,8 +9,6 @@ import (
 	"math"
 
 	"github.com/gagliardetto/solana-go"
-	"go.uber.org/zap"
-
 	"github.com/rovshanmuradov/solana-bot/internal/dex/pumpswap"
 )
 
@@ -32,13 +30,10 @@ func (d *pumpswapDEXAdapter) Execute(ctx context.Context, t *task.Task) error {
 	switch t.Operation {
 	case task.OperationSwap:
 		lamports := uint64(t.AmountSol * 1e9)
-		d.logger.Info("Executing swap on Pump.swap",
-			zap.String("token_mint", t.TokenMint),
-			zap.Uint64("lamports", lamports),
-			zap.Float64("slippage_percent", t.SlippagePercent),
-			zap.String("priority_fee", t.PriorityFeeSol),
-			zap.Uint32("compute_units", t.ComputeUnits),
-		)
+		d.logger.Info(fmt.Sprintf("🔄 Pump.swap: %.3f SOL for %s...%s",
+			t.AmountSol,
+			t.TokenMint[:4],
+			t.TokenMint[len(t.TokenMint)-4:]))
 		return d.inner.ExecuteSwap(ctx, pumpswap.SwapParams{
 			IsBuy:           true,
 			Amount:          lamports,
@@ -55,13 +50,12 @@ func (d *pumpswapDEXAdapter) Execute(ctx context.Context, t *task.Task) error {
 		precision, err := d.inner.DetermineTokenPrecision(ctx, mintPub)
 		if err != nil {
 			precision = 6
-			d.logger.Warn("Using default precision", zap.Uint8("precision", precision))
+			d.logger.Warn(fmt.Sprintf("⚠️  Using default precision: %d", precision))
 		}
-		amount := uint64(t.AmountSol * math.Pow(10, float64(precision)))
-		d.logger.Info("Executing sell on Pump.swap",
-			zap.String("token_mint", t.TokenMint),
-			zap.Uint64("amount", amount),
-		)
+		_ = uint64(t.AmountSol * math.Pow(10, float64(precision)))
+		d.logger.Info(fmt.Sprintf("💱 Pump.swap sell: %s...%s",
+			t.TokenMint[:4],
+			t.TokenMint[len(t.TokenMint)-4:]))
 		// Note: We changed ExecuteSell to executeSell (private), so now we need to use SellPercentTokens
 		// with 100% to sell the exact amount of tokens
 		percentToSell := 100.0 // 100% of tokens

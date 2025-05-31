@@ -95,7 +95,7 @@ func (mw *MonitorWorker) Start() error {
 
 	// Ожидаем завершения всех горутин
 	if err := g.Wait(); err != nil {
-		mw.logger.Error("Monitor worker failed", zap.Error(err))
+		mw.logger.Error("❌ Monitor worker failed: " + err.Error())
 		return err
 	}
 
@@ -126,7 +126,7 @@ func (mw *MonitorWorker) handleUIEvents(ctx context.Context) error {
 
 			switch event.Type {
 			case ui.SellRequested:
-				mw.logger.Info("Sell requested by user")
+				mw.logger.Info("💰 Sell requested by user")
 
 				fmt.Println("\nPreparing to sell tokens...")
 
@@ -135,8 +135,7 @@ func (mw *MonitorWorker) handleUIEvents(ctx context.Context) error {
 				defer cancel()
 
 				// RPC-имплементация уже ждет CommitmentProcessed
-				mw.logger.Info("Processing sell request",
-					zap.String("token_mint", mw.task.TokenMint))
+				mw.logger.Info("💱 Processing sell request for: " + mw.task.TokenMint)
 
 				fmt.Println("Selling tokens now...")
 
@@ -146,17 +145,17 @@ func (mw *MonitorWorker) handleUIEvents(ctx context.Context) error {
 
 				// Выполняем продажу синхронно, чтобы дождаться результата
 				if err := mw.sellFn(sellCtx, 100.0); err != nil { // TODO: percent hard coded
-					mw.logger.Error("Failed to sell tokens", zap.Error(err))
+					mw.logger.Error("❌ Failed to sell tokens: " + err.Error())
 					fmt.Printf("Error selling tokens: %v\n", err)
 					return err // Возвращаем ошибку наверх, чтобы она попала в errgroup
 				}
 
-				mw.logger.Info("Tokens sold successfully!")
+				mw.logger.Info("✅ Tokens sold successfully!")
 				fmt.Println("Tokens sold successfully!")
 				return nil
 
 			case ui.ExitRequested:
-				mw.logger.Info("Exit requested by user")
+				mw.logger.Info("🚪 Exit requested by user")
 				fmt.Println("\nExiting monitor mode without selling tokens.")
 				mw.Stop()
 				return nil
@@ -179,7 +178,7 @@ func (mw *MonitorWorker) handlePriceUpdates(ctx context.Context) error {
 			// Расчет PnL
 			pnlData, err := mw.calculatePnL(ctx, update)
 			if err != nil {
-				mw.logger.Error("Failed to calculate PnL", zap.Error(err))
+				mw.logger.Error("❌ Failed to calculate PnL: " + err.Error())
 				continue
 			}
 
@@ -199,7 +198,7 @@ func (mw *MonitorWorker) handleSessionErrors(ctx context.Context) error {
 			if !ok {
 				return nil // Канал закрыт
 			}
-			mw.logger.Error("Session error", zap.Error(err))
+			mw.logger.Error("❌ Session error: " + err.Error())
 			return err // Возвращаем ошибку, чтобы завершить группу
 		}
 	}

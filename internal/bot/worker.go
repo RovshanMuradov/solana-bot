@@ -53,17 +53,17 @@ func (wp *WorkerPool) Wait() {
 }
 
 func (wp *WorkerPool) worker(id int) {
-	logger := wp.logger.With(zap.Int("worker_id", id))
-	logger.Info("Worker started")
+	logger := wp.logger.Named(fmt.Sprintf("worker-%d", id))
+	logger.Info("🚀 Trading worker started")
 
 	for {
 		select {
 		case <-wp.ctx.Done():
-			logger.Info("Worker shutting down due to context cancellation")
+			logger.Info("🛑 Worker shutting down due to context cancellation")
 			return
 		case t, ok := <-wp.tasks:
 			if !ok {
-				logger.Info("Task channel closed")
+				logger.Info("✅ All tasks completed")
 				return
 			}
 			wp.handleTask(wp.ctx, t, logger)
@@ -74,46 +74,45 @@ func (wp *WorkerPool) worker(id int) {
 func (wp *WorkerPool) handleTask(ctx context.Context, t *task.Task, logger *zap.Logger) {
 	w := wp.wallets[t.WalletName]
 	if w == nil {
-		logger.Warn("Skipping task - no wallet found", zap.String("wallet", t.WalletName))
+		logger.Warn("⚠️  Skipping task - no wallet found: " + t.WalletName)
 		return
 	}
 
 	dexAdapter, err := dex.GetDEXByName(t.Module, wp.solClient, w, logger)
 	if err != nil {
-		logger.Error("DEX adapter init error", zap.String("task", t.TaskName), zap.Error(err))
+		logger.Error(fmt.Sprintf("❌ DEX adapter init error for task '%s': %v", t.TaskName, err))
 		return
 	}
 
-	logger.Info("Executing task",
-		zap.String("task", t.TaskName),
-		zap.String("operation", string(t.Operation)),
-		zap.String("DEX", dexAdapter.GetName()),
-		zap.String("token_mint", t.TokenMint),
-	)
+	logger.Info(fmt.Sprintf("⚡ Executing %s on %s for %s...%s",
+		string(t.Operation),
+		dexAdapter.GetName(),
+		t.TokenMint[:4],
+		t.TokenMint[len(t.TokenMint)-4:]))
 
 	if t.Operation == task.OperationSnipe || t.Operation == task.OperationSwap {
 		err := wp.handleMonitoredTask(ctx, t, dexAdapter, logger)
 		if err != nil {
-			logger.Error("Monitored task failed", zap.Error(err))
+			logger.Error("❌ Monitored task failed: " + err.Error())
 		}
 	} else {
 		err := dexAdapter.Execute(ctx, t)
 		if err != nil {
-			logger.Error("Task execution failed", zap.String("task", t.TaskName), zap.Error(err))
+			logger.Error(fmt.Sprintf("❌ Task execution failed for '%s': %v", t.TaskName, err))
 		} else {
-			logger.Info("Task executed successfully", zap.String("task", t.TaskName))
+			logger.Info("🎉 Trade completed successfully: " + t.TaskName)
 		}
 	}
 }
 
 func (wp *WorkerPool) handleMonitoredTask(ctx context.Context, t *task.Task, dexAdapter dex.DEX, logger *zap.Logger) error {
-	logger.Info("Monitored task started", zap.String("token", t.TokenMint))
+	logger.Info(fmt.Sprintf("📊 Starting monitored trade for %s...%s", t.TokenMint[:4], t.TokenMint[len(t.TokenMint)-4:]))
 
 	if err := dexAdapter.Execute(ctx, t); err != nil {
 		return fmt.Errorf("execute task: %w", err)
 	}
 
-	logger.Info("Operation completed successfully", zap.String("task", t.TaskName))
+	logger.Info("🎉 Trade executed successfully: " + t.TaskName)
 
 	var tokenBalance uint64
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -124,16 +123,16 @@ tokenLoop:
 	for i := 0; i < 10; i++ {
 		bal, err := dexAdapter.GetTokenBalance(checkCtx, t.TokenMint)
 		if err != nil {
-			logger.Warn("GetTokenBalance failed", zap.Int("try", i+1), zap.Error(err))
+			logger.Warn(fmt.Sprintf("⚠️  GetTokenBalance failed (try %d): %v", i+1, err))
 		} else if bal > 0 {
 			tokenBalance = bal
-			logger.Info("Token received", zap.Uint64("balance", tokenBalance))
+			logger.Info(fmt.Sprintf("💰 Tokens received: %d", tokenBalance))
 			break tokenLoop // сразу выходим из цикла tokenLoop
 		}
 
 		select {
 		case <-checkCtx.Done():
-			logger.Warn("Timeout waiting for token", zap.String("token", t.TokenMint))
+			logger.Warn("⏰ Timeout waiting for token: " + t.TokenMint)
 			break tokenLoop // тут тоже выходим из внешнего цикла
 		case <-time.After(500 * time.Millisecond):
 			// ждем и идем на следующую итерацию
@@ -141,7 +140,7 @@ tokenLoop:
 	}
 
 	if tokenBalance == 0 {
-		logger.Warn("No tokens received; skipping monitor")
+		logger.Warn("⚠️  No tokens received; skipping monitor")
 		return nil
 	}
 
@@ -170,7 +169,7 @@ tokenLoop:
 	// Запускаем и ожидаем завершения рабочего процесса
 	err := worker.Start()
 	if err != nil {
-		logger.Error("Monitor worker failed", zap.Error(err))
+		logger.Error("❌ Monitor worker failed: " + err.Error())
 		return err
 	}
 

@@ -36,7 +36,7 @@ func NewKeygenValidator(accountID, productToken, productID string, logger *zap.L
 
 // ValidateLicense validates a license key with Keygen
 func (kv *KeygenValidator) ValidateLicense(ctx context.Context, licenseKey string) error {
-	kv.logger.Info("Validating license with Keygen", zap.String("key", licenseKey[:8]+"..."))
+	kv.logger.Info("🔑 Validating license: " + licenseKey[:8] + "...")
 
 	// Generate machine fingerprint
 	fingerprint, err := kv.generateFingerprint()
@@ -57,14 +57,14 @@ func (kv *KeygenValidator) ValidateLicense(ctx context.Context, licenseKey strin
 		if activateErr != nil {
 			return fmt.Errorf("failed to activate license: %w", activateErr)
 		}
-		kv.logger.Info("License activated successfully", 
+		kv.logger.Info("License activated successfully",
 			zap.String("machine_id", machine.ID),
 			zap.String("fingerprint", fingerprint),
 		)
-		
+
 	case err == keygen.ErrLicenseExpired:
 		return fmt.Errorf("license has expired")
-		
+
 	case err != nil:
 		return fmt.Errorf("license validation failed: %w", err)
 	}
@@ -73,13 +73,12 @@ func (kv *KeygenValidator) ValidateLicense(ctx context.Context, licenseKey strin
 		return fmt.Errorf("license not found")
 	}
 
-	kv.logger.Info("License validation successful", 
+	kv.logger.Info("License validation successful",
 		zap.String("license_id", license.ID),
 	)
 
 	return nil
 }
-
 
 // generateFingerprint creates a unique machine fingerprint
 func (kv *KeygenValidator) generateFingerprint() (string, error) {
@@ -109,7 +108,7 @@ func (kv *KeygenValidator) generateFingerprint() (string, error) {
 	// Create fingerprint from hostname + MAC addresses + OS
 	data := fmt.Sprintf("%s-%s-%s", hostname, macAddresses[0], runtime.GOOS)
 	hash := sha256.Sum256([]byte(data))
-	
+
 	return fmt.Sprintf("%x", hash), nil
 }
 
@@ -134,19 +133,19 @@ func getHostname() (string, error) {
 func (kv *KeygenValidator) HeartbeatLicense(ctx context.Context, licenseKey string) error {
 	// Set the license key
 	keygen.LicenseKey = licenseKey
-	
+
 	// Generate machine fingerprint
 	fingerprint, err := kv.generateFingerprint()
 	if err != nil {
 		return fmt.Errorf("failed to generate machine fingerprint: %w", err)
 	}
-	
+
 	// Re-validate to send heartbeat
 	_, err = keygen.Validate(ctx, fingerprint)
 	if err != nil {
 		return fmt.Errorf("heartbeat failed: %w", err)
 	}
-	
+
 	kv.logger.Debug("License heartbeat sent successfully")
 	return nil
 }

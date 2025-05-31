@@ -4,6 +4,7 @@ package monitor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"sync"
 	"time"
@@ -52,9 +53,10 @@ func NewMonitoringSession(parentCtx context.Context, config *SessionConfig) *Mon
 func (ms *MonitoringSession) Start() error {
 	t := ms.config.Task // 👈 просто для краткости
 
-	ms.logger.Info("Preparing monitoring session",
-		zap.String("token", t.TokenMint),
-		zap.Float64("initial_investment_sol", t.AmountSol))
+	ms.logger.Info(fmt.Sprintf("📊 Preparing monitoring for %s...%s (%.3f SOL)",
+		t.TokenMint[:4],
+		t.TokenMint[len(t.TokenMint)-4:],
+		t.AmountSol))
 
 	initialPrice := ms.config.InitialPrice
 
@@ -62,7 +64,7 @@ func (ms *MonitoringSession) Start() error {
 	ctx, cancel := context.WithTimeout(ms.ctx, 5*time.Second)
 	raw, err := ms.config.DEX.GetTokenBalance(ctx, t.TokenMint)
 	if err != nil {
-		ms.logger.Error("Failed to fetch token balance", zap.Error(err))
+		ms.logger.Error("❌ Failed to fetch token balance: " + err.Error())
 	} else {
 		ms.config.TokenBalance = raw
 	}
@@ -75,7 +77,7 @@ func (ms *MonitoringSession) Start() error {
 		// Convert the raw balance to a float with the default decimals
 		// In a future update this could be enhanced to query token metadata
 		initialTokens = float64(ms.config.TokenBalance) / math.Pow10(int(minTokenDecimals))
-		ms.logger.Debug("Using default token decimals", zap.Uint8("decimals", minTokenDecimals))
+		ms.logger.Debug(fmt.Sprintf("🔢 Using default token decimals: %d", minTokenDecimals))
 	}
 	cancel()
 
@@ -84,11 +86,7 @@ func (ms *MonitoringSession) Start() error {
 		initialPrice = t.AmountSol / initialTokens
 	}
 
-	ms.logger.Info("Monitor start",
-		zap.String("token", t.TokenMint),
-		zap.Float64("initial_price", initialPrice),
-		zap.Float64("initial_tokens", initialTokens),
-		zap.Uint64("initial_tokens_raw", ms.config.TokenBalance))
+	ms.logger.Info(fmt.Sprintf("🚀 Monitor started: %.6f tokens @ $%.8f each", initialTokens, initialPrice))
 
 	ms.config.InitialPrice = initialPrice
 
@@ -204,7 +202,7 @@ func (ms *MonitoringSession) onPriceUpdate(update PriceUpdate) {
 			case <-ms.ctx.Done():
 				ms.logger.Debug("Context canceled while trying to send error")
 			default:
-				ms.logger.Warn("Error channel blocked, dropping error", zap.Error(err))
+				ms.logger.Warn("⚠️  Error channel blocked, dropping error: " + err.Error())
 			}
 		}
 		return
@@ -239,7 +237,7 @@ func (ms *MonitoringSession) updateTokenBalance(ctx context.Context, currentAmou
 	// Пробуем получить актуальный баланс токена
 	tokenBalanceRaw, err := ms.config.DEX.GetTokenBalance(ctx, t.TokenMint)
 	if err != nil {
-		ms.logger.Error("Failed to get token balance", zap.Error(err))
+		ms.logger.Error("❌ Failed to get token balance: " + err.Error())
 		return currentAmount, err
 	}
 
@@ -252,10 +250,7 @@ func (ms *MonitoringSession) updateTokenBalance(ctx context.Context, currentAmou
 		newBalance := float64(tokenBalanceRaw) / math.Pow10(int(defaultDecimals))
 
 		if math.Abs(newBalance-currentAmount) > 0.000001 && newBalance > 0 {
-			ms.logger.Debug("Token balance changed",
-				zap.Float64("old_balance", currentAmount),
-				zap.Float64("new_balance", newBalance),
-				zap.Uint8("decimals", defaultDecimals))
+			ms.logger.Debug(fmt.Sprintf("🔄 Token balance changed: %.6f → %.6f", currentAmount, newBalance))
 			ms.config.TokenBalance = tokenBalanceRaw
 			updatedBalance = newBalance
 		}

@@ -11,7 +11,6 @@ import (
 	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
 	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
-	"go.uber.org/zap"
 	"strings"
 	"time"
 )
@@ -93,16 +92,16 @@ func (d *DEX) submitAndConfirmTransaction(ctx context.Context, tx *solana.Transa
 		return solana.Signature{}, backoff.Permanent(fmt.Errorf("transaction failed: %w", err))
 	}
 
-	d.logger.Info("Transaction sent, waiting for confirmation", zap.String("signature", sig.String()))
+	d.logger.Info("📤 Transaction sent: " + sig.String()[:8] + "...")
 
 	// Используем CommitmentProcessed для быстрого подтверждения транзакции при продаже
 	err = d.client.WaitForTransactionConfirmation(ctx, sig, rpc.CommitmentProcessed)
 	if err != nil {
-		d.logger.Warn("Transaction confirmation failed", zap.String("signature", sig.String()), zap.Error(err))
+		d.logger.Warn("⚠️  Confirmation failed for " + sig.String()[:8] + "...: " + err.Error())
 		return sig, fmt.Errorf("transaction confirmed but with error: %w", err)
 	}
 
-	d.logger.Info("Transaction confirmed successfully", zap.String("signature", sig.String()))
+	d.logger.Info("✅ Transaction confirmed: " + sig.String()[:8] + "...")
 	return sig, nil
 }
 
@@ -125,9 +124,7 @@ func (d *DEX) preparePriorityInstructions(computeUnits uint32, priorityFeeSol st
 	var priorityFee uint64
 	if priorityFeeSol == "default" || priorityFeeSol == "" {
 		priorityFee = 5_000 // Default priority fee (5000 micro-lamports)
-		d.logger.Debug("Using default priority fee",
-			zap.Uint64("micro_lamports", priorityFee),
-			zap.Float64("sol", float64(priorityFee)/1_000_000_000_000))
+		d.logger.Debug(fmt.Sprintf("Using default priority fee: %.6f SOL", float64(priorityFee)/1_000_000_000_000))
 	} else {
 		var solValue float64
 		// Используем fmt.Sscanf вместо strconv.ParseFloat
@@ -137,9 +134,7 @@ func (d *DEX) preparePriorityInstructions(computeUnits uint32, priorityFeeSol st
 
 		// ИСПРАВЛЕНИЕ: используем правильный множитель для микро-лампортов
 		priorityFee = uint64(solValue * 1_000_000_000_000) // SOL to micro-lamports (1e12)
-		d.logger.Debug("Custom priority fee",
-			zap.Float64("sol_input", solValue),
-			zap.Uint64("micro_lamports", priorityFee))
+		d.logger.Debug(fmt.Sprintf("Custom priority fee: %.6f SOL", solValue))
 	}
 
 	instructions = append(instructions,
@@ -222,13 +217,8 @@ func (d *DEX) buildSwapTransaction(
 		// baseAmount (сколько мы отдаем) оставляем как есть
 	}
 
-	d.logger.Debug("Swap with slippage",
-		zap.Bool("is_buy", isBuy),
-		zap.Uint64("orig_base_amount", origBaseAmount),
-		zap.Uint64("orig_quote_amount", origQuoteAmount),
-		zap.Uint64("adjusted_base_amount", baseAmount),
-		zap.Uint64("adjusted_quote_amount", quoteAmount),
-		zap.Float64("slippage_percent", slippagePercent))
+	d.logger.Debug(fmt.Sprintf("Swap with %.1f%% slippage: %d->%d base, %d->%d quote",
+		slippagePercent, origBaseAmount, baseAmount, origQuoteAmount, quoteAmount))
 
 	// Собираем параметры так, чтобы в instruction ушли скорректированные суммы
 	swapParams := d.prepareSwapParams(pool, accounts, isBuy, baseAmount, quoteAmount)

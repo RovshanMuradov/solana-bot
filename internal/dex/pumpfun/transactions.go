@@ -12,7 +12,6 @@ import (
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
-	"go.uber.org/zap"
 )
 
 // prepareTransactionContext создает контекст с таймаутом для операции.
@@ -91,14 +90,14 @@ func (d *DEX) sendAndConfirmTransaction(ctx context.Context, instructions []sola
 	if err != nil {
 		return solana.Signature{}, fmt.Errorf("send transaction: %w", err)
 	}
-	d.logger.Info("Transaction sent", zap.String("signature", sig.String()))
+	d.logger.Info("📤 Transaction sent: " + sig.String()[:8] + "...")
 
 	// 5) ожидание подтверждения (используем CommitmentProcessed для быстрого подтверждения)
 	if err := d.client.WaitForTransactionConfirmation(ctx, sig, rpc.CommitmentProcessed); err != nil {
-		d.logger.Warn("Confirm failed", zap.String("signature", sig.String()), zap.Error(err))
+		d.logger.Warn("⚠️  Confirmation failed for " + sig.String()[:8] + "...: " + err.Error())
 		return sig, fmt.Errorf("confirmation failed: %w", err)
 	}
-	d.logger.Info("Transaction confirmed", zap.String("signature", sig.String()))
+	d.logger.Info("✅ Transaction confirmed: " + sig.String()[:8] + "...")
 
 	return sig, nil
 }
