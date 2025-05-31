@@ -26,6 +26,11 @@ type Config struct {
 	Retries        int           `mapstructure:"retries"`
 	WebhookURL     string        `mapstructure:"webhook_url"`
 	Workers        int           `mapstructure:"workers"`
+	
+	// Keygen.sh configuration
+	KeygenAccountID   string `mapstructure:"keygen_account_id"`
+	KeygenProductToken string `mapstructure:"keygen_product_token"`
+	KeygenProductID   string `mapstructure:"keygen_product_id"`
 }
 
 // LoadConfig reads configuration from the specified file path and performs validation.
@@ -75,6 +80,9 @@ func (c *Config) validate() error {
 	if c.WebSocketURL == "" {
 		return fmt.Errorf("websocket_url is required")
 	}
+	
+	// Keygen validation is optional - hardcoded fallbacks available
+	
 	if c.Workers <= 0 {
 		c.Workers = 1
 	}

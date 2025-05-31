@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+	"github.com/rovshanmuradov/solana-bot/internal/license"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
 	"go.uber.org/zap"
 	"os"
@@ -58,6 +59,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		cancel()
 	}()
 
+	// Validate license first
+	if err := r.validateLicense(ctx); err != nil {
+		return fmt.Errorf("license validation failed: %w", err)
+	}
+
 	tasks, err := r.taskManager.LoadTasks("configs/tasks.csv")
 	if err != nil {
 		return err
@@ -108,4 +114,64 @@ func (r *Runner) WaitForShutdown() {
 	sig := <-r.shutdownCh
 	r.logger.Info("Signal received", zap.String("signal", sig.String()))
 	r.Shutdown()
+}
+
+// validateLicense validates the license using either Keygen or fallback validation
+func (r *Runner) validateLicense(ctx context.Context) error {
+	// Check if Keygen is configured
+	if r.config.KeygenAccountID != "" && r.config.KeygenProductToken != "" && r.config.KeygenProductID != "" {
+		return r.validateWithKeygen(ctx)
+	}
+	
+	// Fallback to simple validation
+	return r.validateSimple()
+}
+
+// validateWithKeygen validates license using Keygen.sh
+func (r *Runner) validateWithKeygen(ctx context.Context) error {
+	r.logger.Info("Validating license with Keygen.sh")
+	
+	// Use hardcoded Keygen credentials if not in config
+	accountID := r.config.KeygenAccountID
+	productToken := r.config.KeygenProductToken
+	productID := r.config.KeygenProductID
+	
+	// Fallback to hardcoded values (for distribution)
+	if accountID == "" {
+		accountID = "c88da307-e118-4c8c-a8da-9cada169477b"
+	}
+	if productToken == "" {
+		productToken = "prod-f716e07eabc338b13b7367e03074c33cb503562a92457ad6361c6a3060397fbdv3"
+	}
+	if productID == "" {
+		productID = "60f40015-88e4-49e3-93a4-58303a91ee48"
+	}
+	
+	validator := license.NewKeygenValidator(
+		accountID,
+		productToken,
+		productID,
+		r.logger,
+	)
+	
+	if err := validator.ValidateLicense(ctx, r.config.License); err != nil {
+		return fmt.Errorf("Keygen validation failed: %w", err)
+	}
+	
+	r.logger.Info("License validated successfully with Keygen")
+	return nil
+}
+
+// validateSimple performs basic license validation (fallback)
+func (r *Runner) validateSimple() error {
+	if r.config.License == "" {
+		return fmt.Errorf("license key is required")
+	}
+	
+	if len(r.config.License) < 8 {
+		return fmt.Errorf("license key is too short")
+	}
+	
+	r.logger.Info("License validated with basic validation")
+	return nil
 }
