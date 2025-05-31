@@ -5,6 +5,7 @@ package task
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -26,11 +27,11 @@ type Config struct {
 	Retries        int           `mapstructure:"retries"`
 	WebhookURL     string        `mapstructure:"webhook_url"`
 	Workers        int           `mapstructure:"workers"`
-	
+
 	// Keygen.sh configuration
-	KeygenAccountID   string `mapstructure:"keygen_account_id"`
+	KeygenAccountID    string `mapstructure:"keygen_account_id"`
 	KeygenProductToken string `mapstructure:"keygen_product_token"`
-	KeygenProductID   string `mapstructure:"keygen_product_id"`
+	KeygenProductID    string `mapstructure:"keygen_product_id"`
 }
 
 // LoadConfig reads configuration from the specified file path and performs validation.
@@ -61,6 +62,9 @@ func LoadConfig(path string) (*Config, error) {
 	cfg.RPCDelay = time.Duration(cfg.RPCDelayMS) * time.Millisecond
 	cfg.PriceDelay = time.Duration(cfg.PriceDelayMS) * time.Millisecond
 
+	// Apply fallback RPC endpoints if needed
+	cfg.applyRPCFallbacks()
+
 	// Validate
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -80,9 +84,9 @@ func (c *Config) validate() error {
 	if c.WebSocketURL == "" {
 		return fmt.Errorf("websocket_url is required")
 	}
-	
+
 	// Keygen validation is optional - hardcoded fallbacks available
-	
+
 	if c.Workers <= 0 {
 		c.Workers = 1
 	}
@@ -95,4 +99,71 @@ func (c *Config) validate() error {
 // ValidateLicense returns true if the provided license string meets basic criteria.
 func ValidateLicense(license string) bool {
 	return license != ""
+}
+
+// applyRPCFallbacks adds premium RPC endpoints if user's config has only free/default endpoints
+func (c *Config) applyRPCFallbacks() {
+	// Check if user has only default/free endpoints
+	hasOnlyFreeEndpoints := true
+	premiumIndicators := []string{
+		"helius-rpc.com",
+		"quicknode.com",
+		"alchemy.com",
+		"syndica.io",
+		"rpcpool.com",
+	}
+
+	for _, rpc := range c.RPCList {
+		for _, indicator := range premiumIndicators {
+			if strings.Contains(rpc, indicator) {
+				hasOnlyFreeEndpoints = false
+				break
+			}
+		}
+		if !hasOnlyFreeEndpoints {
+			break
+		}
+	}
+
+	// If user only has free endpoints, add premium fallbacks
+	if hasOnlyFreeEndpoints {
+		premiumEndpoints := []string{
+			"https://mainnet.helius-rpc.com/?api-key=767f42d9-06c2-46f8-8031-9869035d6ce4",
+		}
+
+		// Add premium endpoints to the end of the list
+		c.RPCList = append(c.RPCList, premiumEndpoints...)
+
+		// Update WebSocket fallback if it's a default one
+		if strings.Contains(c.WebSocketURL, "api.mainnet-beta.solana.com") {
+			c.WebSocketURL = "wss://mainnet.helius-rpc.com/?api-key=767f42d9-06c2-46f8-8031-9869035d6ce4"
+		}
+	}
+}
+
+// MaskRPCForLogging masks sensitive API keys in RPC URLs for logging
+func (c *Config) MaskRPCForLogging(rpcURL string) string {
+	// List of patterns to mask
+	patterns := []string{
+		"api-key=767f42d9-06c2-46f8-8031-9869035d6ce4",
+	}
+
+	masked := rpcURL
+	for _, pattern := range patterns {
+		if strings.Contains(masked, pattern) {
+			// Replace with generic premium endpoint indicator
+			masked = strings.ReplaceAll(masked, pattern, "api-key=premium")
+		}
+	}
+
+	return masked
+}
+
+// GetMaskedRPCList returns RPC list with masked API keys for logging
+func (c *Config) GetMaskedRPCList() []string {
+	masked := make([]string, len(c.RPCList))
+	for i, rpc := range c.RPCList {
+		masked[i] = c.MaskRPCForLogging(rpc)
+	}
+	return masked
 }

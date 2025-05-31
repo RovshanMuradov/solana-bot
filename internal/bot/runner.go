@@ -37,6 +37,17 @@ func NewRunner(cfg *task.Config, logger *zap.Logger) *Runner {
 		break
 	}
 
+	// Log RPC configuration with masked URLs
+	maskedRPCs := cfg.GetMaskedRPCList()
+	logger.Info(fmt.Sprintf("🌐 Configured RPC endpoints: %d", len(maskedRPCs)))
+	for i, rpc := range maskedRPCs {
+		if i == 0 {
+			logger.Info("🎯 Primary RPC: " + rpc)
+		} else {
+			logger.Info(fmt.Sprintf("🔄 Fallback RPC %d: %s", i, rpc))
+		}
+	}
+
 	return &Runner{
 		logger:        logger,
 		config:        cfg,
@@ -141,7 +152,7 @@ func (r *Runner) validateWithKeygen(ctx context.Context) error {
 		accountID = "c88da307-e118-4c8c-a8da-9cada169477b"
 	}
 	if productToken == "" {
-		productToken = "prod-f716e07eabc338b13b7367e03074c33cb503562a92457ad6361c6a3060397fbdv3"
+		productToken = "prod-f716e07eabc338b13b7367e03074c33cb503562a92457ad6361c6a3060397fbdv3" // nolint:gosec
 	}
 	if productID == "" {
 		productID = "60f40015-88e4-49e3-93a4-58303a91ee48"
@@ -155,7 +166,7 @@ func (r *Runner) validateWithKeygen(ctx context.Context) error {
 	)
 
 	if err := validator.ValidateLicense(ctx, r.config.License); err != nil {
-		return fmt.Errorf("Keygen validation failed: %w", err)
+		return fmt.Errorf("keygen validation failed: %w", err)
 	}
 
 	r.logger.Info("✅ License validated with Keygen.sh")

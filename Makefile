@@ -50,6 +50,11 @@ quick-dist: clean ## Quick distribution build without checks
 	@GOOS=linux GOARCH=amd64 go build -o distribution/solana-bot-linux cmd/bot/main.go
 	@GOOS=windows GOARCH=amd64 go build -o distribution/solana-bot-windows.exe cmd/bot/main.go
 	@GOOS=darwin GOARCH=amd64 go build -o distribution/solana-bot-macos cmd/bot/main.go
+	@echo '{"license":"A4WP-KPHM-REW9-XRRF-W3FP-UEVV-TKPT-UC77","rpc_list":["https://api.mainnet-beta.solana.com"],"websocket_url":"wss://api.mainnet-beta.solana.com","monitor_delay":10000,"rpc_delay":100,"price_delay":1000,"debug_logging":false,"tps_logging":false,"retries":8,"webhook_url":"","workers":1}' > distribution/configs/config.json
+	@echo "name,private_key" > distribution/configs/wallets.csv
+	@echo "main,YOUR_PRIVATE_KEY_HERE" >> distribution/configs/wallets.csv
+	@echo "task_name,module,wallet,operation,amount_sol,slippage_percent,priority_fee,token_mint,compute_units,percent_to_sell" > distribution/configs/tasks.csv
+	@echo "example_task,snipe,main,snipe,0.001,20.0,0.000001,YOUR_TOKEN_MINT_HERE,200000,25" >> distribution/configs/tasks.csv
 	@echo "✅ Quick build completed!"
 
 help: ## Show this help

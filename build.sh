@@ -44,18 +44,15 @@ dist_build() {
     GOOS=darwin GOARCH=amd64 go build -ldflags "-X main.version=${VERSION}" -o ${DIST_DIR}/${PROJECT_NAME}-macos cmd/bot/main.go
     
     # Copy configuration files
-    echo "📋 Copying configuration files..."
-    cp -r configs/config.json ${DIST_DIR}/configs/ 2>/dev/null || echo "Using default config"
+    echo "📋 Creating clean configuration files..."
     
-    # Create example configs if they don't exist
-    if [ ! -f "${DIST_DIR}/configs/config.json" ]; then
-        cat > ${DIST_DIR}/configs/config.json << 'EOF'
+    # Always create clean config files for distribution
+    cat > ${DIST_DIR}/configs/config.json << 'EOF'
 {
-  "license": "YOUR_LICENSE_KEY_HERE",
+  "license": "A4WP-KPHM-REW9-XRRF-W3FP-UEVV-TKPT-UC77",
   
   "rpc_list": [
-    "https://api.mainnet-beta.solana.com",
-    "https://solana-api.projectserum.com"
+    "https://api.mainnet-beta.solana.com"
   ],
   "websocket_url": "wss://api.mainnet-beta.solana.com",
   
@@ -69,7 +66,6 @@ dist_build() {
   "workers": 1
 }
 EOF
-    fi
     
     cat > ${DIST_DIR}/configs/wallets.csv << 'EOF'
 name,private_key
@@ -101,7 +97,7 @@ EOF
 
 ### configs/config.json
 - `license`: Your license key (required)
-- `rpc_list`: Solana RPC endpoints (you can use free public ones)
+- `rpc_list`: Solana RPC endpoints (premium endpoints added automatically as fallback)
 - `workers`: Number of parallel workers (keep at 1 for safety)
 
 ### configs/wallets.csv
