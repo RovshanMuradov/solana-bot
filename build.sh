@@ -125,14 +125,14 @@ EOF
     
     # Create archive
     echo "📦 Creating distribution archive..."
-    tar -czf ${PROJECT_NAME}-distribution-${VERSION}.tar.gz ${DIST_DIR}/
+    tar -czf ${DIST_DIR}/${PROJECT_NAME}-distribution-${VERSION}.tar.gz -C ${DIST_DIR} .
     
     echo "✅ Distribution build completed!"
     echo "📁 Files created:"
     echo "   - ${DIST_DIR}/${PROJECT_NAME}-linux"
     echo "   - ${DIST_DIR}/${PROJECT_NAME}-windows.exe"
     echo "   - ${DIST_DIR}/${PROJECT_NAME}-macos"
-    echo "   - ${PROJECT_NAME}-distribution-${VERSION}.tar.gz"
+    echo "   - ${DIST_DIR}/${PROJECT_NAME}-distribution-${VERSION}.tar.gz"
 }
 
 # Run linter and tests
