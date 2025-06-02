@@ -34,8 +34,6 @@ solana-bot/
 ├── cmd/                    # Точки входа приложения
 │   └── bot/                # Основной исполняемый файл
 ├── configs/                # Конфигурационные файлы
-├── deploy/                 # Конфигурации для развертывания
-│   ├── kubernetes/         # Манифесты Kubernetes
 ├── internal/               # Внутренняя логика приложения
 │   ├── blockchain/         # Взаимодействие с блокчейном
 │   │   ├── solbc/          # Клиент для Solana блокчейна
@@ -50,41 +48,22 @@ solana-bot/
 │   │   ├── pumpswap/       # Реализация Pump.swap
 │   │   └── factory.go      # Фабрика для создания DEX-адаптеров
 │   ├── monitor/            # Мониторинг цен и операций
-│   ├── storage/            # Работа с хранилищем данных
-│   │   ├── models/         # Модели данных
-│   │   └── postgres/       # Реализация хранилища PostgreSQL
 │   ├── task/               # Определение и управление задачами
-│   ├── types/              # Общие типы данных
-│   ├── utils/              # Вспомогательные функции
-│   │   ├── binary/         # Работа с бинарными данными
-│   │   ├── logger/         # Логгирование
-│   │   └── metrics/        # Метрики производительности
-│   └── wallet/             # Управление кошельками
+│   └── wallet/wallet.go        # Управление кошельками
 ```
 
 ## 📦 Модульная структура
 - [solana-bot/](#solana-bot)
     - [cmd/](#cmd) - Точки входа приложения
     - [configs/](#configs) - Конфигурационные файлы
-    - [deploy/](#deploy) - Конфигурации для развертывания
-        - [kubernetes/](#kubernetes) - Манифесты Kubernetes
     - [internal/](#internal) - Внутренняя логика приложения
-        - [blockchain/](#blockchain) - Взаимодействие с блокчейном
-            - [solbc/](#solbc) - Клиент для Solana блокчейна
+        - [blockchain/](#rpc) - Клиент для Solana блокчейна
         - [bot/](#bot) - Основная логика бота
         - [dex/](#dex) - Интеграции с DEX
             - [pumpfun/](#pumpfun) - Реализация Pump.fun
             - [pumpswap/](#pumpswap) - Реализация Pump.swap
         - [monitor/](#monitor) - Мониторинг цен и операций
-        - [storage/](#storage) - Работа с хранилищем данных
-            - [models/](#storage-models) - Модели данных
-            - [postgres/](#postgres) - Реализация хранилища PostgreSQL
         - [task/](#task) - Определение и управление задачами
-        - [types/](#types) - Общие типы данных
-        - [utils/](#utils) - Вспомогательные функции
-            - [binary/](#binary) - Работа с бинарными данными
-            - [logger/](#logger) - Логгирование
-            - [metrics/](#metrics) - Метрики производительности
         - [wallet/](#wallet) - Управление кошельками
 
 ## Описание пакетов и файлов
@@ -103,28 +82,16 @@ solana-bot/
 - `wallets.csv` - Файл с кошельками
 - `tasks.csv` - Файл с задачами для бота
 
-### <a id="deploy"></a>deploy/
-
-Конфигурации для развертывания:
-
-#### <a id="kubernetes"></a>kubernetes/
-
-- `deployment.yaml` - Описание деплоймента Kubernetes
-- `service.yaml` - Описание сервиса Kubernetes
-
 ### <a id="internal"></a>internal/
 
 Внутренняя логика приложения:
 
 #### <a id="blockchain"></a>blockchain/
 
-Абстракция для работы с блокчейном:
+Реализация клиента Solana:
 
 - `types.go` - Определяет интерфейсы и типы для взаимодействия с блокчейном
 
-##### <a id="solbc"></a>solbc/
-
-Реализация клиента Solana:
 
 - `client.go` - Клиент для взаимодействия с Solana RPC API
 
@@ -182,22 +149,6 @@ solana-bot/
 - `price.go` - Мониторинг цен токенов
 - `session.go` - Управление сессиями мониторинга и отображение P&L
 
-#### <a id="storage"></a>storage/
-
-Работа с хранилищем данных:
-
-- `storage.go` - Интерфейс для работы с хранилищем
-
-##### <a id="storage-models"></a>models/
-
-- `base.go` - Базовая модель для всех сущностей
-- `pool.go` - Модель для пулов ликвидности
-- `task.go` - Модель для истории задач
-- `transaction.go` - Модель для транзакций
-
-##### <a id="postgres"></a>postgres/
-
-- `postgres.go` - Реализация хранилища на PostgreSQL
 
 #### <a id="task"></a>task/
 
@@ -206,36 +157,6 @@ solana-bot/
 - `config.go` - Конфигурация для задач
 - `models.go` - Загрузка и валидация задач из CSV
 - `task.go` - Определение структуры задачи и методов работы с ней
-
-#### <a id="types"></a>types/
-
-Общие типы данных:
-
-- `priority.go` - Управление приоритетами транзакций
-- `slippage.go` - Управление проскальзыванием при свапах
-- `types.go` - Общие типы данных для проекта
-
-#### <a id="utils"></a>utils/
-
-Вспомогательные утилиты:
-
-- `error_handler.go` - Обработка ошибок
-- `logger.go` - Базовые функции логирования
-- `metrics.go` - Сбор метрик производительности
-
-##### <a id="binary"></a>binary/
-
-- `binary.go` - Работа с бинарными данными и сериализация
-
-##### <a id="logger"></a>logger/
-
-- `config.go` - Конфигурация для логгера
-- `logger.go` - Расширенные функции логирования
-
-##### <a id="metrics"></a>metrics/
-
-- `collector.go` - Сбор и хранение метрик
-- `metrics.go` - Определение и обновление метрик
 
 #### <a id="wallet"></a>wallet/
 
@@ -292,13 +213,87 @@ go build -o solana-bot cmd/bot/main.go
 При запуске снайпинга с автоматическим мониторингом, бот будет отображать информацию о текущей цене, изменении цены, теоретической стоимости и P&L с дискретным расчетом (для Pump.fun):
 
 ```
-=== Pump.fun Discrete PnL ===
-Entry Price: 0.001000000 SOL | Current Price: 0.001100000 SOL | Change: +10.00%
-Tokens: 1000.000000 | Theoretical Value: 1.100000 SOL | Sell Estimate: 1.050000 SOL
-Initial Investment: 1.000000 SOL | Net PnL: +0.050000 SOL (5.00%)
-===========================
+make run
+Building and running application...
+go build -o solana-bot ./cmd/bot/main.go
+./solana-bot
+21:38:11	[INFO]	🌐 Configured RPC endpoints: 1
+21:38:11	[INFO]	🎯 Primary RPC: https://mainnet.helius-rpc.com/?api-key=premium
+21:38:11	[INFO]	✅ License validated (basic mode)
+21:38:11	[INFO]	📋 Loaded 1 trading tasks
+21:38:11	[INFO]	📋 Loaded 1 trading tasks
+21:38:11	[INFO]	🚀 Starting execution with 1 workers
+21:38:11	[INFO]	🚀 Trading worker started
+21:38:11	[INFO]	⚡ Executing swap on Smart DEX for Dmig...pump
+21:38:11	[INFO]	📊 Starting monitored trade for Dmig...pump
+21:38:11	[INFO]	PumpFun configuration prepared	{"program_id": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "global_account": "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf", "token_mint": "DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump", "event_authority": "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1"}
+21:38:11	[INFO]	🏗️  Creating PumpFun DEX for Dmig...pump
+21:38:11	[INFO]	📧 Updated fee recipient: 62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV
+21:38:11	[INFO]	🎯 Smart DEX selected: Pump.fun (bonding curve active)	{"token": "Dmig...pump"}
+21:38:11	[INFO]	🎯 Pump.fun snipe: 0.000 SOL for Dmig...pump
+21:38:11	[INFO]	💰 Starting Pump.fun buy: 0.000 SOL (20.0% slippage)
+21:38:11	[INFO]	📊 Using exact SOL amount: 0.000010000 SOL
+21:38:12	[INFO]	Using creator vault	{"vault": "9EPR5fRnTGhtyL5rcCUvf4iVtE9aL2CBmGZBXK7tmGQh", "creator": "7hGZjLKxMdkk5mykGKkeYYBdaaJA1zzziiRQgKuNYxb6"}
+21:38:12	[INFO]	📤 Transaction sent: 5B6MSsKs...
+21:38:12	[INFO]	⏳ Waiting for confirmation: 5B6MSsKs...
+21:38:12	[INFO]	✅ Transaction confirmed: 5B6MSsKs...
+21:38:12	[INFO]	✅ Transaction confirmed: 5B6MSsKs...
+21:38:12	[INFO]	🎉 Trade executed successfully: swap
+21:38:13	[INFO]	💰 Tokens received: 849815101
+21:38:13	[INFO]	📊 Preparing monitoring for Dmig...pump (0.000 SOL)
+21:38:13	[INFO]	🚀 Monitor started: 1203.904399 tokens @ $0.00000001 each
 
-Press Enter to sell tokens or 'q' to exit.
+Monitoring started. Press Enter to sell tokens or 'q' to exit.
+21:38:13	[INFO]	PriceMonitor: start	{"token": "DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump"}
+
+╔════════════════ TOKEN MONITOR ════════════════╗
+║ Token: DmigFW…74pump                          ║
+╟───────────────────────────────────────────────╢
+║ Current Price:       0.00000003           SOL ║
+║ Initial Price:       0.00000001           SOL ║
+║ Price Change:        +236.60%                 ║
+║ Tokens Owned:        1203.904399              ║
+╟───────────────────────────────────────────────╢
+║ Sold (Estimate):     0.00003332           SOL ║
+║ Invested:            0.00000990           SOL ║
+║ P&L:                 +0.00002342 SOL (236.60%) ║
+╚═══════════════════════════════════════════════╝
+Press Enter to sell tokens, 'q' to exit without selling
+
+╔════════════════ TOKEN MONITOR ════════════════╗
+║ Token: DmigFW…74pump                          ║
+╟───────────────────────────────────────────────╢
+║ Current Price:       0.00000003           SOL ║
+║ Initial Price:       0.00000001           SOL ║
+║ Price Change:        +236.60%                 ║
+║ Tokens Owned:        1203.904399              ║
+╟───────────────────────────────────────────────╢
+║ Sold (Estimate):     0.00003332           SOL ║
+║ Invested:            0.00000990           SOL ║
+║ P&L:                 +0.00002342 SOL (236.60%) ║
+╚═══════════════════════════════════════════════╝
+Press Enter to sell tokens, 'q' to exit without selling
+
+21:38:14	[INFO]	💰 Sell requested by user
+
+Preparing to sell tokens...
+21:38:14	[INFO]	💱 Processing sell request for: DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump
+Selling tokens now...
+21:38:14	[INFO]	PriceMonitor: context done, exiting loop
+21:38:14	[INFO]	💱 Starting token sell: DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump (100.0% at 20.0% slippage)
+21:38:15	[INFO]	Selling tokens	{"token_mint": "DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump", "total_balance": 1203904399, "percent": 100, "tokens_to_sell": 1203904399}
+21:38:15	[INFO]	💱 Starting Pump.fun sell: 1203904399 tokens (20.0% slippage)
+21:38:15	[INFO]	Using creator vault for sell	{"vault": "9EPR5fRnTGhtyL5rcCUvf4iVtE9aL2CBmGZBXK7tmGQh", "creator": "7hGZjLKxMdkk5mykGKkeYYBdaaJA1zzziiRQgKuNYxb6"}
+21:38:15	[INFO]	📤 Transaction sent: hxQYXoEV...
+21:38:15	[INFO]	⏳ Waiting for confirmation: hxQYXoEV...
+21:38:18	[INFO]	✅ Transaction confirmed: hxQYXoEV...
+21:38:18	[INFO]	✅ Transaction confirmed: hxQYXoEV...
+21:38:18	[INFO]	✅ Token sell completed successfully
+21:38:18	[INFO]	✅ Tokens sold successfully!
+Tokens sold successfully!
+21:38:18	[INFO]	✅ All tasks completed
+^Z
+[29]  + 44706 suspended  make run
 ```
 
 ### Workflow для разработки
