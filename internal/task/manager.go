@@ -1,148 +1,39 @@
-// =============================================
-// File: internal/task/manager.go
-// =============================================
 package task
 
 import (
-	"encoding/csv"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"go.uber.org/zap"
+	"gopkg.in/yaml.v3"
 )
 
-// Manager loads and parses Task definitions from CSV.
+// Manager loads and parses Task definitions.
 type Manager struct {
 	logger *zap.Logger
+}
+
+// TaskConfig represents the structure of tasks YAML file
+type TaskConfig struct {
+	Tasks []struct {
+		TaskName        string  `yaml:"task_name"`
+		Module          string  `yaml:"module"`
+		Wallet          string  `yaml:"wallet"`
+		Operation       string  `yaml:"operation"`
+		AmountSol       float64 `yaml:"amount_sol"`
+		SlippagePercent float64 `yaml:"slippage_percent"`
+		PriorityFee     string  `yaml:"priority_fee"`
+		ComputeUnits    uint32  `yaml:"compute_units"`
+		PercentToSell   float64 `yaml:"percent_to_sell"`
+		TokenMint       string  `yaml:"token_mint"`
+	} `yaml:"tasks"`
 }
 
 // NewManager constructs a Manager with the given logger.
 func NewManager(logger *zap.Logger) *Manager {
 	return &Manager{logger: logger}
-}
-
-// LoadTasks reads tasks from CSV at path. Returns parsed Task slice.
-func (m *Manager) LoadTasks(path string) ([]*Task, error) {
-	// Validate file path to prevent path traversal
-	if filepath.IsAbs(path) {
-		m.logger.Warn("Using absolute path for tasks file", zap.String("path", path))
-	}
-
-	file, err := os.Open(filepath.Clean(path))
-	if err != nil {
-		return nil, fmt.Errorf("open tasks file: %w", err)
-	}
-	defer func() {
-		if err := file.Close(); err != nil {
-			m.logger.Error("failed to close tasks file", zap.Error(err))
-		}
-	}()
-
-	r := csv.NewReader(file)
-	// Read header
-	header, err := r.Read()
-	if err != nil {
-		return nil, fmt.Errorf("read CSV header: %w", err)
-	}
-	indexes := make(map[string]int)
-	for i, name := range header {
-		indexes[name] = i
-	}
-
-	tasks := make([]*Task, 0)
-	line := 1
-	for {
-		line++
-		rw, err := r.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			m.logger.Warn("Skipping malformed CSV row", zap.Int("line", line), zap.Error(err))
-			continue
-		}
-
-		task, err := m.parseRow(rw, indexes, line)
-		if err != nil {
-			m.logger.Warn("Skipping invalid task row", zap.Int("line", line), zap.Error(err))
-			continue
-		}
-		tasks = append(tasks, task)
-	}
-
-	m.logger.Info("Loaded tasks", zap.Int("count", len(tasks)))
-	return tasks, nil
-}
-
-func (m *Manager) parseRow(fields []string, indexes map[string]int, line int) (*Task, error) {
-	get := func(key string) string {
-		if idx, ok := indexes[key]; ok && idx < len(fields) {
-			return fields[idx]
-		}
-		return ""
-	}
-
-	op, err := parseOperation(get("operation"))
-	if err != nil {
-		return nil, err
-	}
-
-	amount, err := parseFloatField(get("amount_sol"), "amount_sol")
-	if err != nil {
-		return nil, err
-	}
-
-	slippage, err := parseFloatField(get("slippage_percent"), "slippage_percent")
-	if err != nil {
-		return nil, err
-	}
-	slippage = clamp(slippage, 0.5, 100.0, 1.0)
-
-	priority := get("priority_fee")
-	if priority == "" {
-		priority = "default"
-	}
-
-	computeUnits, err := parseUint32FieldStr(get("compute_units"))
-	if err != nil {
-		m.logger.Warn("Invalid compute_units, using default", zap.Error(err))
-	}
-
-	autoSell := 99.0
-	if s := get("percent_to_sell"); s != "" {
-		if f, err := strconv.ParseFloat(s, 64); err == nil && f >= 1 && f <= 99 {
-			autoSell = f
-		} else {
-			m.logger.Warn("Invalid percent_to_sell, defaulting to 99%", zap.String("value", s), zap.Error(err))
-		}
-	}
-
-	return &Task{
-		ID:              line - 1,
-		TaskName:        get("task_name"),
-		Module:          get("module"),
-		WalletName:      get("wallet"),
-		Operation:       op,
-		AmountSol:       amount,
-		SlippagePercent: slippage,
-		PriorityFeeSol:  priority,
-		ComputeUnits:    computeUnits,
-		AutosellAmount:  autoSell,
-		TokenMint:       get("token_mint"),
-		CreatedAt:       time.Now(),
-	}, nil
-}
-
-func parseUint32FieldStr(s string) (uint32, error) {
-	if s == "" {
-		return 0, nil
-	}
-	u, err := strconv.ParseUint(s, 10, 32)
-	return uint32(u), err
 }
 
 func parseOperation(s string) (OperationType, error) {
@@ -155,17 +46,102 @@ func parseOperation(s string) (OperationType, error) {
 	}
 }
 
-func parseFloatField(value, name string) (float64, error) {
-	f, err := strconv.ParseFloat(value, 64)
-	if err != nil {
-		return 0, fmt.Errorf("%s: %w", name, err)
-	}
-	return f, nil
-}
-
 func clamp(val, min, max, def float64) float64 {
 	if val < min || val > max {
 		return def
 	}
 	return val
+}
+
+// LoadTasksYAML reads tasks from YAML file
+func (m *Manager) LoadTasksYAML(path string) ([]*Task, error) {
+	// Validate file path to prevent path traversal
+	if filepath.IsAbs(path) {
+		m.logger.Warn("Using absolute path for tasks file", zap.String("path", path))
+	}
+
+	cleanPath := filepath.Clean(path)
+	data, err := os.ReadFile(cleanPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	var config TaskConfig
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse YAML: %w", err)
+	}
+
+	if len(config.Tasks) == 0 {
+		return nil, fmt.Errorf("no tasks found in configuration")
+	}
+
+	tasks := make([]*Task, 0, len(config.Tasks))
+	for i, taskData := range config.Tasks {
+		// Validate operation
+		op, err := parseOperation(taskData.Operation)
+		if err != nil {
+			m.logger.Warn("Skipping invalid task", zap.String("task_name", taskData.TaskName), zap.Error(err))
+			continue
+		}
+
+		// Validate and clamp values
+		slippage := clamp(taskData.SlippagePercent, 0.5, 100.0, 1.0)
+
+		priority := taskData.PriorityFee
+		if priority == "" {
+			priority = "default"
+		}
+
+		autoSell := taskData.PercentToSell
+		if autoSell <= 0 || autoSell > 100 {
+			autoSell = 99.0
+		}
+
+		task := &Task{
+			ID:              i,
+			TaskName:        taskData.TaskName,
+			Module:          taskData.Module,
+			WalletName:      taskData.Wallet,
+			Operation:       op,
+			AmountSol:       taskData.AmountSol,
+			SlippagePercent: slippage,
+			PriorityFeeSol:  priority,
+			ComputeUnits:    taskData.ComputeUnits,
+			AutosellAmount:  autoSell,
+			TokenMint:       taskData.TokenMint,
+			CreatedAt:       time.Now(),
+		}
+
+		// Validate required fields
+		if task.TaskName == "" || task.Module == "" || task.WalletName == "" || task.TokenMint == "" {
+			m.logger.Warn("Skipping task with missing required fields",
+				zap.String("task_name", task.TaskName),
+				zap.String("module", task.Module),
+				zap.String("wallet", task.WalletName),
+				zap.String("token_mint", task.TokenMint))
+			continue
+		}
+
+		// Validate amount for buy operations
+		if (task.Operation == OperationSnipe || task.Operation == OperationSwap) && task.AmountSol <= 0 {
+			m.logger.Warn("Skipping buy operation with invalid amount",
+				zap.String("task_name", task.TaskName),
+				zap.Float64("amount", task.AmountSol))
+			continue
+		}
+
+		tasks = append(tasks, task)
+	}
+
+	if len(tasks) == 0 {
+		return nil, fmt.Errorf("no valid tasks loaded")
+	}
+
+	m.logger.Info("Loaded tasks", zap.Int("count", len(tasks)))
+	return tasks, nil
+}
+
+// LoadTasks is a wrapper that delegates to LoadTasksYAML
+func (m *Manager) LoadTasks(path string) ([]*Task, error) {
+	return m.LoadTasksYAML(path)
 }

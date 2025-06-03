@@ -4,13 +4,12 @@
 package task
 
 import (
-	"encoding/csv"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 
 	"github.com/gagliardetto/solana-go"
+	"gopkg.in/yaml.v3"
 )
 
 // Wallet представляет кошелёк Solana.
@@ -36,42 +35,49 @@ func NewWallet(privateKeyBase58 string) (*Wallet, error) {
 	}, nil
 }
 
-// LoadWallets загружает кошельки из CSV-файла с колонками: [Name, PrivateKeyBase58].
+// WalletConfig represents the structure of wallets YAML file
+type WalletConfig struct {
+	Wallets []struct {
+		Name       string `yaml:"name"`
+		PrivateKey string `yaml:"private_key"`
+	} `yaml:"wallets"`
+}
+
+// LoadWallets загружает кошельки из YAML-файла.
 func LoadWallets(path string) (map[string]*Wallet, error) {
 	// Clean the path to prevent path traversal issues
 	cleanPath := filepath.Clean(path)
 
-	file, err := os.Open(cleanPath)
+	data, err := os.ReadFile(cleanPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open file: %w", err)
+		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
-	defer func() {
-		if err := file.Close(); err != nil {
-			log.Printf("failed to close wallets file: %q: %v", path, err)
-		}
-	}()
 
-	reader := csv.NewReader(file)
-	records, err := reader.ReadAll()
-	if err != nil {
-		return nil, fmt.Errorf("failed to read CSV: %w", err)
+	var config WalletConfig
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse YAML: %w", err)
 	}
-	if len(records) < 2 {
-		return nil, fmt.Errorf("CSV file is empty or missing data")
+
+	if len(config.Wallets) == 0 {
+		return nil, fmt.Errorf("no wallets found in configuration")
 	}
 
 	wallets := make(map[string]*Wallet)
-	for _, record := range records[1:] {
-		if len(record) != 2 {
+	for _, walletData := range config.Wallets {
+		if walletData.Name == "" || walletData.PrivateKey == "" {
 			continue
 		}
-		name := record[0]
-		w, err := NewWallet(record[1])
+		w, err := NewWallet(walletData.PrivateKey)
 		if err != nil {
 			continue
 		}
-		wallets[name] = w
+		wallets[walletData.Name] = w
 	}
+
+	if len(wallets) == 0 {
+		return nil, fmt.Errorf("no valid wallets loaded")
+	}
+
 	return wallets, nil
 }
 

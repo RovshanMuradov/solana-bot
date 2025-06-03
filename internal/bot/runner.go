@@ -25,7 +25,7 @@ type Runner struct {
 // NewRunner NewRunner: принимает cfg и logger
 func NewRunner(cfg *task.Config, logger *zap.Logger) *Runner {
 	// Загружаем кошельки
-	wallets, err := task.LoadWallets("configs/wallets.csv")
+	wallets, err := task.LoadWallets("configs/wallets.yaml")
 	if err != nil {
 		logger.Fatal("Failed to load wallets", zap.Error(err))
 	}
@@ -58,7 +58,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		cancel()
 	}()
 
-	tasks, err := r.taskManager.LoadTasks("configs/tasks.csv")
+	tasks, err := r.taskManager.LoadTasks("configs/tasks.yaml")
 	if err != nil {
 		return err
 	}
