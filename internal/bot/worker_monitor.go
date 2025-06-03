@@ -20,13 +20,15 @@ type SellFunc func(ctx context.Context, percent float64) error
 
 // MonitorWorker представляет рабочий процесс мониторинга
 type MonitorWorker struct {
-	ctx      context.Context
-	logger   *zap.Logger
-	task     *task.Task
-	dex      dex.DEX
-	session  *monitor.MonitoringSession
-	uiHandle *ui.Handler
-	sellFn   SellFunc
+	ctx             context.Context
+	logger          *zap.Logger
+	task            *task.Task
+	config          *task.Config
+	dex             dex.DEX
+	session         *monitor.MonitoringSession
+	uiHandle        *ui.Handler
+	sellFn          SellFunc
+	monitorInterval time.Duration
 }
 
 // NewMonitorWorker создает новый экземпляр рабочего процесса мониторинга
@@ -46,6 +48,8 @@ func NewMonitorWorker(
 		task:   t,
 		dex:    dexAdapter,
 		sellFn: sellFn,
+		// Store the monitor interval for later use
+		monitorInterval: monitorInterval,
 	}
 }
 
@@ -58,7 +62,7 @@ func (mw *MonitorWorker) Start() error {
 		InitialPrice:    0,
 		DEX:             mw.dex,
 		Logger:          mw.logger.Named("session"),
-		MonitorInterval: 1 * time.Second, // Используем стандартный интервал
+		MonitorInterval: mw.monitorInterval,
 	}
 
 	// Создаем пользовательский интерфейс
@@ -144,7 +148,7 @@ func (mw *MonitorWorker) handleUIEvents(ctx context.Context) error {
 				mw.Stop()
 
 				// Выполняем продажу синхронно, чтобы дождаться результата
-				if err := mw.sellFn(sellCtx, 100.0); err != nil { // TODO: percent hard coded
+				if err := mw.sellFn(sellCtx, mw.task.AutosellAmount); err != nil {
 					mw.logger.Error("❌ Failed to sell tokens: " + err.Error())
 					fmt.Printf("Error selling tokens: %v\n", err)
 					return err // Возвращаем ошибку наверх, чтобы она попала в errgroup

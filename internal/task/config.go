@@ -13,20 +13,17 @@ import (
 
 // Config holds application settings loaded from config.json.
 type Config struct {
-	License        string        `mapstructure:"license"`
-	RPCList        []string      `mapstructure:"rpc_list"`
-	WebSocketURL   string        `mapstructure:"websocket_url"`
-	MonitorDelay   time.Duration `mapstructure:"-"`
-	MonitorDelayMS int           `mapstructure:"monitor_delay"`
-	RPCDelay       time.Duration `mapstructure:"-"`
-	RPCDelayMS     int           `mapstructure:"rpc_delay"`
-	PriceDelay     time.Duration `mapstructure:"-"`
-	PriceDelayMS   int           `mapstructure:"price_delay"`
-	DebugLogging   bool          `mapstructure:"debug_logging"`
-	TPSLogging     bool          `mapstructure:"tps_logging"`
-	Retries        int           `mapstructure:"retries"`
-	WebhookURL     string        `mapstructure:"webhook_url"`
-	Workers        int           `mapstructure:"workers"`
+	License      string        `mapstructure:"license"`
+	RPCList      []string      `mapstructure:"rpc_list"`
+	WebSocketURL string        `mapstructure:"websocket_url"`
+	MonitorDelay time.Duration `mapstructure:"-"` // Converted from monitor_delay (ms)
+	RPCDelay     time.Duration `mapstructure:"-"` // Converted from rpc_delay (ms)
+	PriceDelay   time.Duration `mapstructure:"-"` // Converted from price_delay (ms)
+	DebugLogging bool          `mapstructure:"debug_logging"`
+	TPSLogging   bool          `mapstructure:"tps_logging"`
+	Retries      int           `mapstructure:"retries"`
+	WebhookURL   string        `mapstructure:"webhook_url"`
+	Workers      int           `mapstructure:"workers"`
 
 	// Keygen.sh configuration
 	KeygenAccountID    string `mapstructure:"keygen_account_id"`
@@ -57,10 +54,10 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("unmarshal error: %w", err)
 	}
 
-	// Convert ms to Duration
-	cfg.MonitorDelay = time.Duration(cfg.MonitorDelayMS) * time.Millisecond
-	cfg.RPCDelay = time.Duration(cfg.RPCDelayMS) * time.Millisecond
-	cfg.PriceDelay = time.Duration(cfg.PriceDelayMS) * time.Millisecond
+	// Convert ms values to Duration
+	cfg.MonitorDelay = time.Duration(v.GetInt("monitor_delay")) * time.Millisecond
+	cfg.RPCDelay = time.Duration(v.GetInt("rpc_delay")) * time.Millisecond
+	cfg.PriceDelay = time.Duration(v.GetInt("price_delay")) * time.Millisecond
 
 	// Apply fallback RPC endpoints if needed
 	cfg.applyRPCFallbacks()
