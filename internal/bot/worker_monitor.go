@@ -4,12 +4,14 @@ package bot
 import (
 	"context"
 	"fmt"
-	"golang.org/x/sync/errgroup"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/rovshanmuradov/solana-bot/internal/bot/ui"
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
 	"github.com/rovshanmuradov/solana-bot/internal/dex/model"
+	"github.com/rovshanmuradov/solana-bot/internal/events"
 	"github.com/rovshanmuradov/solana-bot/internal/monitor"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
 	"go.uber.org/zap"
@@ -23,12 +25,12 @@ type MonitorWorker struct {
 	ctx             context.Context
 	logger          *zap.Logger
 	task            *task.Task
-	config          *task.Config
 	dex             dex.DEX
 	session         *monitor.MonitoringSession
 	uiHandle        *ui.Handler
 	sellFn          SellFunc
 	monitorInterval time.Duration
+	eventBus        *events.Bus
 }
 
 // NewMonitorWorker создает новый экземпляр рабочего процесса мониторинга
@@ -41,6 +43,7 @@ func NewMonitorWorker(
 	initialPrice float64,
 	monitorInterval time.Duration,
 	sellFn SellFunc,
+	eventBus *events.Bus,
 ) *MonitorWorker {
 	return &MonitorWorker{
 		ctx:    ctx,
@@ -50,6 +53,7 @@ func NewMonitorWorker(
 		sellFn: sellFn,
 		// Store the monitor interval for later use
 		monitorInterval: monitorInterval,
+		eventBus:        eventBus,
 	}
 }
 
@@ -152,17 +156,50 @@ func (mw *MonitorWorker) handleUIEvents(ctx context.Context) error {
 				if err := mw.sellFn(sellCtx, mw.task.AutosellAmount); err != nil {
 					mw.logger.Error("Failed to sell tokens", zap.Error(err))
 					fmt.Printf("Error selling tokens: %v\n", err)
+					// Publish monitoring stopped event
+					stopEvent := &events.MonitoringStoppedEvent{
+						BaseEvent: events.BaseEvent{
+							EventType: events.MonitoringStopped,
+							EventTime: time.Now(),
+						},
+						TaskID:    mw.task.ID,
+						TokenMint: mw.task.TokenMint,
+						Reason:    "error",
+					}
+					_ = mw.eventBus.Publish(stopEvent)
 					return err // Возвращаем ошибку наверх, чтобы она попала в errgroup
 				}
 
 				mw.logger.Info("Tokens sold successfully!")
 				fmt.Println("Tokens sold successfully!")
+				// Publish monitoring stopped event
+				stopEvent := &events.MonitoringStoppedEvent{
+					BaseEvent: events.BaseEvent{
+						EventType: events.MonitoringStopped,
+						EventTime: time.Now(),
+					},
+					TaskID:    mw.task.ID,
+					TokenMint: mw.task.TokenMint,
+					Reason:    "sold",
+				}
+				_ = mw.eventBus.Publish(stopEvent)
 				return nil
 
 			case ui.ExitRequested:
 				mw.logger.Info("Exit requested by user")
 				fmt.Println("\nExiting monitor mode without selling tokens.")
 				mw.Stop()
+				// Publish monitoring stopped event
+				stopEvent := &events.MonitoringStoppedEvent{
+					BaseEvent: events.BaseEvent{
+						EventType: events.MonitoringStopped,
+						EventTime: time.Now(),
+					},
+					TaskID:    mw.task.ID,
+					TokenMint: mw.task.TokenMint,
+					Reason:    "exit",
+				}
+				_ = mw.eventBus.Publish(stopEvent)
 				return nil
 			}
 		}
@@ -186,6 +223,20 @@ func (mw *MonitorWorker) handlePriceUpdates(ctx context.Context) error {
 				mw.logger.Error("Failed to calculate PnL", zap.Error(err))
 				continue
 			}
+
+			// Publish price updated event
+			priceEvent := &events.PriceUpdatedEvent{
+				BaseEvent: events.BaseEvent{
+					EventType: events.PriceUpdated,
+					EventTime: time.Now(),
+				},
+				TokenMint:    mw.task.TokenMint,
+				CurrentPrice: update.Current,
+				InitialPrice: update.Initial,
+				PriceChange:  update.Percent,
+				TokenAmount:  update.Tokens,
+			}
+			_ = mw.eventBus.Publish(priceEvent)
 
 			// Отображение информации через UI
 			ui.Render(update, *pnlData, mw.task.TokenMint)

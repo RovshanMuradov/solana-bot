@@ -4,12 +4,15 @@ package bot
 import (
 	"context"
 	"fmt"
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
-	"github.com/rovshanmuradov/solana-bot/internal/task"
-	"go.uber.org/zap"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
+
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+	"github.com/rovshanmuradov/solana-bot/internal/events"
+	"github.com/rovshanmuradov/solana-bot/internal/task"
+	"go.uber.org/zap"
 )
 
 type Runner struct {
@@ -20,6 +23,7 @@ type Runner struct {
 	wallets       map[string]*task.Wallet
 	defaultWallet *task.Wallet
 	shutdownCh    chan os.Signal
+	eventBus      *events.Bus
 }
 
 // NewRunner NewRunner: принимает cfg и logger
@@ -36,6 +40,28 @@ func NewRunner(cfg *task.Config, logger *zap.Logger) *Runner {
 		break
 	}
 
+	// Create event bus
+	eventBus := events.NewBus(logger, 1000)
+
+	// Add debug logger for events
+	eventBus.SubscribeFunc(events.OperationStarted, func(ctx context.Context, event events.Event) error {
+		if e, ok := event.(*events.OperationStartedEvent); ok {
+			logger.Debug("Operation started",
+				zap.String("task", e.TaskName),
+				zap.String("operation", e.Operation))
+		}
+		return nil
+	})
+
+	eventBus.SubscribeFunc(events.OperationCompleted, func(ctx context.Context, event events.Event) error {
+		if e, ok := event.(*events.OperationCompletedEvent); ok {
+			logger.Debug("Operation completed",
+				zap.String("task", e.TaskName),
+				zap.String("operation", e.Operation))
+		}
+		return nil
+	})
+
 	return &Runner{
 		logger:        logger,
 		config:        cfg,
@@ -44,6 +70,7 @@ func NewRunner(cfg *task.Config, logger *zap.Logger) *Runner {
 		wallets:       wallets,
 		defaultWallet: defaultW,
 		shutdownCh:    make(chan os.Signal, 1),
+		eventBus:      eventBus,
 	}
 }
 
@@ -83,12 +110,22 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.solClient,
 		r.wallets,
 		taskCh,
+		r.eventBus,
 	)
 
 	workerPool.Start(numWorkers)
 	workerPool.Wait()
 
 	r.logger.Info("All workers finished")
+
+	// Shutdown event bus
+	shutdownTimeout := 5 * time.Second
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer shutdownCancel()
+	if err := r.eventBus.Shutdown(shutdownCtx); err != nil {
+		r.logger.Error("Failed to shutdown event bus", zap.Error(err))
+	}
+
 	return nil
 }
 

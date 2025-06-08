@@ -4,11 +4,12 @@ package bot
 import (
 	"context"
 	"fmt"
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"sync"
 	"time"
 
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
+	"github.com/rovshanmuradov/solana-bot/internal/events"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
 	"go.uber.org/zap"
 )
@@ -21,6 +22,7 @@ type WorkerPool struct {
 	config    *task.Config
 	solClient *blockchain.Client
 	wallets   map[string]*task.Wallet
+	eventBus  *events.Bus
 }
 
 func NewWorkerPool(
@@ -30,6 +32,7 @@ func NewWorkerPool(
 	solClient *blockchain.Client,
 	wallets map[string]*task.Wallet,
 	tasks <-chan *task.Task,
+	eventBus *events.Bus,
 ) *WorkerPool {
 	return &WorkerPool{
 		ctx:       ctx,
@@ -38,6 +41,7 @@ func NewWorkerPool(
 		tasks:     tasks,
 		solClient: solClient,
 		wallets:   wallets,
+		eventBus:  eventBus,
 	}
 }
 
@@ -78,9 +82,37 @@ func (wp *WorkerPool) handleTask(ctx context.Context, t *task.Task, logger *zap.
 		return
 	}
 
+	// Publish operation started event
+	startEvent := &events.OperationStartedEvent{
+		BaseEvent: events.BaseEvent{
+			EventType: events.OperationStarted,
+			EventTime: time.Now(),
+		},
+		TaskID:     t.ID,
+		TaskName:   t.TaskName,
+		Operation:  string(t.Operation),
+		WalletName: t.WalletName,
+		TokenMint:  t.TokenMint,
+	}
+	_ = wp.eventBus.Publish(startEvent)
+
 	dexAdapter, err := dex.GetDEXByName(t.Module, wp.solClient, w, logger)
 	if err != nil {
 		logger.Error("DEX adapter init error", zap.String("task", t.TaskName), zap.Error(err))
+		// Publish operation failed event
+		failEvent := &events.OperationFailedEvent{
+			BaseEvent: events.BaseEvent{
+				EventType: events.OperationFailed,
+				EventTime: time.Now(),
+			},
+			TaskID:     t.ID,
+			TaskName:   t.TaskName,
+			Operation:  string(t.Operation),
+			WalletName: t.WalletName,
+			TokenMint:  t.TokenMint,
+			Error:      err,
+		}
+		_ = wp.eventBus.Publish(failEvent)
 		return
 	}
 
@@ -95,13 +127,41 @@ func (wp *WorkerPool) handleTask(ctx context.Context, t *task.Task, logger *zap.
 		err := wp.handleMonitoredTask(ctx, t, dexAdapter, logger)
 		if err != nil {
 			logger.Error("Monitored task failed", zap.Error(err))
+			// Event already published in handleMonitoredTask
 		}
 	} else {
 		err := dexAdapter.Execute(ctx, t)
 		if err != nil {
 			logger.Error("Task execution failed", zap.String("task", t.TaskName), zap.Error(err))
+			// Publish operation failed event
+			failEvent := &events.OperationFailedEvent{
+				BaseEvent: events.BaseEvent{
+					EventType: events.OperationFailed,
+					EventTime: time.Now(),
+				},
+				TaskID:     t.ID,
+				TaskName:   t.TaskName,
+				Operation:  string(t.Operation),
+				WalletName: t.WalletName,
+				TokenMint:  t.TokenMint,
+				Error:      err,
+			}
+			_ = wp.eventBus.Publish(failEvent)
 		} else {
 			logger.Info("Task executed successfully", zap.String("task", t.TaskName))
+			// Publish operation completed event
+			completeEvent := &events.OperationCompletedEvent{
+				BaseEvent: events.BaseEvent{
+					EventType: events.OperationCompleted,
+					EventTime: time.Now(),
+				},
+				TaskID:     t.ID,
+				TaskName:   t.TaskName,
+				Operation:  string(t.Operation),
+				WalletName: t.WalletName,
+				TokenMint:  t.TokenMint,
+			}
+			_ = wp.eventBus.Publish(completeEvent)
 		}
 	}
 }
@@ -110,10 +170,38 @@ func (wp *WorkerPool) handleMonitoredTask(ctx context.Context, t *task.Task, dex
 	logger.Info("Monitored task started", zap.String("token", t.TokenMint))
 
 	if err := dexAdapter.Execute(ctx, t); err != nil {
+		// Publish operation failed event
+		failEvent := &events.OperationFailedEvent{
+			BaseEvent: events.BaseEvent{
+				EventType: events.OperationFailed,
+				EventTime: time.Now(),
+			},
+			TaskID:     t.ID,
+			TaskName:   t.TaskName,
+			Operation:  string(t.Operation),
+			WalletName: t.WalletName,
+			TokenMint:  t.TokenMint,
+			Error:      err,
+		}
+		_ = wp.eventBus.Publish(failEvent)
 		return fmt.Errorf("execute task: %w", err)
 	}
 
 	logger.Info("Operation completed successfully", zap.String("task", t.TaskName))
+
+	// Publish operation completed event
+	completeEvent := &events.OperationCompletedEvent{
+		BaseEvent: events.BaseEvent{
+			EventType: events.OperationCompleted,
+			EventTime: time.Now(),
+		},
+		TaskID:     t.ID,
+		TaskName:   t.TaskName,
+		Operation:  string(t.Operation),
+		WalletName: t.WalletName,
+		TokenMint:  t.TokenMint,
+	}
+	_ = wp.eventBus.Publish(completeEvent)
 
 	var tokenBalance uint64
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -155,6 +243,19 @@ tokenLoop:
 		logger.Named("sell"),
 	)
 
+	// Publish monitoring started event
+	monitorStartEvent := &events.MonitoringStartedEvent{
+		BaseEvent: events.BaseEvent{
+			EventType: events.MonitoringStarted,
+			EventTime: time.Now(),
+		},
+		TaskID:       t.ID,
+		TokenMint:    t.TokenMint,
+		InitialPrice: 0, // Will be calculated in monitor
+		TokenAmount:  float64(tokenBalance),
+	}
+	_ = wp.eventBus.Publish(monitorStartEvent)
+
 	// Создаем и запускаем рабочий процесс мониторинга
 	worker := NewMonitorWorker(
 		ctx,
@@ -165,6 +266,7 @@ tokenLoop:
 		0, // Initial price will be fetched by monitor
 		wp.config.MonitorDelay,
 		sellFn,
+		wp.eventBus,
 	)
 
 	// Запускаем и ожидаем завершения рабочего процесса

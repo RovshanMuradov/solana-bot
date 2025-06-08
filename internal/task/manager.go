@@ -15,20 +15,27 @@ type Manager struct {
 	logger *zap.Logger
 }
 
-// TaskConfig represents the structure of tasks YAML file
-type TaskConfig struct {
-	Tasks []struct {
-		TaskName        string  `yaml:"task_name"`
-		Module          string  `yaml:"module"`
-		Wallet          string  `yaml:"wallet"`
-		Operation       string  `yaml:"operation"`
-		AmountSol       float64 `yaml:"amount_sol"`
-		SlippagePercent float64 `yaml:"slippage_percent"`
-		PriorityFee     string  `yaml:"priority_fee"`
-		ComputeUnits    uint32  `yaml:"compute_units"`
-		PercentToSell   float64 `yaml:"percent_to_sell"`
-		TokenMint       string  `yaml:"token_mint"`
-	} `yaml:"tasks"`
+// taskYAML represents a single task in the YAML file.
+type taskYAML struct {
+	TaskName        string  `yaml:"task_name"`
+	Module          string  `yaml:"module"`
+	Wallet          string  `yaml:"wallet"`
+	Operation       string  `yaml:"operation"`
+	AmountSol       float64 `yaml:"amount_sol"`
+	SlippagePercent float64 `yaml:"slippage_percent"`
+	PriorityFee     string  `yaml:"priority_fee"`
+	ComputeUnits    uint32  `yaml:"compute_units"`
+	PercentToSell   float64 `yaml:"percent_to_sell"`
+	TokenMint       string  `yaml:"token_mint"`
+	// New fields for protocol support
+	Protocol  string                 `yaml:"protocol"`
+	AssetType string                 `yaml:"asset_type"`
+	Metadata  map[string]interface{} `yaml:"metadata"`
+}
+
+// tasksConfig represents the structure of tasks YAML file.
+type tasksConfig struct {
+	Tasks []taskYAML `yaml:"tasks"`
 }
 
 // NewManager constructs a Manager with the given logger.
@@ -66,7 +73,7 @@ func (m *Manager) LoadTasksYAML(path string) ([]*Task, error) {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
 
-	var config TaskConfig
+	var config tasksConfig
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse YAML: %w", err)
 	}
@@ -97,6 +104,18 @@ func (m *Manager) LoadTasksYAML(path string) ([]*Task, error) {
 			autoSell = 99.0
 		}
 
+		// Set protocol and asset type with defaults
+		protocol := taskData.Protocol
+		if protocol == "" {
+			// Map module to protocol for backward compatibility
+			protocol = "dex"
+		}
+
+		assetType := taskData.AssetType
+		if assetType == "" {
+			assetType = "token"
+		}
+
 		task := &Task{
 			ID:              i,
 			TaskName:        taskData.TaskName,
@@ -110,6 +129,9 @@ func (m *Manager) LoadTasksYAML(path string) ([]*Task, error) {
 			AutosellAmount:  autoSell,
 			TokenMint:       taskData.TokenMint,
 			CreatedAt:       time.Now(),
+			Protocol:        protocol,
+			AssetType:       assetType,
+			Metadata:        taskData.Metadata,
 		}
 
 		// Validate required fields
