@@ -24,6 +24,7 @@ type RealModeMonitorScreen struct {
 	*MonitorScreen
 	serviceProvider ui.ServiceProvider
 	realMode        bool
+	positionMap     map[string]*MonitoredPosition // tokenMint -> position for quick updates
 }
 
 // NewRealModeMonitorScreen creates a monitor screen with real services
@@ -33,6 +34,7 @@ func NewRealModeMonitorScreen(serviceProvider ui.ServiceProvider) *RealModeMonit
 		MonitorScreen:   base,
 		serviceProvider: serviceProvider,
 		realMode:        true,
+		positionMap:     make(map[string]*MonitoredPosition),
 	}
 
 	// Load real positions instead of mock data
@@ -68,6 +70,7 @@ func (s *RealModeMonitorScreen) loadRealPositions() {
 		}
 
 		s.positions = append(s.positions, position)
+		s.positionMap[tokenMint] = &s.positions[len(s.positions)-1]
 		positionID++
 	}
 
@@ -468,6 +471,25 @@ func (s *RealModeTaskListScreen) createMonitoringSession(taskData task.Task, ent
 	// Add session to service provider
 	s.serviceProvider.AddMonitoringSession(taskData.TokenMint, session)
 
+	// Start goroutine to republish monitoring session updates to UI bus
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case update, ok := <-session.PriceUpdates():
+				if !ok {
+					return // Channel closed
+				}
+				// Republish to UI bus
+				ui.PublishRealPriceUpdate(ui.RealPriceUpdateMsg{
+					TokenMint: taskData.TokenMint,
+					Update:    update,
+				})
+			}
+		}
+	}()
+
 	// Publish monitoring session started event
 	ui.PublishMonitoringSessionStarted(ui.MonitoringSessionStartedMsg{
 		TokenMint:    taskData.TokenMint,
@@ -583,4 +605,260 @@ func (s *RealModeLogsScreen) GetLogger() *zap.Logger {
 
 func (s *RealModeLogsScreen) GetRealMode() bool {
 	return s.realMode
+}
+
+// sellPositionRealCmd performs real position selling through DEX adapters
+func (s *RealModeMonitorScreen) sellPositionRealCmd(position MonitoredPosition, percentage float64) tea.Cmd {
+	return func() tea.Msg {
+		ctx := s.serviceProvider.GetContext()
+		logger := s.serviceProvider.GetLogger()
+		wallets := s.serviceProvider.GetWallets()
+		blockchainClient := s.serviceProvider.GetBlockchainClient()
+
+		logger.Info("💰 Starting real sell operation",
+			zap.String("token", position.TokenMint),
+			zap.Float64("percentage", percentage),
+			zap.String("position", position.TokenSymbol))
+
+		// Get monitoring session for this token
+		session, sessionExists := s.serviceProvider.GetMonitoringSession(position.TokenMint)
+		if !sessionExists {
+			err := fmt.Errorf("monitoring session not found for token %s", position.TokenMint)
+			logger.Error("Sell failed - session not found", zap.Error(err))
+			return ui.ErrorMsg{Error: err, Title: "Sell Failed"}
+		}
+
+		// Get wallet name from session config
+		// Since we can't directly access config.Task from session due to encapsulation,
+		// we'll use a heuristic: check all loaded tasks to find matching token
+		taskManager := s.serviceProvider.GetTaskManager()
+		var walletName string
+		var taskFound bool
+
+		// Load current tasks to find the one with matching token mint
+		var matchedTask *task.Task
+		tasks, err := taskManager.LoadTasks("configs/tasks.csv")
+		if err != nil {
+			logger.Error("Failed to load tasks for wallet lookup", zap.Error(err))
+			// Use default parameters as fallback
+			walletName = "main"
+			taskFound = true
+		} else {
+			for _, task := range tasks {
+				if task.TokenMint == position.TokenMint {
+					walletName = task.WalletName
+					matchedTask = task
+					taskFound = true
+					break
+				}
+			}
+		}
+
+		if !taskFound {
+			// Use default wallet as fallback
+			walletName = "main"
+			logger.Warn("Task not found for position, using default wallet",
+				zap.String("token", position.TokenMint),
+				zap.String("default_wallet", walletName))
+		}
+
+		// Get wallet
+		wallet, exists := wallets[walletName]
+		if !exists {
+			err := fmt.Errorf("wallet %s not found", walletName)
+			logger.Error("Sell failed - wallet not found", zap.Error(err))
+			return ui.ErrorMsg{Error: err, Title: "Sell Failed"}
+		}
+
+		// Create DEX adapter - use Smart DEX (snipe)
+		dexAdapter, err := dex.GetDEXByName("snipe", blockchainClient, wallet, logger)
+		if err != nil {
+			logger.Error("Failed to create DEX adapter", zap.Error(err))
+			return ui.ErrorMsg{Error: err, Title: "Sell Failed"}
+		}
+
+		// Execute sell operation
+		sellCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+		defer cancel()
+
+		// Get sell parameters from task or use defaults
+		var slippage = 5.0
+		var priorityFee = "0.000002"
+		var computeUnits uint32 = 200000
+
+		if matchedTask != nil {
+			slippage = matchedTask.SlippagePercent
+			priorityFee = matchedTask.PriorityFeeSol
+			computeUnits = matchedTask.ComputeUnits
+			logger.Info("Using task parameters for sell",
+				zap.Float64("slippage", slippage),
+				zap.String("priority_fee", priorityFee),
+				zap.Uint32("compute_units", computeUnits))
+		} else {
+			logger.Info("Using default parameters for sell",
+				zap.Float64("slippage", slippage),
+				zap.String("priority_fee", priorityFee),
+				zap.Uint32("compute_units", computeUnits))
+		}
+
+		logger.Info("🔄 Executing sell through DEX adapter",
+			zap.String("token", position.TokenMint),
+			zap.Float64("percentage", percentage))
+
+		err = dexAdapter.SellPercentTokens(sellCtx, position.TokenMint, percentage, slippage, priorityFee, computeUnits)
+		if err != nil {
+			logger.Error("❌ Sell operation failed",
+				zap.String("token", position.TokenMint),
+				zap.Error(err))
+			return ui.ErrorMsg{Error: err, Title: "Sell Failed"}
+		}
+
+		logger.Info("✅ Sell operation completed successfully",
+			zap.String("token", position.TokenMint),
+			zap.Float64("percentage", percentage))
+
+		// Publish sell completed event
+		ui.PublishSellCompleted(ui.SellCompletedMsg{
+			TokenMint:   position.TokenMint,
+			AmountSold:  position.Amount * (percentage / 100.0),
+			SolReceived: position.CurrentPrice * position.Amount * (percentage / 100.0),
+			TxSignature: fmt.Sprintf("sell_%s_%d", position.TokenMint[:8], time.Now().Unix()),
+			Success:     true,
+		})
+
+		// If 100% sold, stop monitoring session
+		if percentage >= 100.0 {
+			session.Stop()
+			s.serviceProvider.RemoveMonitoringSession(position.TokenMint)
+
+			// Mark position as inactive
+			if pos, exists := s.positionMap[position.TokenMint]; exists {
+				pos.Active = false
+				pos.LastUpdate = time.Now()
+				s.updateTableDisplay()
+			}
+
+			logger.Info("🛑 Monitoring session stopped - position fully sold",
+				zap.String("token", position.TokenMint))
+		}
+
+		return ui.SuccessMsg{
+			Message: fmt.Sprintf("Successfully sold %.1f%% of %s", percentage, position.TokenSymbol),
+			Title:   "Sell Completed",
+		}
+	}
+}
+
+// Update overrides the base Update method to handle real-time events
+func (s *RealModeMonitorScreen) Update(msg tea.Msg) (router.Screen, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "enter":
+			// Real sell position (100%)
+			if s.selectedPosition < len(s.positions) {
+				cmds = append(cmds, s.sellPositionRealCmd(s.positions[s.selectedPosition], 100.0))
+			}
+			return s, tea.Batch(cmds...)
+
+		case "s":
+			// Real sell position (not toggle sparklines)
+			if s.selectedPosition < len(s.positions) {
+				cmds = append(cmds, s.sellPositionRealCmd(s.positions[s.selectedPosition], 100.0))
+			}
+			return s, tea.Batch(cmds...)
+
+		case "1", "2", "3", "4", "5":
+			// Real quick sell percentages
+			if s.selectedPosition < len(s.positions) {
+				percentage := map[string]float64{
+					"1": 25.0, "2": 50.0, "3": 75.0, "4": 100.0, "5": 10.0,
+				}[msg.String()]
+				cmds = append(cmds, s.sellPositionRealCmd(s.positions[s.selectedPosition], percentage))
+			}
+			return s, tea.Batch(cmds...)
+
+		default:
+			// For all other keys, delegate to base class (navigation, etc.)
+			updatedScreen, cmd := s.MonitorScreen.Update(msg)
+			s.MonitorScreen = updatedScreen.(*MonitorScreen)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return s, tea.Batch(cmds...)
+		}
+
+	case ui.RealPriceUpdateMsg:
+		// Handle real-time price updates
+		if position, exists := s.positionMap[msg.TokenMint]; exists {
+			// Update position with new price data
+			position.CurrentPrice = msg.Update.Current
+			position.EntryPrice = msg.Update.Initial
+			position.Amount = msg.Update.Tokens
+			position.PnLPercent = msg.Update.Percent
+
+			// Calculate PnL in SOL
+			if msg.Update.Initial > 0 {
+				position.PnLSol = (msg.Update.Current - msg.Update.Initial) * msg.Update.Tokens
+			}
+
+			// Add to price history for sparkline
+			position.PriceHistory = append(position.PriceHistory, msg.Update.Current)
+			if len(position.PriceHistory) > 50 { // Keep last 50 points
+				position.PriceHistory = position.PriceHistory[1:]
+			}
+
+			position.LastUpdate = time.Now()
+
+			// Update table display
+			s.updateTableDisplay()
+		}
+		return s, nil
+
+	case ui.PositionCreatedMsg:
+		// Handle new position creation
+		newPosition := MonitoredPosition{
+			ID:           len(s.positions) + 1,
+			TaskName:     fmt.Sprintf("MONITOR_%d", len(s.positions)+1),
+			TokenMint:    msg.TokenMint,
+			TokenSymbol:  msg.TokenSymbol,
+			EntryPrice:   msg.EntryPrice,
+			CurrentPrice: msg.EntryPrice,                            // Start with entry price
+			Amount:       float64(msg.TokenBalance) / math.Pow10(6), // Assuming 6 decimals
+			PnLPercent:   0,
+			PnLSol:       0,
+			Volume24h:    0,
+			LastUpdate:   time.Now(),
+			PriceHistory: []float64{msg.EntryPrice},
+			Active:       true,
+		}
+
+		s.positions = append(s.positions, newPosition)
+		s.positionMap[msg.TokenMint] = &s.positions[len(s.positions)-1]
+
+		// Update table display
+		s.updateTableDisplay()
+		return s, nil
+
+	case ui.MonitoringSessionStoppedMsg:
+		// Handle monitoring session stopped
+		if position, exists := s.positionMap[msg.TokenMint]; exists {
+			position.Active = false
+			position.LastUpdate = time.Now()
+			s.updateTableDisplay()
+		}
+		return s, nil
+	}
+
+	// For all other messages, delegate to base class
+	updatedScreen, cmd := s.MonitorScreen.Update(msg)
+	s.MonitorScreen = updatedScreen.(*MonitorScreen)
+
+	if cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+
+	return s, tea.Batch(cmds...)
 }
