@@ -44,8 +44,8 @@ func NewMonitoringSession(parentCtx context.Context, config *SessionConfig) *Mon
 		logger:       config.Logger,
 		ctx:          ctx,
 		cancel:       cancel,
-		priceUpdates: make(chan PriceUpdate),
-		errChan:      make(chan error),
+		priceUpdates: make(chan PriceUpdate, 100), // Buffered channel for price updates
+		errChan:      make(chan error, 10),        // Buffered channel for errors
 	}
 }
 

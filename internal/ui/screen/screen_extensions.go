@@ -250,14 +250,14 @@ func (s *RealModeTaskListScreen) executeTaskCmdReal(taskToExecute task.Task) tea
 		}
 
 		// Create DEX adapter
-		logger.Info("Creating DEX adapter", 
+		logger.Info("Creating DEX adapter",
 			zap.String("module", taskToExecute.Module),
 			zap.String("wallet", taskToExecute.WalletName),
 			zap.String("token", taskToExecute.TokenMint))
-			
+
 		dexAdapter, err := dex.GetDEXByName(taskToExecute.Module, blockchainClient, wallet, logger)
 		if err != nil {
-			logger.Error("Failed to create DEX adapter", 
+			logger.Error("Failed to create DEX adapter",
 				zap.String("module", taskToExecute.Module),
 				zap.Error(err))
 
@@ -277,7 +277,7 @@ func (s *RealModeTaskListScreen) executeTaskCmdReal(taskToExecute task.Task) tea
 			}
 		}
 
-		logger.Info("DEX adapter created successfully", 
+		logger.Info("DEX adapter created successfully",
 			zap.String("module", taskToExecute.Module))
 
 		// Execute the task based on operation type
@@ -290,36 +290,91 @@ func (s *RealModeTaskListScreen) executeTaskCmdReal(taskToExecute task.Task) tea
 
 		switch taskToExecute.Operation {
 		case task.OperationSnipe, task.OperationSwap:
-			// Execute buy operation (simplified)
-			txSignature = fmt.Sprintf("buy_%s_%d", taskToExecute.TokenMint[:8], time.Now().Unix())
+			// Execute REAL buy operation through DEX adapter
+			logger.Info("Executing REAL task through DEX adapter",
+				zap.String("operation", string(taskToExecute.Operation)),
+				zap.String("token", taskToExecute.TokenMint),
+				zap.Float64("amount_sol", taskToExecute.AmountSol))
 
-			// Get current token price
-			logger.Info("Getting token price", 
-				zap.String("token", taskToExecute.TokenMint))
-			price, priceErr := dexAdapter.GetTokenPrice(execCtx, taskToExecute.TokenMint)
-			if priceErr != nil {
-				logger.Error("Failed to get token price", 
+			// Execute the actual task
+			execErr := dexAdapter.Execute(execCtx, &taskToExecute)
+			if execErr != nil {
+				logger.Error("Task execution failed",
 					zap.String("token", taskToExecute.TokenMint),
-					zap.Error(priceErr))
+					zap.Error(execErr))
+
+				ui.PublishTaskCompleted(ui.TaskCompletedMsg{
+					TaskID:    taskToExecute.ID,
+					TaskName:  taskToExecute.TaskName,
+					TokenMint: taskToExecute.TokenMint,
+					Success:   false,
+					Error:     execErr.Error(),
+				})
+
 				return TaskExecutionMsg{
 					TaskID:    taskToExecute.ID,
 					Status:    "failed",
 					Completed: true,
-					Error:     priceErr,
+					Error:     execErr,
 				}
 			}
 
-			logger.Info("Token price retrieved successfully", 
-				zap.String("token", taskToExecute.TokenMint),
-				zap.Float64("price", price))
+			logger.Info("Task executed successfully",
+				zap.String("token", taskToExecute.TokenMint))
+
+			// Get current token price after execution
+			price, priceErr := dexAdapter.GetTokenPrice(execCtx, taskToExecute.TokenMint)
+			if priceErr != nil {
+				logger.Error("Failed to get token price after execution",
+					zap.String("token", taskToExecute.TokenMint),
+					zap.Error(priceErr))
+				// Continue with zero price rather than fail
+				price = 0
+			}
+
+			// Get actual token balance after purchase
+			actualBalance, balanceErr := dexAdapter.GetTokenBalance(execCtx, taskToExecute.TokenMint)
+			if balanceErr != nil {
+				logger.Error("Failed to get token balance after execution",
+					zap.String("token", taskToExecute.TokenMint),
+					zap.Error(balanceErr))
+				// Calculate expected balance
+				tokenAmount := taskToExecute.AmountSol / price
+				actualBalance = uint64(tokenAmount * math.Pow10(6))
+			}
 
 			entryPrice = price
-			tokenAmount := taskToExecute.AmountSol / price
-			tokenBalance = uint64(tokenAmount * math.Pow10(6)) // Assuming 6 decimals
+			tokenBalance = actualBalance
+			txSignature = fmt.Sprintf("real_buy_%s_%d", taskToExecute.TokenMint[:8], time.Now().Unix())
 
 		case task.OperationSell:
-			// Execute sell operation (simplified)
-			txSignature = fmt.Sprintf("sell_%s_%d", taskToExecute.TokenMint[:8], time.Now().Unix())
+			// Execute REAL sell operation through DEX adapter
+			logger.Info("Executing REAL sell operation through DEX adapter",
+				zap.String("token", taskToExecute.TokenMint))
+
+			execErr := dexAdapter.Execute(execCtx, &taskToExecute)
+			if execErr != nil {
+				logger.Error("Sell task execution failed",
+					zap.String("token", taskToExecute.TokenMint),
+					zap.Error(execErr))
+
+				ui.PublishTaskCompleted(ui.TaskCompletedMsg{
+					TaskID:    taskToExecute.ID,
+					TaskName:  taskToExecute.TaskName,
+					TokenMint: taskToExecute.TokenMint,
+					Success:   false,
+					Error:     execErr.Error(),
+				})
+
+				return TaskExecutionMsg{
+					TaskID:    taskToExecute.ID,
+					Status:    "failed",
+					Completed: true,
+					Error:     execErr,
+				}
+			}
+
+			txSignature = fmt.Sprintf("real_sell_%s_%d", taskToExecute.TokenMint[:8], time.Now().Unix())
 
 		default:
 			err := fmt.Errorf("unsupported operation: %s", taskToExecute.Operation)

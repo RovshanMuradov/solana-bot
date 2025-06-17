@@ -114,7 +114,7 @@ func (d *smartDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string) (
 	d.mu.Lock()
 	d.tokenMint = tokenMint
 	d.mu.Unlock()
-	
+
 	// Auto-initialize DEX if not already done
 	if d.dex == nil {
 		dex, err := d.determineDEX(ctx, tokenMint)
@@ -123,7 +123,7 @@ func (d *smartDEXAdapter) GetTokenPrice(ctx context.Context, tokenMint string) (
 		}
 		d.dex = dex
 	}
-	
+
 	return d.dex.GetTokenPrice(ctx, tokenMint)
 }
 
@@ -131,7 +131,7 @@ func (d *smartDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint string)
 	d.mu.Lock()
 	d.tokenMint = tokenMint
 	d.mu.Unlock()
-	
+
 	// Auto-initialize DEX if not already done
 	if d.dex == nil {
 		dex, err := d.determineDEX(ctx, tokenMint)
@@ -140,7 +140,7 @@ func (d *smartDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint string)
 		}
 		d.dex = dex
 	}
-	
+
 	return d.dex.GetTokenBalance(ctx, tokenMint)
 }
 
@@ -148,7 +148,7 @@ func (d *smartDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint strin
 	d.mu.Lock()
 	d.tokenMint = tokenMint
 	d.mu.Unlock()
-	
+
 	// Auto-initialize DEX if not already done
 	if d.dex == nil {
 		dex, err := d.determineDEX(ctx, tokenMint)
@@ -157,7 +157,7 @@ func (d *smartDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint strin
 		}
 		d.dex = dex
 	}
-	
+
 	return d.dex.SellPercentTokens(ctx, tokenMint, pct, slip, fee, cu)
 }
 
@@ -168,7 +168,7 @@ func (d *smartDEXAdapter) CalculatePnL(ctx context.Context, amount, invest float
 	if tokenMint == "" {
 		return nil, fmt.Errorf("token mint is not set")
 	}
-	
+
 	// Auto-initialize DEX if not already done
 	if d.dex == nil {
 		dex, err := d.determineDEX(ctx, tokenMint)
@@ -177,6 +177,6 @@ func (d *smartDEXAdapter) CalculatePnL(ctx context.Context, amount, invest float
 		}
 		d.dex = dex
 	}
-	
+
 	return d.dex.CalculatePnL(ctx, amount, invest)
 }
