@@ -5,10 +5,13 @@ import (
 	"flag"
 	"log"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"github.com/rovshanmuradov/solana-bot/internal/logger"
+	"github.com/rovshanmuradov/solana-bot/internal/monitor"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
 	"github.com/rovshanmuradov/solana-bot/internal/ui"
 	"github.com/rovshanmuradov/solana-bot/internal/ui/router"
@@ -21,19 +24,63 @@ type AppModel struct {
 	router *router.Router
 	width  int
 	height int
+
+	// Real services
+	taskManager      *task.Manager
+	blockchainClient *blockchain.Client
+	wallets          map[string]*task.Wallet
+	logger           *zap.Logger
+	config           *task.Config
+
+	// Active monitoring sessions
+	activeSessions map[string]*monitor.MonitoringSession
+	sessionsMutex  sync.RWMutex
+	ctx            context.Context
+	cancel         context.CancelFunc
 }
 
 // NewAppModel creates a new application model
-func NewAppModel() *AppModel {
+func NewAppModel(ctx context.Context, cfg *task.Config, logger *zap.Logger) *AppModel {
+	appCtx, cancel := context.WithCancel(ctx)
+
+	// Initialize blockchain client
+	var rpcURL string
+	if len(cfg.RPCList) > 0 {
+		rpcURL = cfg.RPCList[0]
+	} else {
+		rpcURL = "https://api.mainnet-beta.solana.com"
+	}
+	blockchainClient := blockchain.NewClient(rpcURL, logger)
+
+	// Initialize task manager
+	taskManager := task.NewManager(logger)
+
+	// Load wallets
+	wallets, err := task.LoadWallets("configs/wallets.csv")
+	if err != nil {
+		logger.Error("Failed to load wallets", zap.Error(err))
+		wallets = make(map[string]*task.Wallet)
+	}
+
 	// Create the main menu screen as the initial screen
 	mainMenu := screen.NewMainMenuScreen()
 
 	// Initialize the router with the main menu
 	r := router.New(mainMenu)
 
-	return &AppModel{
-		router: r,
+	app := &AppModel{
+		router:           r,
+		taskManager:      taskManager,
+		blockchainClient: blockchainClient,
+		wallets:          wallets,
+		logger:           logger,
+		config:           cfg,
+		activeSessions:   make(map[string]*monitor.MonitoringSession),
+		ctx:              appCtx,
+		cancel:           cancel,
 	}
+
+	return app
 }
 
 // Init initializes the application
@@ -109,13 +156,16 @@ func (m *AppModel) handleNavigation(route ui.Route) tea.Cmd {
 		newScreen = screen.NewCreateTaskWizard()
 
 	case ui.RouteTaskList:
-		newScreen = screen.NewTaskListScreen()
+		// Pass real services to TaskListScreen
+		newScreen = screen.NewRealModeTaskListScreen(m)
 
 	case ui.RouteMonitor:
-		newScreen = screen.NewMonitorScreen()
+		// Pass real services to MonitorScreen
+		newScreen = screen.NewRealModeMonitorScreen(m)
 
 	case ui.RouteLogs:
-		newScreen = screen.NewLogsScreen()
+		// Pass logger to LogsScreen
+		newScreen = screen.NewRealModeLogsScreen(m.logger)
 
 	case ui.RouteSettings:
 		// TODO: Create settings screen
@@ -142,6 +192,91 @@ func (m *AppModel) View() string {
 	}
 
 	return m.router.View()
+}
+
+// AddMonitoringSession adds a new monitoring session
+func (m *AppModel) AddMonitoringSession(tokenMint string, session *monitor.MonitoringSession) {
+	m.sessionsMutex.Lock()
+	defer m.sessionsMutex.Unlock()
+	m.activeSessions[tokenMint] = session
+}
+
+// GetMonitoringSession returns a monitoring session for a token
+func (m *AppModel) GetMonitoringSession(tokenMint string) (*monitor.MonitoringSession, bool) {
+	m.sessionsMutex.RLock()
+	defer m.sessionsMutex.RUnlock()
+	session, exists := m.activeSessions[tokenMint]
+	return session, exists
+}
+
+// GetAllMonitoringSessions returns all active monitoring sessions
+func (m *AppModel) GetAllMonitoringSessions() map[string]*monitor.MonitoringSession {
+	m.sessionsMutex.RLock()
+	defer m.sessionsMutex.RUnlock()
+
+	// Return a copy to avoid race conditions
+	sessions := make(map[string]*monitor.MonitoringSession)
+	for k, v := range m.activeSessions {
+		sessions[k] = v
+	}
+	return sessions
+}
+
+// RemoveMonitoringSession removes a monitoring session
+func (m *AppModel) RemoveMonitoringSession(tokenMint string) {
+	m.sessionsMutex.Lock()
+	defer m.sessionsMutex.Unlock()
+
+	if session, exists := m.activeSessions[tokenMint]; exists {
+		session.Stop()
+		delete(m.activeSessions, tokenMint)
+	}
+}
+
+// GetTaskManager returns the task manager
+func (m *AppModel) GetTaskManager() *task.Manager {
+	return m.taskManager
+}
+
+// GetBlockchainClient returns the blockchain client
+func (m *AppModel) GetBlockchainClient() *blockchain.Client {
+	return m.blockchainClient
+}
+
+// GetWallets returns the wallets map
+func (m *AppModel) GetWallets() map[string]*task.Wallet {
+	return m.wallets
+}
+
+// GetLogger returns the logger
+func (m *AppModel) GetLogger() *zap.Logger {
+	return m.logger
+}
+
+// GetConfig returns the config
+func (m *AppModel) GetConfig() *task.Config {
+	return m.config
+}
+
+// GetContext returns the app context
+func (m *AppModel) GetContext() context.Context {
+	return m.ctx
+}
+
+// Shutdown gracefully shuts down the application
+func (m *AppModel) Shutdown() {
+	m.sessionsMutex.Lock()
+	defer m.sessionsMutex.Unlock()
+
+	// Stop all monitoring sessions
+	for _, session := range m.activeSessions {
+		session.Stop()
+	}
+
+	// Cancel the context
+	if m.cancel != nil {
+		m.cancel()
+	}
 }
 
 func main() {
@@ -172,7 +307,7 @@ func main() {
 
 	// Initialize the TUI program
 	program := tea.NewProgram(
-		NewAppModel(),
+		NewAppModel(rootCtx, cfg, appLogger),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)
