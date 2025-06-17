@@ -90,7 +90,6 @@ func (ms *MonitoringSession) Start() error {
 
 	ms.config.InitialPrice = initialPrice
 
-
 	// Создаем монитор цен
 	ms.priceMonitor = NewPriceMonitor(
 		ms.ctx,
