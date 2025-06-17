@@ -14,7 +14,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create logger: %v", err)
 	}
-	defer logger.Sync()
+	defer func() {
+		_ = logger.Sync() // Ignore sync errors on stdout/stderr in main
+	}()
 
 	logger.Info("Starting Command/Event system test")
 

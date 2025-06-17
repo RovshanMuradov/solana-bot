@@ -143,6 +143,11 @@ func TestCommandValidation(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	commandBus := NewCommandBus(logger)
 
+	// Register mock handlers for valid commands to pass
+	mockHandler := &MockCommandHandler{}
+	commandBus.RegisterHandler(ExecuteTaskCommand{}, mockHandler)
+	commandBus.RegisterHandler(SellPositionCommand{}, mockHandler)
+
 	// Тест валидации команд
 	tests := []struct {
 		name    string
