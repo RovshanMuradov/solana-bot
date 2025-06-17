@@ -23,7 +23,6 @@ type MonitorWorker struct {
 	ctx             context.Context
 	logger          *zap.Logger
 	task            *task.Task
-	config          *task.Config
 	dex             dex.DEX
 	session         *monitor.MonitoringSession
 	uiHandle        *ui.Handler

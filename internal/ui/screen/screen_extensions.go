@@ -12,6 +12,7 @@ import (
 	"github.com/rovshanmuradov/solana-bot/internal/monitor"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
 	"github.com/rovshanmuradov/solana-bot/internal/ui"
+	"github.com/rovshanmuradov/solana-bot/internal/ui/router"
 	"go.uber.org/zap"
 )
 
@@ -129,13 +130,85 @@ func (s *RealModeTaskListScreen) loadRealTasks() {
 	logger.Info("Loaded real tasks", zap.Int("count", len(s.tasks)))
 }
 
-// Override executeTaskCmd to use real execution
-func (s *RealModeTaskListScreen) executeTaskCmd(taskToExecute task.Task) tea.Cmd {
+// Update overrides the base Update method to use real execution
+func (s *RealModeTaskListScreen) Update(msg tea.Msg) (router.Screen, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		if msg.String() == "enter" {
+			// Handle Enter key for real task execution
+			if s.executingTask == -1 {
+				selectedRow := s.table.GetSelectedRow()
+				if selectedRow < len(s.tasks) {
+					taskToExecute := s.tasks[selectedRow]
+					s.executingTask = taskToExecute.ID
+					cmds = append(cmds, s.executeTaskCmdReal(taskToExecute))
+				}
+			}
+			return s, tea.Batch(cmds...)
+		}
+	}
+
+	// For all other messages, delegate to base class
+	updatedScreen, cmd := s.TaskListScreen.Update(msg)
+	s.TaskListScreen = updatedScreen.(*TaskListScreen)
+
+	if cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+
+	return s, tea.Batch(cmds...)
+}
+
+// executeTaskCmdReal performs real task execution with DEX adapters
+func (s *RealModeTaskListScreen) executeTaskCmdReal(taskToExecute task.Task) tea.Cmd {
 	return func() tea.Msg {
 		ctx := s.serviceProvider.GetContext()
 		logger := s.serviceProvider.GetLogger()
 		wallets := s.serviceProvider.GetWallets()
 		blockchainClient := s.serviceProvider.GetBlockchainClient()
+
+		// Validate all services are available
+		if ctx == nil {
+			err := fmt.Errorf("context is nil")
+			logger.Error("Service validation failed", zap.Error(err))
+			return TaskExecutionMsg{
+				TaskID:    taskToExecute.ID,
+				Status:    "failed",
+				Completed: true,
+				Error:     err,
+			}
+		}
+		if logger == nil {
+			err := fmt.Errorf("logger is nil")
+			return TaskExecutionMsg{
+				TaskID:    taskToExecute.ID,
+				Status:    "failed",
+				Completed: true,
+				Error:     err,
+			}
+		}
+		if wallets == nil {
+			err := fmt.Errorf("wallets map is nil")
+			logger.Error("Service validation failed", zap.Error(err))
+			return TaskExecutionMsg{
+				TaskID:    taskToExecute.ID,
+				Status:    "failed",
+				Completed: true,
+				Error:     err,
+			}
+		}
+		if blockchainClient == nil {
+			err := fmt.Errorf("blockchain client is nil")
+			logger.Error("Service validation failed", zap.Error(err))
+			return TaskExecutionMsg{
+				TaskID:    taskToExecute.ID,
+				Status:    "failed",
+				Completed: true,
+				Error:     err,
+			}
+		}
 
 		// Publish task started event
 		ui.PublishTaskStarted(ui.TaskStartedMsg{
@@ -177,9 +250,16 @@ func (s *RealModeTaskListScreen) executeTaskCmd(taskToExecute task.Task) tea.Cmd
 		}
 
 		// Create DEX adapter
+		logger.Info("Creating DEX adapter", 
+			zap.String("module", taskToExecute.Module),
+			zap.String("wallet", taskToExecute.WalletName),
+			zap.String("token", taskToExecute.TokenMint))
+			
 		dexAdapter, err := dex.GetDEXByName(taskToExecute.Module, blockchainClient, wallet, logger)
 		if err != nil {
-			logger.Error("Failed to create DEX adapter", zap.Error(err))
+			logger.Error("Failed to create DEX adapter", 
+				zap.String("module", taskToExecute.Module),
+				zap.Error(err))
 
 			ui.PublishTaskCompleted(ui.TaskCompletedMsg{
 				TaskID:    taskToExecute.ID,
@@ -197,6 +277,9 @@ func (s *RealModeTaskListScreen) executeTaskCmd(taskToExecute task.Task) tea.Cmd
 			}
 		}
 
+		logger.Info("DEX adapter created successfully", 
+			zap.String("module", taskToExecute.Module))
+
 		// Execute the task based on operation type
 		var txSignature string
 		var entryPrice float64
@@ -211,9 +294,13 @@ func (s *RealModeTaskListScreen) executeTaskCmd(taskToExecute task.Task) tea.Cmd
 			txSignature = fmt.Sprintf("buy_%s_%d", taskToExecute.TokenMint[:8], time.Now().Unix())
 
 			// Get current token price
+			logger.Info("Getting token price", 
+				zap.String("token", taskToExecute.TokenMint))
 			price, priceErr := dexAdapter.GetTokenPrice(execCtx, taskToExecute.TokenMint)
 			if priceErr != nil {
-				logger.Error("Failed to get token price", zap.Error(priceErr))
+				logger.Error("Failed to get token price", 
+					zap.String("token", taskToExecute.TokenMint),
+					zap.Error(priceErr))
 				return TaskExecutionMsg{
 					TaskID:    taskToExecute.ID,
 					Status:    "failed",
@@ -221,6 +308,10 @@ func (s *RealModeTaskListScreen) executeTaskCmd(taskToExecute task.Task) tea.Cmd
 					Error:     priceErr,
 				}
 			}
+
+			logger.Info("Token price retrieved successfully", 
+				zap.String("token", taskToExecute.TokenMint),
+				zap.Float64("price", price))
 
 			entryPrice = price
 			tokenAmount := taskToExecute.AmountSol / price

@@ -192,7 +192,8 @@ func (w *CreateTaskWizard) Update(msg tea.Msg) (router.Screen, tea.Cmd) {
 			}
 
 		case key.Matches(msg, w.keyMap.Enter):
-			if w.currentStep == StepPreview {
+			switch w.currentStep {
+			case StepPreview:
 				// Save task and go to confirmation
 				err := w.saveTask()
 				if err != nil {
@@ -200,12 +201,12 @@ func (w *CreateTaskWizard) Update(msg tea.Msg) (router.Screen, tea.Cmd) {
 				} else {
 					w.currentStep = StepConfirm
 				}
-			} else if w.currentStep == StepConfirm {
+			case StepConfirm:
 				// Task saved successfully, go back to main menu
 				cmds = append(cmds, func() tea.Msg {
 					return ui.RouterMsg{To: ui.RouteMainMenu}
 				})
-			} else {
+			default:
 				// Validate current form and go to next step
 				if w.validateCurrentStep() {
 					w.nextStep()

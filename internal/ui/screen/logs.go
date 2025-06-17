@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -57,7 +58,6 @@ type LogsScreen struct {
 	autoRefresh     bool
 	refreshInterval time.Duration
 	lastUpdate      time.Time
-	scrollPosition  int
 	errors          []string
 
 	// Styling
@@ -472,7 +472,7 @@ func (s *LogsScreen) updateTableDisplay() {
 		return
 	}
 
-	var rows [][]string
+	rows := make([][]string, 0, len(s.filteredLogs))
 
 	for _, logEntry := range s.filteredLogs {
 		var row []string
@@ -536,7 +536,7 @@ func (s *LogsScreen) applyFilters() {
 	s.searchTerm = s.filterForm.GetFieldValue("search")
 	s.componentFilter = s.filterForm.GetFieldValue("component")
 
-	var filtered []LogEntry
+	filtered := make([]LogEntry, 0, len(s.logs))
 
 	for _, logEntry := range s.logs {
 		// Level filter
@@ -628,11 +628,21 @@ func (s *LogsScreen) loadLogsFromFile() ([]LogEntry, error) {
 
 // parseLogFile parses a log file and returns log entries
 func (s *LogsScreen) parseLogFile(filename string) ([]LogEntry, error) {
-	file, err := os.Open(filename)
+	// Validate filename to prevent directory traversal
+	if strings.Contains(filename, "..") || !strings.HasSuffix(filename, ".log") {
+		return nil, fmt.Errorf("invalid log filename")
+	}
+
+	file, err := os.Open(filepath.Clean(filename))
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			// Log close error but don't override the main error
+			fmt.Printf("Warning: failed to close log file: %v\n", closeErr)
+		}
+	}()
 
 	var logs []LogEntry
 	scanner := bufio.NewScanner(file)

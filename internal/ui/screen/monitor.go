@@ -359,9 +359,9 @@ func (s *MonitorScreen) renderStatusBar() string {
 
 	// Total PnL
 	totalPnL := s.calculateTotalPnL()
-	pnlColor := s.successStyle.Copy()
+	pnlColor := s.successStyle
 	if totalPnL < 0 {
-		pnlColor = s.errorStyle.Copy()
+		pnlColor = s.errorStyle
 	}
 	statusParts = append(statusParts, pnlColor.Render(fmt.Sprintf("Total PnL: %.4f SOL", totalPnL)))
 
@@ -467,7 +467,7 @@ func (s *MonitorScreen) updateTableDisplay() {
 		return
 	}
 
-	var rows [][]string
+	rows := make([][]string, 0, len(s.positions))
 	palette := style.DefaultPalette()
 
 	for i, pos := range s.positions {

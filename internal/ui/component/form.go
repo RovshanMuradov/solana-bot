@@ -62,9 +62,6 @@ type Form struct {
 	focusedStyle  lipgloss.Style
 	errorStyle    lipgloss.Style
 	checkboxStyle lipgloss.Style
-
-	// State
-	submitted bool
 }
 
 // NewForm creates a new form component

@@ -112,7 +112,7 @@ func (h *HelpBar) View() string {
 
 // renderCompact renders help items in compact mode (keys only)
 func (h *HelpBar) renderCompact(maxWidth int) []string {
-	var items []string
+	items := make([]string, 0, len(h.keyBindings))
 	currentWidth := 0
 
 	for _, binding := range h.keyBindings {
@@ -142,7 +142,7 @@ func (h *HelpBar) renderCompact(maxWidth int) []string {
 
 // renderFull renders help items in full mode (keys + descriptions)
 func (h *HelpBar) renderFull(maxWidth int) []string {
-	var items []string
+	items := make([]string, 0, len(h.keyBindings))
 	currentWidth := 0
 
 	for _, binding := range h.keyBindings {
@@ -224,7 +224,7 @@ func (h *HelpBar) ViewQuick() string {
 		maxItems = 2
 	}
 
-	var quickItems []string
+	quickItems := make([]string, 0, maxItems)
 	count := 0
 
 	for _, binding := range h.keyBindings {

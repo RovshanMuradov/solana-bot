@@ -278,7 +278,7 @@ func (m *MainMenuScreen) renderHeader() string {
 
 // renderMenu renders the menu items
 func (m *MainMenuScreen) renderMenu() string {
-	var menuItems []string
+	menuItems := make([]string, 0, len(m.menuItems))
 
 	for i, item := range m.menuItems {
 		var itemStyle lipgloss.Style

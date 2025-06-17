@@ -247,8 +247,6 @@ func (s *TaskListScreen) Update(msg tea.Msg) (router.Screen, tea.Cmd) {
 			s.executingTask = -1
 			if msg.Error != nil {
 				s.errors = append(s.errors, fmt.Sprintf("Task execution failed: %v", msg.Error))
-			} else {
-				// Success - could show success message
 			}
 		}
 
@@ -379,7 +377,7 @@ func (s *TaskListScreen) updateTableDisplay() {
 		return
 	}
 
-	var rows [][]string
+	rows := make([][]string, 0, len(s.tasks))
 	palette := style.DefaultPalette()
 
 	for i, task := range s.tasks {
@@ -447,11 +445,21 @@ func (s *TaskListScreen) loadTasksCmd() tea.Cmd {
 func (s *TaskListScreen) loadTasksFromCSV() ([]task.Task, error) {
 	csvPath := filepath.Join("configs", "tasks.csv")
 
-	file, err := os.Open(csvPath)
+	// Validate file path to prevent directory traversal
+	if !strings.HasPrefix(csvPath, "configs/") {
+		return nil, fmt.Errorf("invalid file path")
+	}
+
+	file, err := os.Open(filepath.Clean(csvPath))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open tasks.csv: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			// Log close error but don't override the main error
+			fmt.Printf("Warning: failed to close CSV file: %v\n", closeErr)
+		}
+	}()
 
 	reader := csv.NewReader(file)
 	records, err := reader.ReadAll()
@@ -463,7 +471,7 @@ func (s *TaskListScreen) loadTasksFromCSV() ([]task.Task, error) {
 		return []task.Task{}, nil // Empty file or only headers
 	}
 
-	var tasks []task.Task
+	tasks := make([]task.Task, 0, len(records)-1)
 
 	// Skip header row
 	for i, record := range records[1:] {
@@ -546,7 +554,7 @@ func (s *TaskListScreen) executeSelectedTasksCmd() tea.Cmd {
 
 	if len(selectedTasks) == 0 {
 		return func() tea.Msg {
-			return ui.ErrorMsg{Error: fmt.Errorf("No tasks selected")}
+			return ui.ErrorMsg{Error: fmt.Errorf("no tasks selected")}
 		}
 	}
 
