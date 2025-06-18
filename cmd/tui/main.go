@@ -20,30 +20,14 @@ import (
 	"go.uber.org/zap"
 )
 
-// EventBusAdapter adapts bot.EventBus to monitor.EventBus interface
-type EventBusAdapter struct {
-	eventBus *bot.EventBus
-}
-
-func (a *EventBusAdapter) Publish(event interface{}) {
-	if tradingEvent, ok := event.(bot.TradingEvent); ok {
-		a.eventBus.Publish(tradingEvent)
-	}
-}
-
 // AppModel represents the main TUI application model
 type AppModel struct {
 	router *router.Router
 	width  int
 	height int
 
-	// Real services
-	taskManager      *task.Manager
-	blockchainClient *blockchain.Client
-	wallets          map[string]*task.Wallet
-	logger           *zap.Logger
-	config           *task.Config
-	tradingService   *bot.TradingService
+	// Unified bot service
+	botService *bot.BotService
 
 	// Active monitoring sessions (legacy - deprecated)
 	activeSessions map[string]*monitor.MonitoringSession
@@ -56,59 +40,19 @@ type AppModel struct {
 func NewAppModel(ctx context.Context, cfg *task.Config, logger *zap.Logger) *AppModel {
 	appCtx, cancel := context.WithCancel(ctx)
 
-	// Initialize blockchain client
-	var rpcURL string
-	if len(cfg.RPCList) > 0 {
-		rpcURL = cfg.RPCList[0]
-	} else {
-		rpcURL = "https://api.mainnet-beta.solana.com"
-	}
-	blockchainClient := blockchain.NewClient(rpcURL, logger)
-
-	// Initialize task manager
-	taskManager := task.NewManager(logger)
-
-	// Load wallets
-	wallets, err := task.LoadWallets("configs/wallets.csv")
+	// Create unified bot service
+	botService, err := bot.NewBotService(appCtx, &bot.BotServiceConfig{
+		Config: cfg,
+		Logger: logger,
+	})
 	if err != nil {
-		logger.Error("Failed to load wallets", zap.Error(err))
-		wallets = make(map[string]*task.Wallet)
+		logger.Fatal("Failed to create bot service", zap.Error(err))
 	}
 
-	// Create MonitorService
-	monitorService := monitor.NewMonitorService(&monitor.MonitorServiceConfig{
-		Logger:           logger,
-		BlockchainClient: blockchainClient,
-		EventBus:         nil, // Will be set after TradingService creation
-	})
-
-	// Create TradingService
-	tradingService := bot.NewTradingService(appCtx, &bot.TradingServiceConfig{
-		Logger:           logger,
-		BlockchainClient: blockchainClient,
-		Wallets:          wallets,
-		TaskManager:      taskManager,
-		MonitorService:   monitorService,
-	})
-
-	// Create EventBus adapter for MonitorService compatibility
-	eventBusAdapter := &EventBusAdapter{eventBus: tradingService.GetEventBus()}
-
-	// Recreate MonitorService with proper EventBus
-	monitorService = monitor.NewMonitorService(&monitor.MonitorServiceConfig{
-		Logger:           logger,
-		BlockchainClient: blockchainClient,
-		EventBus:         eventBusAdapter,
-	})
-
-	// Recreate TradingService with proper MonitorService
-	tradingService = bot.NewTradingService(appCtx, &bot.TradingServiceConfig{
-		Logger:           logger,
-		BlockchainClient: blockchainClient,
-		Wallets:          wallets,
-		TaskManager:      taskManager,
-		MonitorService:   monitorService,
-	})
+	// Start the bot service
+	if err := botService.Start(); err != nil {
+		logger.Fatal("Failed to start bot service", zap.Error(err))
+	}
 
 	// Create the main menu screen as the initial screen
 	mainMenu := screen.NewMainMenuScreen()
@@ -117,16 +61,11 @@ func NewAppModel(ctx context.Context, cfg *task.Config, logger *zap.Logger) *App
 	r := router.New(mainMenu)
 
 	app := &AppModel{
-		router:           r,
-		taskManager:      taskManager,
-		blockchainClient: blockchainClient,
-		wallets:          wallets,
-		logger:           logger,
-		config:           cfg,
-		tradingService:   tradingService,
-		activeSessions:   make(map[string]*monitor.MonitoringSession),
-		ctx:              appCtx,
-		cancel:           cancel,
+		router:         r,
+		botService:     botService,
+		activeSessions: make(map[string]*monitor.MonitoringSession),
+		ctx:            appCtx,
+		cancel:         cancel,
 	}
 
 	return app
@@ -284,27 +223,27 @@ func (m *AppModel) RemoveMonitoringSession(tokenMint string) {
 
 // GetTaskManager returns the task manager
 func (m *AppModel) GetTaskManager() *task.Manager {
-	return m.taskManager
+	return m.botService.GetTaskManager()
 }
 
 // GetBlockchainClient returns the blockchain client
 func (m *AppModel) GetBlockchainClient() *blockchain.Client {
-	return m.blockchainClient
+	return m.botService.GetBlockchainClient()
 }
 
 // GetWallets returns the wallets map
 func (m *AppModel) GetWallets() map[string]*task.Wallet {
-	return m.wallets
+	return m.botService.GetWallets()
 }
 
 // GetLogger returns the logger
 func (m *AppModel) GetLogger() *zap.Logger {
-	return m.logger
+	return m.botService.GetLogger()
 }
 
 // GetConfig returns the config
 func (m *AppModel) GetConfig() *task.Config {
-	return m.config
+	return m.botService.GetConfig()
 }
 
 // GetContext returns the app context
@@ -312,31 +251,32 @@ func (m *AppModel) GetContext() context.Context {
 	return m.ctx
 }
 
-// GetCommandBus returns the command bus from trading service
+// GetCommandBus returns the command bus from bot service
 func (m *AppModel) GetCommandBus() *bot.CommandBus {
-	return m.tradingService.GetCommandBus()
+	return m.botService.GetCommandBus()
 }
 
-// GetEventBus returns the event bus from trading service
+// GetEventBus returns the event bus from bot service
 func (m *AppModel) GetEventBus() *bot.EventBus {
-	return m.tradingService.GetEventBus()
+	return m.botService.GetEventBus()
 }
 
 // GetTradingService returns the trading service
 func (m *AppModel) GetTradingService() *bot.TradingService {
-	return m.tradingService
+	return m.botService.GetTradingService()
+}
+
+// GetBotService returns the bot service
+func (m *AppModel) GetBotService() *bot.BotService {
+	return m.botService
 }
 
 // Shutdown gracefully shuts down the application
 func (m *AppModel) Shutdown() {
-	m.sessionsMutex.Lock()
-	defer m.sessionsMutex.Unlock()
-
-	// Stop TradingService and all monitoring sessions
-	if m.tradingService != nil {
-		monitorService := m.tradingService.GetMonitorService()
-		if err := monitorService.Shutdown(m.ctx); err != nil {
-			m.logger.Error("Failed to shutdown monitor service", zap.Error(err))
+	// Shutdown bot service (this will handle all service shutdowns)
+	if m.botService != nil {
+		if err := m.botService.Shutdown(m.ctx); err != nil {
+			m.botService.GetLogger().Error("Failed to shutdown bot service", zap.Error(err))
 		}
 	}
 
