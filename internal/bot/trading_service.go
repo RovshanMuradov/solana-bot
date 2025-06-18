@@ -58,6 +58,8 @@ func NewTradingService(ctx context.Context, config *TradingServiceConfig) *Tradi
 	commandBus.RegisterHandler(ExecuteTaskCommand{}, &TaskExecutionHandler{service: service})
 	commandBus.RegisterHandler(SellPositionCommand{}, &SellPositionHandler{service: service})
 	commandBus.RegisterHandler(RefreshDataCommand{}, &RefreshDataHandler{service: service})
+	commandBus.RegisterHandler(LoadPositionsCommand{}, &LoadPositionsHandler{service: service})
+	commandBus.RegisterHandler(LoadTasksCommand{}, &LoadTasksHandler{service: service})
 
 	service.logger.Info("TradingService initialized successfully")
 	return service
@@ -503,5 +505,133 @@ func (h *RefreshDataHandler) Handle(ctx context.Context, cmd TradingCommand) err
 // CanHandle returns true if this handler can handle the command
 func (h *RefreshDataHandler) CanHandle(cmd TradingCommand) bool {
 	_, ok := cmd.(RefreshDataCommand)
+	return ok
+}
+
+// LoadPositionsHandler handles load positions commands
+type LoadPositionsHandler struct {
+	service *TradingService
+}
+
+// Handle loads positions from monitoring sessions
+func (h *LoadPositionsHandler) Handle(ctx context.Context, cmd TradingCommand) error {
+	loadCmd, ok := cmd.(LoadPositionsCommand)
+	if !ok {
+		return fmt.Errorf("invalid command type for LoadPositionsHandler")
+	}
+
+	h.service.logger.Info("📊 Handling load positions command",
+		zap.String("user_id", loadCmd.UserID))
+
+	// Get active monitoring sessions from monitor service
+	sessions := h.service.monitorService.GetAllSessions()
+
+	positions := make([]UIPosition, 0, len(sessions))
+	positionID := 1
+
+	for tokenMint := range sessions {
+		// Create UI position from monitoring session
+		position := UIPosition{
+			ID:           positionID,
+			TaskName:     fmt.Sprintf("MONITOR_%d", positionID),
+			TokenMint:    tokenMint,
+			TokenSymbol:  h.getTokenSymbol(tokenMint),
+			EntryPrice:   0, // Will be updated from monitoring updates
+			CurrentPrice: 0, // Will be updated from monitoring updates
+			Amount:       0, // Will be updated from monitoring updates
+			PnLPercent:   0,
+			PnLSol:       0,
+			Volume24h:    0,
+			LastUpdate:   time.Now(),
+			PriceHistory: make([]float64, 0),
+			Active:       true,
+		}
+
+		positions = append(positions, position)
+		positionID++
+	}
+
+	// Publish positions loaded event
+	h.service.eventBus.Publish(PositionsLoadedEvent{
+		Positions: positions,
+		UserID:    loadCmd.UserID,
+		Timestamp: time.Now(),
+	})
+
+	h.service.logger.Info("✅ Positions loaded successfully",
+		zap.String("user_id", loadCmd.UserID),
+		zap.Int("position_count", len(positions)))
+
+	return nil
+}
+
+// CanHandle returns true if this handler can handle the command
+func (h *LoadPositionsHandler) CanHandle(cmd TradingCommand) bool {
+	_, ok := cmd.(LoadPositionsCommand)
+	return ok
+}
+
+// getTokenSymbol extracts a symbol from token mint (simplified)
+func (h *LoadPositionsHandler) getTokenSymbol(tokenMint string) string {
+	if len(tokenMint) >= 8 {
+		return tokenMint[:4] + "..." + tokenMint[len(tokenMint)-4:]
+	}
+	return "TOKEN"
+}
+
+// LoadTasksHandler handles load tasks commands
+type LoadTasksHandler struct {
+	service *TradingService
+}
+
+// Handle loads tasks from task manager
+func (h *LoadTasksHandler) Handle(ctx context.Context, cmd TradingCommand) error {
+	loadCmd, ok := cmd.(LoadTasksCommand)
+	if !ok {
+		return fmt.Errorf("invalid command type for LoadTasksHandler")
+	}
+
+	h.service.logger.Info("📋 Handling load tasks command",
+		zap.String("user_id", loadCmd.UserID))
+
+	// Load tasks from CSV through task manager
+	tasks, err := h.service.taskManager.LoadTasks("configs/tasks.csv")
+	if err != nil {
+		h.service.logger.Error("Failed to load tasks", zap.Error(err))
+		return fmt.Errorf("failed to load tasks: %w", err)
+	}
+
+	// Convert to UI tasks
+	uiTasks := make([]UITask, len(tasks))
+	for i, task := range tasks {
+		uiTasks[i] = UITask{
+			ID:             task.ID,
+			TaskName:       task.TaskName,
+			TokenMint:      task.TokenMint,
+			ActionType:     string(task.Operation),
+			Amount:         task.AmountSol,
+			AutosellAmount: task.AutosellAmount,
+			WalletKey:      task.WalletName,
+			Status:         "pending", // Default status
+		}
+	}
+
+	// Publish tasks loaded event
+	h.service.eventBus.Publish(TasksLoadedEvent{
+		Tasks:     uiTasks,
+		UserID:    loadCmd.UserID,
+		Timestamp: time.Now(),
+	})
+
+	h.service.logger.Info("✅ Tasks loaded successfully",
+		zap.String("user_id", loadCmd.UserID),
+		zap.Int("task_count", len(uiTasks)))
+
+	return nil
+}
+
+// CanHandle returns true if this handler can handle the command
+func (h *LoadTasksHandler) CanHandle(cmd TradingCommand) bool {
+	_, ok := cmd.(LoadTasksCommand)
 	return ok
 }

@@ -155,6 +155,73 @@ func (e MonitoringSessionStoppedEvent) GetUserID() string {
 	return e.UserID
 }
 
+// UIPosition представляет позицию для UI слоя
+type UIPosition struct {
+	ID           int       `json:"id"`
+	TaskName     string    `json:"task_name"`
+	TokenMint    string    `json:"token_mint"`
+	TokenSymbol  string    `json:"token_symbol"`
+	EntryPrice   float64   `json:"entry_price"`
+	CurrentPrice float64   `json:"current_price"`
+	Amount       float64   `json:"amount"`
+	PnLPercent   float64   `json:"pnl_percent"`
+	PnLSol       float64   `json:"pnl_sol"`
+	Volume24h    float64   `json:"volume_24h"`
+	LastUpdate   time.Time `json:"last_update"`
+	PriceHistory []float64 `json:"price_history"`
+	Active       bool      `json:"active"`
+}
+
+// UITask представляет задачу для UI слоя
+type UITask struct {
+	ID             int     `json:"id"`
+	TaskName       string  `json:"task_name"`
+	TokenMint      string  `json:"token_mint"`
+	ActionType     string  `json:"action_type"`
+	Amount         float64 `json:"amount"`
+	AutosellAmount float64 `json:"autosell_amount"`
+	WalletKey      string  `json:"wallet_key"`
+	Status         string  `json:"status"`
+}
+
+// PositionsLoadedEvent событие загрузки позиций
+type PositionsLoadedEvent struct {
+	Positions []UIPosition `json:"positions"`
+	UserID    string       `json:"user_id"`
+	Timestamp time.Time    `json:"timestamp"`
+}
+
+func (e PositionsLoadedEvent) GetType() string {
+	return "positions_loaded"
+}
+
+func (e PositionsLoadedEvent) GetTimestamp() time.Time {
+	return e.Timestamp
+}
+
+func (e PositionsLoadedEvent) GetUserID() string {
+	return e.UserID
+}
+
+// TasksLoadedEvent событие загрузки задач
+type TasksLoadedEvent struct {
+	Tasks     []UITask  `json:"tasks"`
+	UserID    string    `json:"user_id"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+func (e TasksLoadedEvent) GetType() string {
+	return "tasks_loaded"
+}
+
+func (e TasksLoadedEvent) GetTimestamp() time.Time {
+	return e.Timestamp
+}
+
+func (e TasksLoadedEvent) GetUserID() string {
+	return e.UserID
+}
+
 // EventHandler интерфейс для обработчиков событий
 type EventHandler interface {
 	Handle(event TradingEvent) error

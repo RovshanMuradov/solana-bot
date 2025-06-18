@@ -93,6 +93,48 @@ func (c RefreshDataCommand) Validate() error {
 	return nil
 }
 
+// LoadPositionsCommand команда для загрузки позиций
+type LoadPositionsCommand struct {
+	UserID    string    `json:"user_id"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+func (c LoadPositionsCommand) GetType() string {
+	return "load_positions"
+}
+
+func (c LoadPositionsCommand) GetUserID() string {
+	return c.UserID
+}
+
+func (c LoadPositionsCommand) Validate() error {
+	if c.UserID == "" {
+		return fmt.Errorf("user_id cannot be empty")
+	}
+	return nil
+}
+
+// LoadTasksCommand команда для загрузки задач
+type LoadTasksCommand struct {
+	UserID    string    `json:"user_id"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+func (c LoadTasksCommand) GetType() string {
+	return "load_tasks"
+}
+
+func (c LoadTasksCommand) GetUserID() string {
+	return c.UserID
+}
+
+func (c LoadTasksCommand) Validate() error {
+	if c.UserID == "" {
+		return fmt.Errorf("user_id cannot be empty")
+	}
+	return nil
+}
+
 // CommandHandler интерфейс для обработчиков команд
 type CommandHandler interface {
 	Handle(ctx context.Context, cmd TradingCommand) error

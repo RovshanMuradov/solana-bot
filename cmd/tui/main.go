@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+	"github.com/rovshanmuradov/solana-bot/internal/bot"
 	"github.com/rovshanmuradov/solana-bot/internal/logger"
 	"github.com/rovshanmuradov/solana-bot/internal/monitor"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
@@ -18,6 +19,17 @@ import (
 	"github.com/rovshanmuradov/solana-bot/internal/ui/screen"
 	"go.uber.org/zap"
 )
+
+// EventBusAdapter adapts bot.EventBus to monitor.EventBus interface
+type EventBusAdapter struct {
+	eventBus *bot.EventBus
+}
+
+func (a *EventBusAdapter) Publish(event interface{}) {
+	if tradingEvent, ok := event.(bot.TradingEvent); ok {
+		a.eventBus.Publish(tradingEvent)
+	}
+}
 
 // AppModel represents the main TUI application model
 type AppModel struct {
@@ -31,8 +43,9 @@ type AppModel struct {
 	wallets          map[string]*task.Wallet
 	logger           *zap.Logger
 	config           *task.Config
+	tradingService   *bot.TradingService
 
-	// Active monitoring sessions
+	// Active monitoring sessions (legacy - deprecated)
 	activeSessions map[string]*monitor.MonitoringSession
 	sessionsMutex  sync.RWMutex
 	ctx            context.Context
@@ -62,6 +75,41 @@ func NewAppModel(ctx context.Context, cfg *task.Config, logger *zap.Logger) *App
 		wallets = make(map[string]*task.Wallet)
 	}
 
+	// Create MonitorService
+	monitorService := monitor.NewMonitorService(&monitor.MonitorServiceConfig{
+		Logger:           logger,
+		BlockchainClient: blockchainClient,
+		EventBus:         nil, // Will be set after TradingService creation
+	})
+
+	// Create TradingService
+	tradingService := bot.NewTradingService(appCtx, &bot.TradingServiceConfig{
+		Logger:           logger,
+		BlockchainClient: blockchainClient,
+		Wallets:          wallets,
+		TaskManager:      taskManager,
+		MonitorService:   monitorService,
+	})
+
+	// Create EventBus adapter for MonitorService compatibility
+	eventBusAdapter := &EventBusAdapter{eventBus: tradingService.GetEventBus()}
+
+	// Recreate MonitorService with proper EventBus
+	monitorService = monitor.NewMonitorService(&monitor.MonitorServiceConfig{
+		Logger:           logger,
+		BlockchainClient: blockchainClient,
+		EventBus:         eventBusAdapter,
+	})
+
+	// Recreate TradingService with proper MonitorService
+	tradingService = bot.NewTradingService(appCtx, &bot.TradingServiceConfig{
+		Logger:           logger,
+		BlockchainClient: blockchainClient,
+		Wallets:          wallets,
+		TaskManager:      taskManager,
+		MonitorService:   monitorService,
+	})
+
 	// Create the main menu screen as the initial screen
 	mainMenu := screen.NewMainMenuScreen()
 
@@ -75,6 +123,7 @@ func NewAppModel(ctx context.Context, cfg *task.Config, logger *zap.Logger) *App
 		wallets:          wallets,
 		logger:           logger,
 		config:           cfg,
+		tradingService:   tradingService,
 		activeSessions:   make(map[string]*monitor.MonitoringSession),
 		ctx:              appCtx,
 		cancel:           cancel,
@@ -164,8 +213,8 @@ func (m *AppModel) handleNavigation(route ui.Route) tea.Cmd {
 		newScreen = screen.NewRealModeMonitorScreen(m)
 
 	case ui.RouteLogs:
-		// Pass logger to LogsScreen
-		newScreen = screen.NewRealModeLogsScreen(m.logger)
+		// Use existing logs screen for now
+		newScreen = screen.NewLogsScreen()
 
 	case ui.RouteSettings:
 		// TODO: Create settings screen
@@ -263,12 +312,35 @@ func (m *AppModel) GetContext() context.Context {
 	return m.ctx
 }
 
+// GetCommandBus returns the command bus from trading service
+func (m *AppModel) GetCommandBus() *bot.CommandBus {
+	return m.tradingService.GetCommandBus()
+}
+
+// GetEventBus returns the event bus from trading service
+func (m *AppModel) GetEventBus() *bot.EventBus {
+	return m.tradingService.GetEventBus()
+}
+
+// GetTradingService returns the trading service
+func (m *AppModel) GetTradingService() *bot.TradingService {
+	return m.tradingService
+}
+
 // Shutdown gracefully shuts down the application
 func (m *AppModel) Shutdown() {
 	m.sessionsMutex.Lock()
 	defer m.sessionsMutex.Unlock()
 
-	// Stop all monitoring sessions
+	// Stop TradingService and all monitoring sessions
+	if m.tradingService != nil {
+		monitorService := m.tradingService.GetMonitorService()
+		if err := monitorService.Shutdown(m.ctx); err != nil {
+			m.logger.Error("Failed to shutdown monitor service", zap.Error(err))
+		}
+	}
+
+	// Stop legacy monitoring sessions (deprecated)
 	for _, session := range m.activeSessions {
 		session.Stop()
 	}
