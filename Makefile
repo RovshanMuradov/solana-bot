@@ -26,6 +26,9 @@ check: ## Run all code checks
 test: ## Run tests
 	go test ./... -v
 
+test-race: ## Run tests with race detector
+	go test ./... -v -race
+
 lint: ## Run linter
 	golangci-lint run
 
