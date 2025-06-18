@@ -34,18 +34,33 @@ type MonitoringSession struct {
 	logger       *zap.Logger
 	priceUpdates chan PriceUpdate
 	errChan      chan error
+
+	// Current state for sync access
+	currentPrice  float64
+	currentTokens float64
+	mu            sync.RWMutex
 }
 
 // NewMonitoringSession создает новую сессию мониторинга.
 func NewMonitoringSession(parentCtx context.Context, config *SessionConfig) *MonitoringSession {
 	ctx, cancel := context.WithCancel(parentCtx)
+
+	// Calculate initial token amount
+	var minTokenDecimals uint8 = 6
+	initialTokens := 0.0
+	if config.TokenBalance > 0 {
+		initialTokens = float64(config.TokenBalance) / math.Pow10(int(minTokenDecimals))
+	}
+
 	return &MonitoringSession{
-		config:       config,
-		logger:       config.Logger,
-		ctx:          ctx,
-		cancel:       cancel,
-		priceUpdates: make(chan PriceUpdate, 100), // Buffered channel for price updates
-		errChan:      make(chan error, 10),        // Buffered channel for errors
+		config:        config,
+		logger:        config.Logger,
+		ctx:           ctx,
+		cancel:        cancel,
+		priceUpdates:  make(chan PriceUpdate, 100), // Buffered channel for price updates
+		errChan:       make(chan error, 10),        // Buffered channel for errors
+		currentPrice:  config.InitialPrice,         // Initialize with entry price
+		currentTokens: initialTokens,               // Initialize with token balance
 	}
 }
 
@@ -211,6 +226,12 @@ func (ms *MonitoringSession) onPriceUpdate(update PriceUpdate) {
 		Tokens:  updatedBalance,
 	}
 
+	// Update current state for sync access
+	ms.mu.Lock()
+	ms.currentPrice = update.Current
+	ms.currentTokens = updatedBalance
+	ms.mu.Unlock()
+
 	// Отправляем обновление в канал
 	select {
 	case ms.priceUpdates <- updatedPriceUpdate:
@@ -252,4 +273,54 @@ func (ms *MonitoringSession) updateTokenBalance(ctx context.Context, currentAmou
 	}
 
 	return updatedBalance, nil
+}
+
+// GetCurrentState returns the current monitoring state
+func (ms *MonitoringSession) GetCurrentState() (currentPrice, entryPrice, currentTokens float64, task *task.Task) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+
+	return ms.currentPrice, ms.config.InitialPrice, ms.currentTokens, ms.config.Task
+}
+
+// GetTokenMint returns the token mint being monitored
+func (ms *MonitoringSession) GetTokenMint() string {
+	return ms.config.Task.TokenMint
+}
+
+// GetEntryPrice returns the entry price for this position
+func (ms *MonitoringSession) GetEntryPrice() float64 {
+	return ms.config.InitialPrice
+}
+
+// GetCurrentPrice returns the current price (thread-safe)
+func (ms *MonitoringSession) GetCurrentPrice() float64 {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	return ms.currentPrice
+}
+
+// GetCurrentTokens returns the current token amount (thread-safe)
+func (ms *MonitoringSession) GetCurrentTokens() float64 {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	return ms.currentTokens
+}
+
+// CalculatePnL calculates current PnL metrics
+func (ms *MonitoringSession) CalculatePnL() (pnlPercent, pnlSol float64) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+
+	if ms.config.InitialPrice <= 0 {
+		return 0, 0
+	}
+
+	// Calculate percentage change
+	pnlPercent = ((ms.currentPrice - ms.config.InitialPrice) / ms.config.InitialPrice) * 100
+
+	// Calculate SOL profit/loss
+	pnlSol = (ms.currentPrice - ms.config.InitialPrice) * ms.currentTokens
+
+	return pnlPercent, pnlSol
 }

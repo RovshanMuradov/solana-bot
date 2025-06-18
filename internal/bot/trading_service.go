@@ -529,21 +529,25 @@ func (h *LoadPositionsHandler) Handle(ctx context.Context, cmd TradingCommand) e
 	positions := make([]UIPosition, 0, len(sessions))
 	positionID := 1
 
-	for tokenMint := range sessions {
-		// Create UI position from monitoring session
+	for tokenMint, session := range sessions {
+		// Extract real data from monitoring session
+		currentPrice, entryPrice, currentTokens, task := session.GetCurrentState()
+		pnlPercent, pnlSol := session.CalculatePnL()
+
+		// Create UI position with real monitoring data
 		position := UIPosition{
 			ID:           positionID,
-			TaskName:     fmt.Sprintf("MONITOR_%d", positionID),
+			TaskName:     task.TaskName,
 			TokenMint:    tokenMint,
 			TokenSymbol:  h.getTokenSymbol(tokenMint),
-			EntryPrice:   0, // Will be updated from monitoring updates
-			CurrentPrice: 0, // Will be updated from monitoring updates
-			Amount:       0, // Will be updated from monitoring updates
-			PnLPercent:   0,
-			PnLSol:       0,
-			Volume24h:    0,
+			EntryPrice:   entryPrice,
+			CurrentPrice: currentPrice,
+			Amount:       currentTokens,
+			PnLPercent:   pnlPercent,
+			PnLSol:       pnlSol,
+			Volume24h:    0, // TODO: Could be enhanced to get 24h volume
 			LastUpdate:   time.Now(),
-			PriceHistory: make([]float64, 0),
+			PriceHistory: []float64{currentPrice}, // Initialize with current price
 			Active:       true,
 		}
 
