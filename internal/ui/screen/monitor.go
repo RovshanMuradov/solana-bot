@@ -12,6 +12,7 @@ import (
 	"github.com/rovshanmuradov/solana-bot/internal/monitor"
 	"github.com/rovshanmuradov/solana-bot/internal/ui"
 	"github.com/rovshanmuradov/solana-bot/internal/ui/component"
+	"github.com/rovshanmuradov/solana-bot/internal/ui/gaming"
 	"github.com/rovshanmuradov/solana-bot/internal/ui/router"
 	"github.com/rovshanmuradov/solana-bot/internal/ui/state"
 	"github.com/rovshanmuradov/solana-bot/internal/ui/style"
@@ -46,6 +47,9 @@ type MonitorScreen struct {
 	sparklines map[int]*component.Sparkline // Position ID -> Sparkline
 	pnlGauges  map[int]*component.PnLGauge  // Position ID -> PnL Gauge
 
+	// Enhanced UI components (Day 1)
+	statusHeader *component.StatusHeader
+
 	// State
 	positions        []MonitoredPosition
 	selectedPosition int
@@ -69,6 +73,7 @@ type MonitorScreen struct {
 	showSparklines bool
 	showPnLGauges  bool
 	compactMode    bool
+	enhancedMode   bool // Toggle for enhanced UI with new components
 }
 
 // NewMonitorScreen creates a new monitoring screen
@@ -88,6 +93,7 @@ func NewMonitorScreen() *MonitorScreen {
 		showSparklines:   true,
 		showPnLGauges:    true,
 		compactMode:      false,
+		enhancedMode:     true, // Enable enhanced mode by default
 
 		titleStyle: lipgloss.NewStyle().
 			Foreground(palette.Primary).
@@ -137,7 +143,8 @@ func NewMonitorScreen() *MonitorScreen {
 
 	screen.initializeTable()
 	screen.initializeHelpBar()
-	screen.loadMockData() // Load some mock data for demonstration
+	screen.initializeStatusHeader() // Initialize enhanced StatusHeader
+	screen.loadMockData()           // Load some mock data for demonstration
 
 	return screen
 }
@@ -151,7 +158,8 @@ func (s *MonitorScreen) initializeTable() {
 		AddColumn("Current", 10, lipgloss.Right).
 		AddColumn("PnL %", 8, lipgloss.Right).
 		AddColumn("PnL SOL", 10, lipgloss.Right).
-		AddColumn("Trend", 15, lipgloss.Left).
+		AddColumn("Level", 6, lipgloss.Center). // Gaming level badge
+		AddColumn("Trend", 12, lipgloss.Left).
 		AddColumn("Status", 8, lipgloss.Center).
 		SetShowBorder(true).
 		SetSelectable(true).
@@ -163,6 +171,21 @@ func (s *MonitorScreen) initializeHelpBar() {
 	s.helpBar = component.NewHelpBar().
 		SetKeyBindings(s.keyMap.ContextualHelp(ui.RouteMonitor)).
 		SetCompact(false)
+}
+
+// initializeStatusHeader sets up the enhanced status header
+func (s *MonitorScreen) initializeStatusHeader() {
+	s.statusHeader = component.NewStatusHeader()
+
+	// Set a mock wallet for now - this would be real wallet in production
+	s.statusHeader.SetWallet("SoLanaBotWalletExample123456789")
+
+	// Set initial RPC status
+	s.statusHeader.SetRPCStatus(component.RPCStatus{
+		Connected: true,
+		Latency:   25 * time.Millisecond,
+		LastCheck: time.Now(),
+	})
 }
 
 // Init initializes the monitor screen
@@ -246,6 +269,11 @@ func (s *MonitorScreen) Update(msg tea.Msg) (router.Screen, tea.Cmd) {
 				cmds = append(cmds, s.startAutoRefresh())
 			}
 
+		case msg.String() == "v", msg.String() == "V":
+			// Toggle enhanced view mode
+			s.enhancedMode = !s.enhancedMode
+			s.updateDisplayComponents()
+
 		case msg.String() == "1", msg.String() == "2", msg.String() == "3", msg.String() == "4", msg.String() == "5":
 			// Quick sell percentages
 			if s.selectedPosition < len(s.positions) {
@@ -299,18 +327,27 @@ func (s *MonitorScreen) View() string {
 
 	var content strings.Builder
 
-	// Title
-	title := "📊 Position Monitor"
-	if s.autoRefresh {
-		title += " (Auto-refresh ON)"
-	}
-	content.WriteString(s.titleStyle.Width(s.width).Render(title))
-	content.WriteString("\n\n")
+	if s.enhancedMode {
+		// Enhanced mode with new StatusHeader
+		if s.statusHeader != nil {
+			s.statusHeader.Update() // Update PnL from GlobalCache
+			content.WriteString(s.statusHeader.View())
+			content.WriteString("\n")
+		}
+	} else {
+		// Original title and status bar for fallback mode
+		title := "📊 Position Monitor"
+		if s.autoRefresh {
+			title += " (Auto-refresh ON)"
+		}
+		content.WriteString(s.titleStyle.Width(s.width).Render(title))
+		content.WriteString("\n\n")
 
-	// Status bar
-	statusBar := s.renderStatusBar()
-	content.WriteString(statusBar)
-	content.WriteString("\n\n")
+		// Status bar
+		statusBar := s.renderStatusBar()
+		content.WriteString(statusBar)
+		content.WriteString("\n\n")
+	}
 
 	// Error messages
 	if len(s.errors) > 0 {
@@ -352,7 +389,19 @@ func (s *MonitorScreen) SetSize(width, height int) {
 	s.width = width
 	s.height = height
 	s.helpBar.SetWidth(width)
-	s.table.SetSize(width-4, height-20)
+
+	// Update StatusHeader width for responsive layout
+	if s.statusHeader != nil {
+		s.statusHeader.SetWidth(width)
+	}
+
+	// Adjust table size based on enhanced mode
+	tableHeight := height - 20
+	if s.enhancedMode {
+		tableHeight = height - 25 // Leave more space for StatusHeader
+	}
+
+	s.table.SetSize(width-4, tableHeight)
 	s.updateDisplayComponents()
 }
 
@@ -492,6 +541,11 @@ func (s *MonitorScreen) updateTableDisplay() {
 			trendStr = sparkline.View()
 		}
 
+		// Gaming level badge
+		level := gaming.CalculateLevel(pos.PnLSol)
+		levelStyle := gaming.NewLevelBadgeStyle(level)
+		levelStr := levelStyle.RenderBadge(level)
+
 		// Status
 		status := "Active"
 		if !pos.Active {
@@ -505,6 +559,7 @@ func (s *MonitorScreen) updateTableDisplay() {
 			currentStr,
 			pnlPercentStr,
 			pnlSolStr,
+			levelStr, // Gaming level badge
 			trendStr,
 			status,
 		}
