@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
@@ -61,6 +62,7 @@ type MonitorServiceImpl struct {
 	logger           *zap.Logger
 	blockchainClient *blockchain.Client
 	eventBus         EventBus
+	priceThrottler   *PriceThrottler // Phase 2: Price update throttling
 }
 
 // EventBus defines the interface for event publishing
@@ -73,16 +75,36 @@ type MonitorServiceConfig struct {
 	Logger           *zap.Logger
 	BlockchainClient *blockchain.Client
 	EventBus         EventBus
+	UIMessageChannel chan tea.Msg // Phase 2: UI message channel for throttling
 }
 
 // NewMonitorService creates a new monitor service
 func NewMonitorService(config *MonitorServiceConfig) MonitorService {
-	return &MonitorServiceImpl{
+	ms := &MonitorServiceImpl{
 		sessions:         make(map[string]*MonitoringSession),
 		logger:           config.Logger.Named("monitor_service"),
 		blockchainClient: config.BlockchainClient,
 		eventBus:         config.EventBus,
 	}
+
+	// Phase 2: Initialize price throttler with O3-recommended 150ms interval
+	if config.UIMessageChannel != nil {
+		ms.priceThrottler = NewPriceThrottler(
+			150*time.Millisecond, // O3 recommendation for optimal UI performance
+			config.UIMessageChannel,
+			ms.logger,
+		)
+
+		// Start throttler flush goroutine
+		go ms.runThrottlerFlush()
+
+		ms.logger.Info("PriceThrottler initialized",
+			zap.Duration("interval", 150*time.Millisecond))
+	} else {
+		ms.logger.Warn("UIMessageChannel not provided, price throttling disabled")
+	}
+
+	return ms
 }
 
 // CreateMonitoringSession creates a new monitoring session
@@ -274,8 +296,13 @@ func (ms *MonitorServiceImpl) startEventPublishing(ctx context.Context, session 
 				ms.logger.Debug("Price updates channel closed", zap.String("token", req.Task.TokenMint))
 				return
 			}
-			// Publish position updated event
-			ms.publishPositionUpdatedEvent(req.Task.TokenMint, update, req.UserID)
+			// Phase 2: Use PriceThrottler to prevent UI flooding
+			if ms.priceThrottler != nil {
+				ms.priceThrottler.SendPriceUpdate(update)
+			} else {
+				// Fallback to direct publishing if throttler not available
+				ms.publishPositionUpdatedEvent(req.Task.TokenMint, update, req.UserID)
+			}
 		case err, ok := <-session.Err():
 			if !ok {
 				ms.logger.Debug("Error channel closed", zap.String("token", req.Task.TokenMint))
@@ -357,6 +384,22 @@ func (ms *MonitorServiceImpl) getTokenSymbol(tokenMint string) string {
 		return tokenMint[:4] + "..." + tokenMint[len(tokenMint)-4:]
 	}
 	return "TOKEN"
+}
+
+// runThrottlerFlush runs periodic flush of pending price updates
+func (ms *MonitorServiceImpl) runThrottlerFlush() {
+	if ms.priceThrottler == nil {
+		return
+	}
+
+	ticker := time.NewTicker(100 * time.Millisecond) // Flush more frequently than throttle interval
+	defer ticker.Stop()
+
+	ms.logger.Debug("Price throttler flush loop started")
+
+	for range ticker.C {
+		ms.priceThrottler.FlushPending()
+	}
 }
 
 // Event types for monitoring

@@ -9,6 +9,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/rovshanmuradov/solana-bot/internal/bot"
+	"github.com/rovshanmuradov/solana-bot/internal/logger"
 	"github.com/rovshanmuradov/solana-bot/internal/monitor"
 	"go.uber.org/zap"
 )
@@ -144,25 +146,31 @@ func (te *TradeExporter) generateFilename(options ExportOptions) string {
 
 // exportToCSV exports trades to CSV format
 func (te *TradeExporter) exportToCSV(trades []monitor.Trade, outputPath string) error {
-	file, err := os.Create(outputPath)
+	// Use SafeCSVWriter with 1-second flush interval
+	writer, err := logger.NewSafeCSVWriter(outputPath, time.Second, te.logger)
 	if err != nil {
-		return fmt.Errorf("failed to create CSV file: %w", err)
+		return fmt.Errorf("failed to create safe CSV writer: %w", err)
 	}
-	defer file.Close()
 
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
+	// Register with shutdown handler for graceful cleanup
+	bot.GetShutdownHandler().RegisterService(fmt.Sprintf("export_csv_%s", filepath.Base(outputPath)), writer)
+	defer writer.Close()
 
 	// Write headers
-	if err := writer.Write(monitor.CSVHeaders()); err != nil {
+	if err := writer.WriteRecord(monitor.CSVHeaders()); err != nil {
 		return fmt.Errorf("failed to write CSV headers: %w", err)
 	}
 
 	// Write trades
 	for _, trade := range trades {
-		if err := writer.Write(trade.ToCSV()); err != nil {
+		if err := writer.WriteRecord(trade.ToCSV()); err != nil {
 			return fmt.Errorf("failed to write trade: %w", err)
 		}
+	}
+
+	// Final flush to ensure all data is written
+	if err := writer.Flush(); err != nil {
+		return fmt.Errorf("failed to flush CSV data: %w", err)
 	}
 
 	return nil
@@ -170,14 +178,15 @@ func (te *TradeExporter) exportToCSV(trades []monitor.Trade, outputPath string) 
 
 // exportToJSON exports trades to JSON format
 func (te *TradeExporter) exportToJSON(trades []monitor.Trade, outputPath string) error {
-	file, err := os.Create(outputPath)
+	// Use SafeFileWriter with 1-second flush interval
+	writer, err := logger.NewSafeFileWriter(outputPath, time.Second, te.logger)
 	if err != nil {
-		return fmt.Errorf("failed to create JSON file: %w", err)
+		return fmt.Errorf("failed to create safe file writer: %w", err)
 	}
-	defer file.Close()
 
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
+	// Register with shutdown handler for graceful cleanup
+	bot.GetShutdownHandler().RegisterService(fmt.Sprintf("export_json_%s", filepath.Base(outputPath)), writer)
+	defer writer.Close()
 
 	// Create export data with metadata
 	exportData := struct {
@@ -192,8 +201,20 @@ func (te *TradeExporter) exportToJSON(trades []monitor.Trade, outputPath string)
 		Summary:    te.calculateSummary(trades),
 	}
 
-	if err := encoder.Encode(exportData); err != nil {
-		return fmt.Errorf("failed to encode JSON: %w", err)
+	// Marshal JSON with indentation
+	jsonData, err := json.MarshalIndent(exportData, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+
+	// Write JSON data
+	if _, err := writer.Write(jsonData); err != nil {
+		return fmt.Errorf("failed to write JSON data: %w", err)
+	}
+
+	// Final flush to ensure all data is written
+	if err := writer.Flush(); err != nil {
+		return fmt.Errorf("failed to flush JSON data: %w", err)
 	}
 
 	return nil
@@ -304,18 +325,30 @@ func (te *TradeExporter) ExportDailyReport(trades []monitor.Trade, date time.Tim
 		HourlyBreakdown: te.calculateHourlyBreakdown(filtered),
 	}
 
-	// Write report
-	file, err := os.Create(outputPath)
+	// Write report using SafeFileWriter
+	writer, err := logger.NewSafeFileWriter(outputPath, time.Second, te.logger)
 	if err != nil {
-		return "", fmt.Errorf("failed to create report file: %w", err)
+		return "", fmt.Errorf("failed to create safe file writer: %w", err)
 	}
-	defer file.Close()
 
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
+	// Register with shutdown handler for graceful cleanup
+	bot.GetShutdownHandler().RegisterService(fmt.Sprintf("daily_report_%s", filepath.Base(outputPath)), writer)
+	defer writer.Close()
 
-	if err := encoder.Encode(report); err != nil {
-		return "", fmt.Errorf("failed to encode report: %w", err)
+	// Marshal report with indentation
+	jsonData, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal report: %w", err)
+	}
+
+	// Write report data
+	if _, err := writer.Write(jsonData); err != nil {
+		return "", fmt.Errorf("failed to write report: %w", err)
+	}
+
+	// Final flush to ensure all data is written
+	if err := writer.Flush(); err != nil {
+		return "", fmt.Errorf("failed to flush report data: %w", err)
 	}
 
 	te.logger.Info("Daily report exported",

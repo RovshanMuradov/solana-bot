@@ -216,3 +216,51 @@ func (c *FieldFilterCore) Write(entry zapcore.Entry, fields []zapcore.Field) err
 func (c *FieldFilterCore) Sync() error {
 	return c.core.Sync()
 }
+
+// CreatePrettyLoggerWithBuffer creates a logger with user-friendly output and log buffer
+func CreatePrettyLoggerWithBuffer(debug bool, buffer *LogBuffer) (*zap.Logger, error) {
+	// Create a custom encoder that suppresses extra fields
+	encoderConfig := zapcore.EncoderConfig{
+		MessageKey:     "msg",
+		LevelKey:       "level",
+		TimeKey:        "time",
+		CallerKey:      "",
+		StacktraceKey:  "",
+		LineEnding:     zapcore.DefaultLineEnding,
+		EncodeLevel:    customLevelEncoder,
+		EncodeTime:     customTimeEncoder,
+		EncodeDuration: zapcore.StringDurationEncoder,
+		EncodeCaller:   customCallerEncoder,
+	}
+
+	// Create base core for console output
+	level := zap.InfoLevel
+	if debug {
+		level = zap.DebugLevel
+	}
+
+	consoleCore := zapcore.NewCore(
+		zapcore.NewConsoleEncoder(encoderConfig),
+		zapcore.AddSync(zapcore.Lock(os.Stdout)),
+		level,
+	)
+
+	// Create buffer core if buffer is provided
+	var cores []zapcore.Core
+	cores = append(cores, &FieldFilterCore{core: consoleCore})
+
+	if buffer != nil {
+		// Create JSON encoder for buffer (structured logs)
+		jsonEncoder := zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig())
+		bufferCore := zapcore.NewCore(
+			jsonEncoder,
+			zapcore.AddSync(buffer),
+			level,
+		)
+		cores = append(cores, bufferCore)
+	}
+
+	// Combine cores
+	multiCore := zapcore.NewTee(cores...)
+	return zap.New(multiCore), nil
+}

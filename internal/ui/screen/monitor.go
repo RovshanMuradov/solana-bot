@@ -9,9 +9,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/rovshanmuradov/solana-bot/internal/domain"
+	"github.com/rovshanmuradov/solana-bot/internal/monitor"
 	"github.com/rovshanmuradov/solana-bot/internal/ui"
 	"github.com/rovshanmuradov/solana-bot/internal/ui/component"
 	"github.com/rovshanmuradov/solana-bot/internal/ui/router"
+	"github.com/rovshanmuradov/solana-bot/internal/ui/state"
 	"github.com/rovshanmuradov/solana-bot/internal/ui/style"
 )
 
@@ -622,8 +624,9 @@ func (s *MonitorScreen) sellPositionPartialCmd(pos MonitoredPosition, percentage
 	}
 }
 
-// updatePositionPrice updates a position's price and history
+// updatePositionPrice updates a position's price and history using GlobalCache
 func (s *MonitorScreen) updatePositionPrice(positionID int, price float64, timestamp time.Time) {
+
 	for i := range s.positions {
 		if s.positions[i].ID == positionID {
 			s.positions[i].CurrentPrice = price
@@ -646,8 +649,28 @@ func (s *MonitorScreen) updatePositionPrice(positionID int, price float64, times
 	}
 }
 
-// updatePosition updates a complete position
+// updatePosition updates a complete position using GlobalCache
 func (s *MonitorScreen) updatePosition(pos MonitoredPosition) {
+	// Phase 2: Update position in GlobalCache
+	if state.GlobalCache != nil {
+		// Convert MonitoredPosition to monitor.Position for cache
+		cachePos := monitor.Position{
+			SessionID:   fmt.Sprintf("position_%d", pos.ID),
+			WalletAddr:  "", // Will be filled by actual monitoring
+			TokenMint:   pos.TokenMint,
+			TokenSymbol: pos.TokenSymbol,
+			Amount:      pos.Amount,
+			InitialSOL:  pos.EntryPrice,
+			CurrentSOL:  pos.CurrentPrice,
+			PnL:         pos.PnLSol,
+			PnLPercent:  pos.PnLPercent,
+			Status:      map[bool]string{true: "active", false: "inactive"}[pos.Active],
+			UpdatedAt:   pos.LastUpdate,
+		}
+		state.GlobalCache.SetPosition(cachePos)
+	}
+
+	// Update local state for immediate UI updates
 	for i := range s.positions {
 		if s.positions[i].ID == pos.ID {
 			s.positions[i] = pos
@@ -665,24 +688,68 @@ func (s *MonitorScreen) calculateTotalPnL() float64 {
 	return total
 }
 
-// handleDomainEvent processes domain events
+// handleDomainEvent processes domain events using GlobalCache
 func (s *MonitorScreen) handleDomainEvent(event domain.Event) {
+
 	switch event.Type {
 	case domain.EventPriceTick:
 		// Handle price updates
+		if data, ok := event.Data.(map[string]interface{}); ok {
+			if positionID, exists := data["position_id"].(int); exists {
+				if price, exists := data["price"].(float64); exists {
+					if timestamp, exists := data["timestamp"].(time.Time); exists {
+						s.updatePositionPrice(positionID, price, timestamp)
+					}
+				}
+			}
+		}
 
 	case domain.EventOrderFilled:
 		// Handle order completion
+		if data, ok := event.Data.(map[string]interface{}); ok {
+			if positionID, exists := data["position_id"].(int); exists {
+				if _, exists := data["action"].(string); exists {
+					// Mark position as inactive if fully sold
+					if percentage, exists := data["percentage"].(float64); exists && percentage >= 100.0 {
+						for i := range s.positions {
+							if s.positions[i].ID == positionID {
+								s.positions[i].Active = false
+								break
+							}
+						}
+					}
+				}
+			}
+		}
 
 	case domain.EventTaskExecuted:
 		// Add new position to monitor
+		if data, ok := event.Data.(map[string]interface{}); ok {
+			// Create new position from task execution data
+			newPos := MonitoredPosition{
+				ID:           len(s.positions) + 1, // Simple ID generation
+				TaskName:     fmt.Sprintf("%v", data["task_name"]),
+				TokenMint:    fmt.Sprintf("%v", data["token_mint"]),
+				TokenSymbol:  fmt.Sprintf("%v", data["token_symbol"]),
+				EntryPrice:   0, // Will be updated by price monitoring
+				CurrentPrice: 0,
+				Amount:       0,
+				PnLPercent:   0,
+				PnLSol:       0,
+				Volume24h:    0,
+				LastUpdate:   time.Now(),
+				PriceHistory: make([]float64, 0),
+				Active:       true,
+			}
+			s.positions = append(s.positions, newPos)
+		}
 
 	default:
-		// Handle other events
+		// Handle other events - no cache needed
 	}
 }
 
-// loadMockData loads some mock positions for demonstration
+// loadMockData loads some mock positions for demonstration and stores them in GlobalCache
 func (s *MonitorScreen) loadMockData() {
 	now := time.Now()
 
@@ -717,6 +784,26 @@ func (s *MonitorScreen) loadMockData() {
 			PriceHistory: []float64{0.000089, 0.000087, 0.000084, 0.000081, 0.000078, 0.000076},
 			Active:       true,
 		},
+	}
+
+	// Phase 2: Store mock positions in GlobalCache
+	if state.GlobalCache != nil {
+		for _, pos := range s.positions {
+			cachePos := monitor.Position{
+				SessionID:   fmt.Sprintf("position_%d", pos.ID),
+				WalletAddr:  "", // Mock data - no wallet address
+				TokenMint:   pos.TokenMint,
+				TokenSymbol: pos.TokenSymbol,
+				Amount:      pos.Amount,
+				InitialSOL:  pos.EntryPrice,
+				CurrentSOL:  pos.CurrentPrice,
+				PnL:         pos.PnLSol,
+				PnLPercent:  pos.PnLPercent,
+				Status:      map[bool]string{true: "active", false: "inactive"}[pos.Active],
+				UpdatedAt:   pos.LastUpdate,
+			}
+			state.GlobalCache.SetPosition(cachePos)
+		}
 	}
 }
 

@@ -9,18 +9,20 @@ import (
 	"time"
 
 	"github.com/rovshanmuradov/solana-bot/internal/dex"
+	"github.com/rovshanmuradov/solana-bot/internal/monitor"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
 	"go.uber.org/zap"
 )
 
 type WorkerPool struct {
-	wg        sync.WaitGroup
-	ctx       context.Context
-	tasks     <-chan *task.Task
-	logger    *zap.Logger
-	config    *task.Config
-	solClient *blockchain.Client
-	wallets   map[string]*task.Wallet
+	wg           sync.WaitGroup
+	ctx          context.Context
+	tasks        <-chan *task.Task
+	logger       *zap.Logger
+	config       *task.Config
+	solClient    *blockchain.Client
+	wallets      map[string]*task.Wallet
+	tradeHistory *monitor.TradeHistory // Phase 2: Trade logging
 }
 
 func NewWorkerPool(
@@ -31,13 +33,25 @@ func NewWorkerPool(
 	wallets map[string]*task.Wallet,
 	tasks <-chan *task.Task,
 ) *WorkerPool {
+	// Phase 2: Initialize TradeHistory with 1000 entries in memory
+	tradeHistory, err := monitor.NewTradeHistory("./logs", 1000, logger)
+	if err != nil {
+		logger.Error("Failed to create trade history, continuing without it", zap.Error(err))
+		tradeHistory = nil
+	} else {
+		logger.Info("TradeHistory initialized",
+			zap.String("log_dir", "./logs"),
+			zap.Int("max_memory_trades", 1000))
+	}
+
 	return &WorkerPool{
-		ctx:       ctx,
-		config:    cfg,
-		logger:    logger,
-		tasks:     tasks,
-		solClient: solClient,
-		wallets:   wallets,
+		ctx:          ctx,
+		config:       cfg,
+		logger:       logger,
+		tasks:        tasks,
+		solClient:    solClient,
+		wallets:      wallets,
+		tradeHistory: tradeHistory,
 	}
 }
 
@@ -50,6 +64,14 @@ func (wp *WorkerPool) Start(n int) {
 
 func (wp *WorkerPool) Wait() {
 	wp.wg.Wait()
+}
+
+// Close closes the WorkerPool and its resources
+func (wp *WorkerPool) Close() error {
+	if wp.tradeHistory != nil {
+		return wp.tradeHistory.Close()
+	}
+	return nil
 }
 
 func (wp *WorkerPool) worker(id int) {
@@ -101,6 +123,8 @@ func (wp *WorkerPool) handleTask(ctx context.Context, t *task.Task, logger *zap.
 			logger.Error(fmt.Sprintf("❌ Task execution failed for '%s': %v", t.TaskName, err))
 		} else {
 			logger.Info("🎉 Trade completed successfully: " + t.TaskName)
+			// Phase 2: Log successful trade
+			wp.logTrade(t, w, "", true, err)
 		}
 	}
 }
@@ -113,6 +137,10 @@ func (wp *WorkerPool) handleMonitoredTask(ctx context.Context, t *task.Task, dex
 	}
 
 	logger.Info("🎉 Trade executed successfully: " + t.TaskName)
+
+	// Phase 2: Log successful monitored trade
+	wallet := wp.wallets[t.WalletName]
+	wp.logTrade(t, wallet, "", true, nil)
 
 	var tokenBalance uint64
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -174,4 +202,54 @@ tokenLoop:
 	}
 
 	return nil
+}
+
+// logTrade logs a trade to the TradeHistory
+func (wp *WorkerPool) logTrade(t *task.Task, wallet *task.Wallet, txSignature string, success bool, err error) {
+	if wp.tradeHistory == nil {
+		return // TradeHistory not available
+	}
+
+	// Determine action based on task operation
+	action := string(t.Operation)
+	if action == "snipe" || action == "swap" {
+		action = "buy"
+	}
+
+	// Create trade record
+	trade := monitor.Trade{
+		ID:          fmt.Sprintf("%s_%d_%d", action, t.ID, time.Now().Unix()),
+		Timestamp:   time.Now(),
+		WalletAddr:  wallet.PublicKey.String(),
+		TokenMint:   t.TokenMint,
+		TokenSymbol: extractTokenSymbol(t.TokenMint), // Extract symbol from mint
+		Action:      action,
+		AmountSOL:   t.AmountSol, // Correct field name
+		AmountToken: 0,           // Will be updated later when balance is known
+		Price:       0,           // Will be calculated from amount/tokens
+		TxSignature: txSignature,
+		DEX:         t.Module,
+		Success:     success,
+	}
+
+	// Add error message if trade failed
+	if err != nil {
+		trade.ErrorMsg = err.Error()
+	}
+
+	// Log the trade
+	if logErr := wp.tradeHistory.LogTrade(trade); logErr != nil {
+		wp.logger.Error("Failed to log trade to history",
+			zap.String("trade_id", trade.ID),
+			zap.String("token", t.TokenMint),
+			zap.Error(logErr))
+	}
+}
+
+// extractTokenSymbol creates a short symbol from token mint address
+func extractTokenSymbol(tokenMint string) string {
+	if len(tokenMint) >= 8 {
+		return tokenMint[:4] + "..." + tokenMint[len(tokenMint)-4:]
+	}
+	return "TOKEN"
 }

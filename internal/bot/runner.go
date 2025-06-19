@@ -21,6 +21,7 @@ type Runner struct {
 	wallets       map[string]*task.Wallet
 	defaultWallet *task.Wallet
 	shutdownCh    chan os.Signal
+	workerPool    *WorkerPool // Phase 2: Store WorkerPool for proper cleanup
 }
 
 // NewRunner NewRunner: принимает cfg и logger
@@ -93,7 +94,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	r.logger.Info(fmt.Sprintf("🚀 Starting execution with %d workers", numWorkers))
 
-	workerPool := NewWorkerPool(
+	r.workerPool = NewWorkerPool(
 		shutdownCtx,
 		r.config,
 		r.logger,
@@ -102,15 +103,28 @@ func (r *Runner) Run(ctx context.Context) error {
 		taskCh,
 	)
 
-	workerPool.Start(numWorkers)
-	workerPool.Wait()
+	r.workerPool.Start(numWorkers)
+	r.workerPool.Wait()
 
 	r.logger.Info("✅ All workers finished")
+
+	// Phase 2: Close WorkerPool to flush TradeHistory
+	if err := r.workerPool.Close(); err != nil {
+		r.logger.Error("Failed to close WorkerPool", zap.Error(err))
+	}
+
 	return nil
 }
 
 func (r *Runner) Shutdown() {
 	r.logger.Info("👋 Bot shutting down gracefully")
+
+	// Phase 2: Close WorkerPool if it exists
+	if r.workerPool != nil {
+		if err := r.workerPool.Close(); err != nil {
+			r.logger.Error("Failed to close WorkerPool during shutdown", zap.Error(err))
+		}
+	}
 
 	if err := r.logger.Sync(); err != nil {
 		if !os.IsNotExist(err) &&

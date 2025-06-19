@@ -87,7 +87,9 @@ func (lb *LogBuffer) Add(level, message string, fields map[string]interface{}) e
 		oldestEntry := lb.ringBuffer[oldestIndex]
 
 		if err := lb.spillToFile(oldestEntry); err != nil {
-			lb.logger.Error("Failed to spill log entry to file", zap.Error(err))
+			if lb.logger != nil {
+				lb.logger.Error("Failed to spill log entry to file", zap.Error(err))
+			}
 			return err
 		}
 		lb.spilledEntries++
@@ -178,14 +180,18 @@ func (lb *LogBuffer) Close() error {
 		for i := 0; i < lb.maxSize; i++ {
 			index := (lb.currentIndex + i) % lb.maxSize
 			if err := lb.spillToFile(lb.ringBuffer[index]); err != nil {
-				lb.logger.Error("Failed to spill entry during close", zap.Error(err))
+				if lb.logger != nil {
+					lb.logger.Error("Failed to spill entry during close", zap.Error(err))
+				}
 			}
 		}
 	} else {
 		// Write only valid entries if not wrapped
 		for i := 0; i < lb.currentIndex; i++ {
 			if err := lb.spillToFile(lb.ringBuffer[i]); err != nil {
-				lb.logger.Error("Failed to spill entry during close", zap.Error(err))
+				if lb.logger != nil {
+					lb.logger.Error("Failed to spill entry during close", zap.Error(err))
+				}
 			}
 		}
 	}
@@ -199,9 +205,11 @@ func (lb *LogBuffer) Close() error {
 		return fmt.Errorf("failed to close spill file: %w", err)
 	}
 
-	lb.logger.Info("Log buffer closed",
-		zap.Uint64("totalEntries", lb.totalEntries),
-		zap.Uint64("spilledEntries", lb.spilledEntries))
+	if lb.logger != nil {
+		lb.logger.Info("Log buffer closed",
+			zap.Uint64("totalEntries", lb.totalEntries),
+			zap.Uint64("spilledEntries", lb.spilledEntries))
+	}
 
 	return nil
 }
@@ -211,6 +219,44 @@ func (lb *LogBuffer) GetStats() (total, spilled uint64) {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
 	return lb.totalEntries, lb.spilledEntries
+}
+
+// Write implements io.Writer interface for zap integration
+func (lb *LogBuffer) Write(p []byte) (n int, err error) {
+	// Parse the JSON log entry from zap
+	var entry map[string]interface{}
+	if err := json.Unmarshal(p, &entry); err != nil {
+		// If not JSON, just store as message
+		return len(p), lb.Add("INFO", string(p), nil)
+	}
+
+	// Extract level, message and fields
+	level, _ := entry["level"].(string)
+	if level == "" {
+		level = "INFO"
+	}
+
+	message, _ := entry["msg"].(string)
+
+	// Remove standard fields and keep the rest
+	delete(entry, "level")
+	delete(entry, "msg")
+	delete(entry, "time")
+	delete(entry, "timestamp")
+
+	fields := make(map[string]interface{})
+	for k, v := range entry {
+		fields[k] = v
+	}
+
+	return len(p), lb.Add(level, message, fields)
+}
+
+// SetLogger sets the logger after buffer creation
+func (lb *LogBuffer) SetLogger(logger *zap.Logger) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	lb.logger = logger
 }
 
 // StartPeriodicFlush starts a goroutine that periodically flushes the buffer
@@ -225,7 +271,9 @@ func (lb *LogBuffer) StartPeriodicFlush(interval time.Duration) chan struct{} {
 			select {
 			case <-ticker.C:
 				if err := lb.Flush(); err != nil {
-					lb.logger.Error("Periodic flush failed", zap.Error(err))
+					if lb.logger != nil {
+						lb.logger.Error("Periodic flush failed", zap.Error(err))
+					}
 				}
 			case <-done:
 				return

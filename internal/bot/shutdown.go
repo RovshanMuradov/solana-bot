@@ -27,10 +27,13 @@ func (f CloseFunc) Close() error {
 
 // ShutdownHandler manages graceful shutdown of multiple services
 type ShutdownHandler struct {
-	logger   *zap.Logger
-	services []namedService
-	mu       sync.Mutex
-	timeout  time.Duration
+	logger          *zap.Logger
+	services        []namedService
+	mu              sync.Mutex
+	timeout         time.Duration
+	shutdownChan    chan struct{}
+	shutdownOnce    sync.Once
+	shutdownStarted bool
 }
 
 type namedService struct {
@@ -44,8 +47,9 @@ func NewShutdownHandler(logger *zap.Logger, timeout time.Duration) *ShutdownHand
 		timeout = 30 * time.Second // Default timeout
 	}
 	return &ShutdownHandler{
-		logger:  logger,
-		timeout: timeout,
+		logger:       logger,
+		timeout:      timeout,
+		shutdownChan: make(chan struct{}),
 	}
 }
 
@@ -59,12 +63,50 @@ func (sh *ShutdownHandler) Add(name string, closer io.Closer) {
 		closer: closer,
 	})
 
-	sh.logger.Debug("Registered service for shutdown", zap.String("service", name))
+	if sh.logger != nil {
+		sh.logger.Debug("Registered service for shutdown", zap.String("service", name))
+	}
 }
 
 // AddFunc registers a shutdown function
 func (sh *ShutdownHandler) AddFunc(name string, fn func() error) {
 	sh.Add(name, CloseFunc(fn))
+}
+
+// SetLogger sets the logger for the shutdown handler
+func (sh *ShutdownHandler) SetLogger(logger *zap.Logger) {
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	sh.logger = logger
+}
+
+// RegisterService registers a service for shutdown (alias for Add)
+func (sh *ShutdownHandler) RegisterService(name string, closer io.Closer) {
+	sh.Add(name, closer)
+}
+
+// InitiateShutdown triggers a graceful shutdown programmatically
+func (sh *ShutdownHandler) InitiateShutdown() {
+	sh.shutdownOnce.Do(func() {
+		sh.mu.Lock()
+		sh.shutdownStarted = true
+		sh.mu.Unlock()
+		close(sh.shutdownChan)
+	})
+}
+
+// ShutdownInitiated returns a channel that will be closed when shutdown is initiated
+func (sh *ShutdownHandler) ShutdownInitiated() <-chan struct{} {
+	return sh.shutdownChan
+}
+
+// WaitForShutdown waits for shutdown to complete
+func (sh *ShutdownHandler) WaitForShutdown() {
+	// Create context with timeout for shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), sh.timeout)
+	defer cancel()
+
+	sh.Shutdown(ctx)
 }
 
 // HandleShutdown listens for shutdown signals and gracefully closes all services
@@ -73,7 +115,12 @@ func (sh *ShutdownHandler) HandleShutdown() {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
 	sig := <-sigChan
-	sh.logger.Info("Shutdown signal received", zap.String("signal", sig.String()))
+	if sh.logger != nil {
+		sh.logger.Info("Shutdown signal received", zap.String("signal", sig.String()))
+	}
+
+	// Trigger shutdown signal
+	sh.InitiateShutdown()
 
 	// Create context with timeout for shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), sh.timeout)
@@ -89,7 +136,9 @@ func (sh *ShutdownHandler) Shutdown(ctx context.Context) {
 	copy(services, sh.services)
 	sh.mu.Unlock()
 
-	sh.logger.Info("Starting graceful shutdown", zap.Int("services", len(services)))
+	if sh.logger != nil {
+		sh.logger.Info("Starting graceful shutdown", zap.Int("services", len(services)))
+	}
 
 	// Close services in reverse order (LIFO)
 	var wg sync.WaitGroup
@@ -106,7 +155,9 @@ func (sh *ShutdownHandler) Shutdown(ctx context.Context) {
 			done := make(chan error, 1)
 
 			go func() {
-				sh.logger.Info("Shutting down service", zap.String("service", s.name))
+				if sh.logger != nil {
+					sh.logger.Info("Shutting down service", zap.String("service", s.name))
+				}
 				err := s.closer.Close()
 				done <- err
 			}()
@@ -114,17 +165,23 @@ func (sh *ShutdownHandler) Shutdown(ctx context.Context) {
 			select {
 			case err := <-done:
 				if err != nil {
-					sh.logger.Error("Failed to shutdown service",
-						zap.String("service", s.name),
-						zap.Error(err))
+					if sh.logger != nil {
+						sh.logger.Error("Failed to shutdown service",
+							zap.String("service", s.name),
+							zap.Error(err))
+					}
 					errors <- fmt.Errorf("%s: %w", s.name, err)
 				} else {
-					sh.logger.Info("Service shutdown complete",
-						zap.String("service", s.name))
+					if sh.logger != nil {
+						sh.logger.Info("Service shutdown complete",
+							zap.String("service", s.name))
+					}
 				}
 			case <-ctx.Done():
-				sh.logger.Error("Shutdown timeout for service",
-					zap.String("service", s.name))
+				if sh.logger != nil {
+					sh.logger.Error("Shutdown timeout for service",
+						zap.String("service", s.name))
+				}
 				errors <- fmt.Errorf("%s: shutdown timeout", s.name)
 			}
 		}(svc)
@@ -139,9 +196,13 @@ func (sh *ShutdownHandler) Shutdown(ctx context.Context) {
 
 	select {
 	case <-doneChan:
-		sh.logger.Info("All services shutdown complete")
+		if sh.logger != nil {
+			sh.logger.Info("All services shutdown complete")
+		}
 	case <-ctx.Done():
-		sh.logger.Error("Shutdown timeout exceeded")
+		if sh.logger != nil {
+			sh.logger.Error("Shutdown timeout exceeded")
+		}
 	}
 
 	// Collect errors
@@ -152,13 +213,17 @@ func (sh *ShutdownHandler) Shutdown(ctx context.Context) {
 	}
 
 	if len(shutdownErrors) > 0 {
-		sh.logger.Error("Shutdown completed with errors",
-			zap.Int("errorCount", len(shutdownErrors)))
-		for _, err := range shutdownErrors {
-			sh.logger.Error("Shutdown error", zap.Error(err))
+		if sh.logger != nil {
+			sh.logger.Error("Shutdown completed with errors",
+				zap.Int("errorCount", len(shutdownErrors)))
+			for _, err := range shutdownErrors {
+				sh.logger.Error("Shutdown error", zap.Error(err))
+			}
 		}
 	} else {
-		sh.logger.Info("Graceful shutdown completed successfully")
+		if sh.logger != nil {
+			sh.logger.Info("Graceful shutdown completed successfully")
+		}
 	}
 }
 
@@ -201,4 +266,33 @@ func WaitForShutdown() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	<-sigChan
+}
+
+// Global singleton instance
+var globalSingletonHandler *ShutdownHandler
+var globalSingletonOnce sync.Once
+
+// GetShutdownHandler returns the global singleton shutdown handler
+func GetShutdownHandler() *ShutdownHandler {
+	globalSingletonOnce.Do(func() {
+		globalSingletonHandler = NewShutdownHandler(nil, 30*time.Second)
+
+		// Start signal handling in background
+		go func() {
+			sigChan := make(chan os.Signal, 1)
+			signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+			select {
+			case sig := <-sigChan:
+				if globalSingletonHandler.logger != nil {
+					globalSingletonHandler.logger.Info("OS shutdown signal received", zap.String("signal", sig.String()))
+				}
+				globalSingletonHandler.InitiateShutdown()
+			case <-globalSingletonHandler.ShutdownInitiated():
+				// Already initiated by program
+			}
+		}()
+	})
+
+	return globalSingletonHandler
 }

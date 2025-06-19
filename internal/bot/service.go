@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"github.com/rovshanmuradov/solana-bot/internal/monitor"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
@@ -42,8 +44,9 @@ type BotService struct {
 
 // BotServiceConfig configuration for BotService
 type BotServiceConfig struct {
-	Config *task.Config
-	Logger *zap.Logger
+	Config           *task.Config
+	Logger           *zap.Logger
+	UIMessageChannel chan tea.Msg // Phase 2: UI message channel for throttling
 }
 
 // NewBotService creates a new unified bot service
@@ -79,7 +82,8 @@ func NewBotService(parentCtx context.Context, config *BotServiceConfig) (*BotSer
 	monitorService := monitor.NewMonitorService(&monitor.MonitorServiceConfig{
 		Logger:           logger,
 		BlockchainClient: blockchainClient,
-		EventBus:         nil, // Will be set after TradingService creation
+		EventBus:         nil,                     // Will be set after TradingService creation
+		UIMessageChannel: config.UIMessageChannel, // Phase 2: For price throttling
 	})
 
 	// Create TradingService
@@ -99,6 +103,7 @@ func NewBotService(parentCtx context.Context, config *BotServiceConfig) (*BotSer
 		Logger:           logger,
 		BlockchainClient: blockchainClient,
 		EventBus:         eventBusAdapter,
+		UIMessageChannel: config.UIMessageChannel, // Phase 2: For price throttling
 	})
 
 	// Recreate TradingService with proper MonitorService
@@ -173,6 +178,15 @@ func (s *BotService) Shutdown(ctx context.Context) error {
 
 	s.logger.Info("✅ BotService shutdown completed")
 	return nil
+}
+
+// Close implements io.Closer interface for shutdown handler compatibility
+func (s *BotService) Close() error {
+	// Use a background context with timeout for shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	return s.Shutdown(ctx)
 }
 
 // HandleCommand handles a trading command
