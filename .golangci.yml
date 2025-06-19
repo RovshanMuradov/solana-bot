@@ -15,6 +15,14 @@ linters:
     - unused       # проверка неиспользуемых констант, переменных, функций, типов
     - ineffassign  # проверка неэффективного присваивания
     
+    # Dead code detection (using modern linters)
+    - ineffassign  # проверка неиспользуемых присваиваний
+    
+    # Integration verification linters
+    - unparam      # проверка неиспользуемых параметров функций
+    - goconst      # проверка повторяющихся строк, которые можно вынести в константы
+    - unconvert    # проверка ненужных преобразований типов
+    
     # Дополнительные линтеры
     - errcheck     # проверка обработки ошибок
     - gosec        # проверка безопасности
@@ -23,6 +31,10 @@ linters:
     - bodyclose    # проверяет, что HTTP-ответы правильно закрываются
     - whitespace   # проверка правильного использования пробелов
     - nilerr       # проверка возврата nil вместо ошибки
+    
+    # Phase integration checks
+    - gocritic     # множественные проверки качества кода
+    - revive       # замена golint с дополнительными правилами
 
 formatters:
   enable:
@@ -56,3 +68,41 @@ linters-settings:
     rewrite-rules:
       - pattern: 'interface{}'
         replacement: 'any'
+  
+  # Dead code and integration verification settings
+  unused:
+    check-exported: true  # проверять экспортированные функции
+  
+  unparam:
+    check-exported: true  # проверять неиспользуемые параметры в экспортированных функциях
+  
+  gocritic:
+    enabled-tags:
+      - diagnostic      # диагностические проверки
+      - style          # стилевые проверки  
+      - performance    # проверки производительности
+      - experimental   # экспериментальные проверки
+    disabled-checks:
+      - importShadow   # отключить проверку затенения импортов
+  
+  revive:
+    rules:
+      # Проверка интеграции компонентов
+      - name: unused-parameter
+        severity: warning
+      - name: unused-receiver
+        severity: warning
+      - name: unreachable-code
+        severity: error
+      - name: early-return
+        severity: warning
+      
+      # Phase integration verification rules  
+      - name: context-as-argument
+        severity: warning
+      - name: flag-parameter
+        severity: warning
+      - name: function-result-limit
+        arguments: [3]  # максимум 3 возвращаемых значения
+      - name: argument-limit
+        arguments: [5]  # максимум 5 аргументов функции

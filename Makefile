@@ -1,7 +1,7 @@
 # Makefile for solana-bot
 export
 
-.PHONY: run build dist clean check test lint format rebuild docker quick-dist help
+.PHONY: run build dist clean check test lint format rebuild docker quick-dist help verify-integration check-dead-code
 
 # Development commands
 run: ## Run the application
@@ -37,6 +37,28 @@ lint-fix: ## Run linter with auto-fixes
 
 format: ## Format code
 	go fmt ./...
+
+# Integration verification commands
+verify-integration: ## Verify all 3 phases are integrated and no dead code exists
+	@echo "🎯 Running comprehensive integration verification..."
+	@chmod +x ./scripts/verify_integration.sh
+	@./scripts/verify_integration.sh
+
+check-dead-code: ## Check for dead code and unused functions
+	@echo "🕵️ Running dead code analysis..."
+	@chmod +x ./scripts/quick_check.sh
+	@./scripts/quick_check.sh
+	@echo "🔍 Running detailed dead code analysis..."
+	@go run ./scripts/find_dead_code.go ./internal/
+
+check-integration-patterns: ## Quick check of integration patterns
+	@echo "🔄 Checking integration patterns..."
+	@echo "Phase 1 patterns:"
+	@grep -r "GetShutdownHandler\|NewSafeFileWriter\|NewLogBuffer" cmd/ internal/ | wc -l | xargs echo "  Found integrations:"
+	@echo "Phase 2 patterns:"
+	@grep -r "NewPriceThrottler\|InitBus\|NewTradeHistory" cmd/ internal/ | wc -l | xargs echo "  Found integrations:"
+	@echo "Phase 3 patterns:"
+	@grep -r "NewAlertManager\|NewUIManager\|exportTradeDataCmd" cmd/ internal/ | wc -l | xargs echo "  Found integrations:"
 
 # Docker commands
 rebuild: ## Clean up Docker volumes and rebuild
