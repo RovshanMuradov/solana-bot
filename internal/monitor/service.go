@@ -63,6 +63,7 @@ type MonitorServiceImpl struct {
 	blockchainClient *blockchain.Client
 	eventBus         EventBus
 	priceThrottler   *PriceThrottler // Phase 2: Price update throttling
+	alertManager     *AlertManager   // Phase 3: Trading alerts
 }
 
 // EventBus defines the interface for event publishing
@@ -103,6 +104,46 @@ func NewMonitorService(config *MonitorServiceConfig) MonitorService {
 	} else {
 		ms.logger.Warn("UIMessageChannel not provided, price throttling disabled")
 	}
+
+	// Phase 3: Initialize AlertManager with default configuration
+	alertConfig := DefaultAlertConfig()
+	ms.alertManager = NewAlertManager(alertConfig, ms.logger)
+
+	// Add alert handlers for UI notifications and logging
+	ms.alertManager.AddHandler(func(alert Alert) {
+		// Send to event bus for UI display
+		if ms.eventBus != nil {
+			ms.eventBus.Publish(AlertEvent{
+				Type:        string(alert.Type),
+				Message:     alert.Message,
+				Severity:    alert.Severity,
+				TokenMint:   alert.TokenMint,
+				TokenSymbol: alert.TokenSymbol,
+				Timestamp:   alert.Timestamp,
+			})
+		}
+
+		// Log critical alerts for monitoring
+		if alert.Severity == "critical" {
+			ms.logger.Error("CRITICAL ALERT triggered",
+				zap.String("type", string(alert.Type)),
+				zap.String("message", alert.Message),
+				zap.String("token", alert.TokenMint),
+				zap.String("token_symbol", alert.TokenSymbol))
+		} else {
+			ms.logger.Info("Trading alert triggered",
+				zap.String("type", string(alert.Type)),
+				zap.String("message", alert.Message),
+				zap.String("severity", alert.Severity),
+				zap.String("token", alert.TokenMint))
+		}
+	})
+
+	ms.logger.Info("AlertManager initialized",
+		zap.Float64("price_drop_threshold", alertConfig.PriceDropPercent),
+		zap.Float64("profit_target", alertConfig.ProfitTargetPercent),
+		zap.Float64("loss_limit", alertConfig.LossLimitPercent),
+		zap.Float64("volume_threshold", alertConfig.VolumeThreshold))
 
 	return ms
 }
@@ -353,6 +394,23 @@ func (ms *MonitorServiceImpl) publishPositionUpdatedEvent(tokenMint string, upda
 	}
 
 	ms.eventBus.Publish(event)
+
+	// Phase 3: Check for alerts on position updates
+	if ms.alertManager != nil {
+		position := Position{
+			TokenMint:   tokenMint,
+			TokenSymbol: ms.getTokenSymbol(tokenMint),
+			InitialSOL:  update.Initial * update.Tokens, // Total initial investment
+			CurrentSOL:  update.Current * update.Tokens, // Current total value
+			PnL:         (update.Current - update.Initial) * update.Tokens,
+			PnLPercent:  update.Percent,
+			UpdatedAt:   time.Now(),
+		}
+
+		// Check position for alerts (alerts handled by registered handlers)
+		ms.alertManager.CheckPosition(position)
+	}
+
 	ms.logger.Debug("Published position updated event",
 		zap.String("token", tokenMint),
 		zap.Float64("current_price", update.Current),
@@ -428,4 +486,14 @@ type MonitoringSessionStoppedEvent struct {
 	Reason    string    `json:"reason"`
 	UserID    string    `json:"user_id"`
 	Timestamp time.Time `json:"timestamp"`
+}
+
+// Phase 3: AlertEvent for trading alerts
+type AlertEvent struct {
+	Type        string    `json:"type"`
+	Message     string    `json:"message"`
+	Severity    string    `json:"severity"`
+	TokenMint   string    `json:"token_mint"`
+	TokenSymbol string    `json:"token_symbol"`
+	Timestamp   time.Time `json:"timestamp"`
 }

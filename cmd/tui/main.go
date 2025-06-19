@@ -317,23 +317,34 @@ func main() {
 
 	appLogger.Info("🚀 Starting Solana Trading Bot TUI")
 
-	// Initialize the TUI program
-	program := tea.NewProgram(
-		NewAppModel(rootCtx, cfg, appLogger),
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
-	)
+	// Phase 3: Initialize UIManager with crash recovery
+	uiManager := ui.NewUIManager(appLogger, func() (tea.Model, []tea.ProgramOption) {
+		// Create fresh UI model for each restart
+		model := NewAppModel(rootCtx, cfg, appLogger)
 
-	// Start the program in a goroutine
-	go func() {
-		if _, err := program.Run(); err != nil {
-			appLogger.Error("💥 TUI application failed", zap.Error(err))
+		return model, []tea.ProgramOption{
+			tea.WithAltScreen(),
+			tea.WithMouseCellMotion(),
 		}
-	}()
+	})
+
+	// Start the UI with crash recovery
+	if err := uiManager.Start(); err != nil {
+		appLogger.Error("💥 Failed to start UI with recovery", zap.Error(err))
+		return
+	}
+
+	appLogger.Info("🛡️ TUI started with crash recovery enabled",
+		zap.String("recovery_mode", "auto_restart"),
+		zap.Int("max_restarts", 5),
+		zap.Duration("restart_delay", 5000000000)) // 5 seconds in nanoseconds
 
 	// Wait for shutdown signal
 	<-rootCtx.Done()
 
 	appLogger.Info("🛑 Shutting down TUI application")
-	program.Quit()
+
+	// Graceful shutdown with UIManager
+	uiManager.Stop()
+	appLogger.Info("✅ UI manager stopped gracefully")
 }

@@ -244,6 +244,10 @@ func (wp *WorkerPool) logTrade(t *task.Task, wallet *task.Wallet, txSignature st
 			zap.String("token", t.TokenMint),
 			zap.Error(logErr))
 	}
+
+	// Phase 3: Check trade for volume alerts (if AlertManager available)
+	// Note: AlertManager integration would be passed through config or dependency injection
+	// For now, this is a placeholder for future AlertManager integration in WorkerPool
 }
 
 // extractTokenSymbol creates a short symbol from token mint address

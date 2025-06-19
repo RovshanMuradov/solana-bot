@@ -1,7 +1,6 @@
 package export
 
 import (
-	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -138,7 +137,12 @@ func (te *TradeExporter) generateFilename(options ExportOptions) string {
 	}
 
 	if options.TokenFilter != "" {
-		prefix += "_" + options.TokenFilter[:8]
+		// Safely truncate token filter to max 8 characters
+		tokenSuffix := options.TokenFilter
+		if len(tokenSuffix) > 8 {
+			tokenSuffix = tokenSuffix[:8]
+		}
+		prefix += "_" + tokenSuffix
 	}
 
 	return fmt.Sprintf("%s_%s.%s", prefix, timestamp, options.Format)

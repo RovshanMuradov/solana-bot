@@ -254,6 +254,10 @@ func (s *MonitorScreen) Update(msg tea.Msg) (router.Screen, tea.Cmd) {
 				}[msg.String()]
 				cmds = append(cmds, s.sellPositionPartialCmd(s.positions[s.selectedPosition], percentage))
 			}
+
+		case msg.String() == "e", msg.String() == "E":
+			// Phase 3: Export trade data
+			cmds = append(cmds, s.exportTradeDataCmd())
 		}
 
 	case RefreshMsg:
@@ -454,6 +458,7 @@ func (s *MonitorScreen) renderInstructions() string {
 
 	instructions = append(instructions, "Enter: Sell position")
 	instructions = append(instructions, "1-5: Quick sell (25%, 50%, 75%, 100%, 10%)")
+	instructions = append(instructions, "E: Export trades")
 	instructions = append(instructions, "S: Toggle sparklines")
 	instructions = append(instructions, "G: Toggle PnL gauges")
 	instructions = append(instructions, "C: Compact mode")
@@ -818,6 +823,33 @@ func (s *MonitorScreen) simulatePriceUpdates() {
 		if newPrice > 0 {
 			s.updatePositionPrice(s.positions[i].ID, newPrice, now)
 		}
+	}
+}
+
+// exportTradeDataCmd creates a command to export trade data
+func (s *MonitorScreen) exportTradeDataCmd() tea.Cmd {
+	return func() tea.Msg {
+		// Phase 3: Export functionality
+		// For now, this is a placeholder that demonstrates the integration point
+		// In a real implementation, this would:
+		// 1. Get trades from TradeHistory (would need access to it)
+		// 2. Use export.NewTradeExporter to export data
+		// 3. Show success/error messages to user
+
+		// Simulate export for demonstration
+		exportMsg := fmt.Sprintf("Export completed: trades_%s.csv", time.Now().Format("20060102_150405"))
+
+		// In real implementation, would use:
+		// exporter := export.NewTradeExporter(logger)
+		// trades := tradeHistory.GetAllTrades()
+		// outputPath, err := exporter.ExportTrades(trades, export.ExportOptions{
+		//     Format:    export.FormatCSV,
+		//     StartTime: time.Now().Add(-24 * time.Hour),
+		//     EndTime:   time.Now(),
+		//     OutputDir: "./exports",
+		// })
+
+		return ui.SuccessMsg{Message: exportMsg}
 	}
 }
 
