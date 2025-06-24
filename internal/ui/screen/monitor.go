@@ -16,24 +16,8 @@ import (
 	"github.com/rovshanmuradov/solana-bot/internal/ui/router"
 	"github.com/rovshanmuradov/solana-bot/internal/ui/state"
 	"github.com/rovshanmuradov/solana-bot/internal/ui/style"
+	"github.com/rovshanmuradov/solana-bot/internal/ui/types"
 )
-
-// MonitoredPosition represents a trading position being monitored
-type MonitoredPosition struct {
-	ID           int
-	TaskName     string
-	TokenMint    string
-	TokenSymbol  string
-	EntryPrice   float64
-	CurrentPrice float64
-	Amount       float64
-	PnLPercent   float64
-	PnLSol       float64
-	Volume24h    float64
-	LastUpdate   time.Time
-	PriceHistory []float64
-	Active       bool
-}
 
 // MonitorScreen represents the real-time monitoring screen
 type MonitorScreen struct {
@@ -50,8 +34,12 @@ type MonitorScreen struct {
 	// Enhanced UI components (Day 1)
 	statusHeader *component.StatusHeader
 
+	// Enhanced UI components (Day 2)
+	focusPane   *component.FocusPane
+	compactLogs *component.CompactLogViewer
+
 	// State
-	positions        []MonitoredPosition
+	positions        []types.MonitoredPosition
 	selectedPosition int
 	autoRefresh      bool
 	refreshInterval  time.Duration
@@ -144,6 +132,8 @@ func NewMonitorScreen() *MonitorScreen {
 	screen.initializeTable()
 	screen.initializeHelpBar()
 	screen.initializeStatusHeader() // Initialize enhanced StatusHeader
+	screen.initializeFocusPane()    // Initialize focus pane (Day 2)
+	screen.initializeCompactLogs()  // Initialize compact logs (Day 2)
 	screen.loadMockData()           // Load some mock data for demonstration
 
 	return screen
@@ -188,6 +178,22 @@ func (s *MonitorScreen) initializeStatusHeader() {
 	})
 }
 
+// initializeFocusPane sets up the focus pane component (Day 2)
+func (s *MonitorScreen) initializeFocusPane() {
+	s.focusPane = component.NewFocusPane()
+	s.focusPane.SetVisible(true) // Visible by default in enhanced mode
+}
+
+// initializeCompactLogs sets up the compact log viewer (Day 2)
+func (s *MonitorScreen) initializeCompactLogs() {
+	// Try to get LogBuffer from logger package
+	// In a real implementation, this would be passed from main.go
+	// For now, we'll create with nil and handle gracefully
+	s.compactLogs = component.NewCompactLogViewer(nil)
+	s.compactLogs.SetVisible(true) // Visible by default in enhanced mode
+	s.compactLogs.SetSize(80, 6)   // Default size
+}
+
 // Init initializes the monitor screen
 func (s *MonitorScreen) Init() tea.Cmd {
 	return tea.Batch(
@@ -205,7 +211,7 @@ type PriceUpdateMsg struct {
 
 // PositionUpdateMsg represents a complete position update
 type PositionUpdateMsg struct {
-	Position MonitoredPosition
+	Position types.MonitoredPosition
 }
 
 // RefreshMsg is sent to trigger a refresh
@@ -273,6 +279,18 @@ func (s *MonitorScreen) Update(msg tea.Msg) (router.Screen, tea.Cmd) {
 			// Toggle enhanced view mode
 			s.enhancedMode = !s.enhancedMode
 			s.updateDisplayComponents()
+
+		case msg.String() == "f", msg.String() == "F":
+			// Toggle focus pane
+			if s.focusPane != nil {
+				s.focusPane.SetVisible(!s.focusPane.IsVisible())
+			}
+
+		case msg.String() == "l", msg.String() == "L":
+			// Toggle log viewer
+			if s.compactLogs != nil {
+				s.compactLogs.SetVisible(!s.compactLogs.IsVisible())
+			}
 
 		case msg.String() == "1", msg.String() == "2", msg.String() == "3", msg.String() == "4", msg.String() == "5":
 			// Quick sell percentages
@@ -370,6 +388,25 @@ func (s *MonitorScreen) View() string {
 		content.WriteString(s.statusStyle.Render(emptyMsg))
 	}
 
+	// Enhanced components (Day 2)
+	if s.enhancedMode {
+		// Focus pane for selected position
+		if s.focusPane != nil && s.focusPane.IsVisible() {
+			// Update focus pane with selected position
+			if s.selectedPosition < len(s.positions) {
+				s.focusPane.SetPosition(&s.positions[s.selectedPosition])
+			}
+			content.WriteString("\n")
+			content.WriteString(s.focusPane.View())
+		}
+
+		// Compact log viewer
+		if s.compactLogs != nil && s.compactLogs.IsVisible() {
+			content.WriteString("\n")
+			content.WriteString(s.compactLogs.View())
+		}
+	}
+
 	content.WriteString("\n")
 
 	// Instructions
@@ -395,10 +432,28 @@ func (s *MonitorScreen) SetSize(width, height int) {
 		s.statusHeader.SetWidth(width)
 	}
 
-	// Adjust table size based on enhanced mode
+	// Update Day 2 components for responsive layout
+	if s.focusPane != nil {
+		s.focusPane.SetWidth(width)
+	}
+	if s.compactLogs != nil {
+		s.compactLogs.SetSize(width, 6) // Fixed height for logs
+	}
+
+	// Adjust table size based on enhanced mode and visible components
 	tableHeight := height - 20
 	if s.enhancedMode {
 		tableHeight = height - 25 // Leave more space for StatusHeader
+
+		// Account for focus pane height if visible
+		if s.focusPane != nil && s.focusPane.IsVisible() {
+			tableHeight -= s.focusPane.GetHeight() + 1
+		}
+
+		// Account for log viewer height if visible
+		if s.compactLogs != nil && s.compactLogs.IsVisible() {
+			tableHeight -= s.compactLogs.GetHeight() + 1
+		}
 	}
 
 	s.table.SetSize(width-4, tableHeight)
@@ -459,7 +514,7 @@ func (s *MonitorScreen) renderDetailedView() string {
 }
 
 // renderPositionDetails renders detailed information for a position
-func (s *MonitorScreen) renderPositionDetails(pos MonitoredPosition) string {
+func (s *MonitorScreen) renderPositionDetails(pos types.MonitoredPosition) string {
 	var content strings.Builder
 
 	// Position header
@@ -512,6 +567,9 @@ func (s *MonitorScreen) renderInstructions() string {
 	instructions = append(instructions, "G: Toggle PnL gauges")
 	instructions = append(instructions, "C: Compact mode")
 	instructions = append(instructions, "A: Auto-refresh")
+	instructions = append(instructions, "V: Enhanced mode")
+	instructions = append(instructions, "F: Focus pane")
+	instructions = append(instructions, "L: Log viewer")
 	instructions = append(instructions, "F5: Refresh")
 
 	return s.statusStyle.Render(strings.Join(instructions, " • "))
@@ -646,7 +704,7 @@ func (s *MonitorScreen) refreshDataCmd() tea.Cmd {
 }
 
 // sellPositionCmd creates a command to sell a position
-func (s *MonitorScreen) sellPositionCmd(pos MonitoredPosition) tea.Cmd {
+func (s *MonitorScreen) sellPositionCmd(pos types.MonitoredPosition) tea.Cmd {
 	return func() tea.Msg {
 		// Create domain event for position sell
 		event := domain.Event{
@@ -666,7 +724,7 @@ func (s *MonitorScreen) sellPositionCmd(pos MonitoredPosition) tea.Cmd {
 }
 
 // sellPositionPartialCmd creates a command to sell a percentage of a position
-func (s *MonitorScreen) sellPositionPartialCmd(pos MonitoredPosition, percentage float64) tea.Cmd {
+func (s *MonitorScreen) sellPositionPartialCmd(pos types.MonitoredPosition, percentage float64) tea.Cmd {
 	return func() tea.Msg {
 		event := domain.Event{
 			Type:      domain.EventOrderFilled,
@@ -710,7 +768,7 @@ func (s *MonitorScreen) updatePositionPrice(positionID int, price float64, times
 }
 
 // updatePosition updates a complete position using GlobalCache
-func (s *MonitorScreen) updatePosition(pos MonitoredPosition) {
+func (s *MonitorScreen) updatePosition(pos types.MonitoredPosition) {
 	// Phase 2: Update position in GlobalCache
 	if state.GlobalCache != nil {
 		// Convert MonitoredPosition to monitor.Position for cache
@@ -786,7 +844,7 @@ func (s *MonitorScreen) handleDomainEvent(event domain.Event) {
 		// Add new position to monitor
 		if data, ok := event.Data.(map[string]interface{}); ok {
 			// Create new position from task execution data
-			newPos := MonitoredPosition{
+			newPos := types.MonitoredPosition{
 				ID:           len(s.positions) + 1, // Simple ID generation
 				TaskName:     fmt.Sprintf("%v", data["task_name"]),
 				TokenMint:    fmt.Sprintf("%v", data["token_mint"]),
@@ -813,7 +871,7 @@ func (s *MonitorScreen) handleDomainEvent(event domain.Event) {
 func (s *MonitorScreen) loadMockData() {
 	now := time.Now()
 
-	s.positions = []MonitoredPosition{
+	s.positions = []types.MonitoredPosition{
 		{
 			ID:           1,
 			TaskName:     "PUMP_SNIPE_1",

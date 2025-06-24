@@ -50,7 +50,7 @@ func NewHandler(parentCtx context.Context, logger *zap.Logger) *Handler {
 // Start запускает обработку пользовательского ввода
 func (h *Handler) Start() {
 	h.logger.Debug("Starting UI handler")
-	fmt.Println("\nMonitoring started. Press Enter to sell tokens or 'q' to exit.")
+	h.logger.Info("📊 Monitoring started - Press Enter to sell tokens or 'q' to exit")
 
 	go func() {
 		reader := bufio.NewReader(os.Stdin)
@@ -89,7 +89,8 @@ func (h *Handler) Start() {
 					// Запрос на выход
 					h.publishEvent(ExitRequested, "")
 				default:
-					fmt.Println("Unknown command. Press Enter to sell tokens or 'q' to exit.")
+					h.logger.Warn("⚠️ Unknown command received", zap.String("command", command))
+					h.logger.Info("💡 Use Enter to sell tokens or 'q' to exit")
 				}
 			}
 		}
@@ -119,7 +120,6 @@ func (h *Handler) publishEvent(eventType EventType, data string) {
 	}
 }
 
-// Render отображает информацию о мониторинге в консоли
 // shortenAddress возвращает усечённый вид адреса вида "6QwKg…JVuJpump"
 func shortenAddress(addr string) string {
 	if len(addr) <= 12 {
@@ -128,36 +128,46 @@ func shortenAddress(addr string) string {
 	return addr[:6] + "…" + addr[len(addr)-6:]
 }
 
-// Render выводит в консоль аккуратно выровненный бокс с данными мониторинга
+// Render отправляет информацию о мониторинге через структурированные логи вместо прямого вывода в консоль
 func Render(update monitor.PriceUpdate, pnl model.PnLResult, tokenMint string) {
-	// Форматирование процента изменения цены
-	changeStr := fmt.Sprintf("%.2f%%", update.Percent)
-	if update.Percent > 0 {
-		changeStr = "\033[32m+" + changeStr + "\033[0m" // Зеленый для роста
-	} else if update.Percent < 0 {
-		changeStr = "\033[31m" + changeStr + "\033[0m" // Красный для падения
+	// Получаем логгер (в идеале он должен передаваться как параметр)
+	// Для совместимости создаем базовый логгер
+	logger, _ := zap.NewDevelopment()
+	defer logger.Sync()
+
+	// Определяем тренд цены
+	trendIcon := "📈"
+	if update.Percent < 0 {
+		trendIcon = "📉"
+	} else if update.Percent == 0 {
+		trendIcon = "📊"
 	}
 
-	// Форматирование PnL
-	pnlStr := fmt.Sprintf("%.8f SOL (%.2f%%)", pnl.NetPnL, pnl.PnLPercentage)
-	if pnl.NetPnL > 0 {
-		pnlStr = "\033[32m+" + pnlStr + "\033[0m" // Зеленый для прибыли
-	} else if pnl.NetPnL < 0 {
-		pnlStr = "\033[31m" + pnlStr + "\033[0m" // Красный для убытка
+	// Определяем статус PnL
+	pnlIcon := "💰"
+	if pnl.NetPnL < 0 {
+		pnlIcon = "📉"
+	} else if pnl.NetPnL > 0 {
+		pnlIcon = "📈"
 	}
 
-	// Вывод информации в консоль
-	fmt.Println("\n╔════════════════ TOKEN MONITOR ════════════════╗")
-	fmt.Printf("║ Token: %-38s ║\n", shortenAddress(tokenMint))
-	fmt.Println("╟───────────────────────────────────────────────╢")
-	fmt.Printf("║ Current Price:       %-20.8f SOL ║\n", update.Current)
-	fmt.Printf("║ Initial Price:       %-20.8f SOL ║\n", update.Initial)
-	fmt.Printf("║ Price Change:        %-33s ║\n", changeStr)
-	fmt.Printf("║ Tokens Owned:        %-19.6f      ║\n", update.Tokens)
-	fmt.Println("╟───────────────────────────────────────────────╢")
-	fmt.Printf("║ Sold (Estimate):     %-20.8f SOL ║\n", pnl.SellEstimate)
-	fmt.Printf("║ Invested:            %-20.8f SOL ║\n", pnl.InitialInvestment)
-	fmt.Printf("║ P&L:                 %-25s ║\n", pnlStr)
-	fmt.Println("╚═══════════════════════════════════════════════╝")
-	fmt.Println("Press Enter to sell tokens, 'q' to exit without selling")
+	// Отправляем структурированные логи вместо прямого вывода в консоль
+	logger.Info("💹 Price update",
+		zap.String("token", shortenAddress(tokenMint)),
+		zap.Float64("current_price", update.Current),
+		zap.Float64("initial_price", update.Initial),
+		zap.Float64("change_percent", update.Percent),
+		zap.Float64("tokens_owned", update.Tokens),
+		zap.String("trend", trendIcon),
+	)
+
+	logger.Info(fmt.Sprintf("%s PnL update", pnlIcon),
+		zap.Float64("net_pnl", pnl.NetPnL),
+		zap.Float64("pnl_percentage", pnl.PnLPercentage),
+		zap.Float64("sell_estimate", pnl.SellEstimate),
+		zap.Float64("initial_investment", pnl.InitialInvestment),
+		zap.String("token", shortenAddress(tokenMint)),
+	)
+
+	logger.Info("⌨️ Commands available - Press Enter to sell, 'q' to exit")
 }

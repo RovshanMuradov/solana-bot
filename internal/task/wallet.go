@@ -6,11 +6,11 @@ package task
 import (
 	"encoding/csv"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 
 	"github.com/gagliardetto/solana-go"
+	"go.uber.org/zap"
 )
 
 // Wallet представляет кошелёк Solana.
@@ -47,7 +47,10 @@ func LoadWallets(path string) (map[string]*Wallet, error) {
 	}
 	defer func() {
 		if err := file.Close(); err != nil {
-			log.Printf("failed to close wallets file: %q: %v", path, err)
+			// Use structured logging instead of log.Printf
+			logger, _ := zap.NewDevelopment()
+			defer logger.Sync()
+			logger.Error("Failed to close wallets file", zap.String("path", path), zap.Error(err))
 		}
 	}()
 

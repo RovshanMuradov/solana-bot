@@ -130,17 +130,15 @@ func (mw *MonitorWorker) handleUIEvents(ctx context.Context) error {
 			switch event.Type {
 			case ui.SellRequested:
 				mw.logger.Info("💰 Sell requested by user")
-
-				fmt.Println("\nPreparing to sell tokens...")
+				mw.logger.Info("🔄 Preparing to sell tokens", zap.String("token", mw.task.TokenMint))
 
 				// Создаем контекст, привязанный к родительскому контексту
 				sellCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 				defer cancel()
 
 				// RPC-имплементация уже ждет CommitmentProcessed
-				mw.logger.Info("💱 Processing sell request for: " + mw.task.TokenMint)
-
-				fmt.Println("Selling tokens now...")
+				mw.logger.Info("💱 Processing sell request", zap.String("token", mw.task.TokenMint))
+				mw.logger.Info("💸 Initiating token sale", zap.Float64("percentage", mw.task.AutosellAmount))
 
 				// Stop UI updates and price monitoring AFTER preparing the sell request
 				// but BEFORE executing the sell operation
@@ -148,18 +146,16 @@ func (mw *MonitorWorker) handleUIEvents(ctx context.Context) error {
 
 				// Выполняем продажу синхронно, чтобы дождаться результата
 				if err := mw.sellFn(sellCtx, mw.task.AutosellAmount); err != nil {
-					mw.logger.Error("❌ Failed to sell tokens: " + err.Error())
-					fmt.Printf("Error selling tokens: %v\n", err)
+					mw.logger.Error("❌ Failed to sell tokens", zap.Error(err), zap.String("token", mw.task.TokenMint))
 					return err // Возвращаем ошибку наверх, чтобы она попала в errgroup
 				}
 
-				mw.logger.Info("✅ Tokens sold successfully!")
-				fmt.Println("Tokens sold successfully!")
+				mw.logger.Info("✅ Tokens sold successfully!", zap.String("token", mw.task.TokenMint))
 				return nil
 
 			case ui.ExitRequested:
 				mw.logger.Info("🚪 Exit requested by user")
-				fmt.Println("\nExiting monitor mode without selling tokens.")
+				mw.logger.Info("⏹️ Exiting monitor mode without selling tokens")
 				mw.Stop()
 				return nil
 			}

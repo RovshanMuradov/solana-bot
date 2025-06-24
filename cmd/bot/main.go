@@ -41,10 +41,15 @@ func main() {
 		log.Fatalf("Failed to create log buffer: %v", err)
 	}
 
-	// Логгер with LogBuffer integration
-	appLogger, err := logger.CreatePrettyLoggerWithBuffer(cfg.DebugLogging, logBuffer)
+	// Логгер with LogBuffer integration - use TUI-compatible logger
+	// TUI mode detected: only write to buffer, no console output to avoid breaking UI
+	appLogger, err := logger.CreateTUILoggerWithBuffer(cfg.DebugLogging, logBuffer)
 	if err != nil {
-		log.Fatalf("Failed to init logger: %v", err)
+		// Fallback to regular logger if TUI logger fails
+		appLogger, err = logger.CreatePrettyLoggerWithBuffer(cfg.DebugLogging, logBuffer)
+		if err != nil {
+			log.Fatalf("Failed to init logger: %v", err)
+		}
 	}
 	logBuffer.SetLogger(appLogger) // Set logger after creation
 

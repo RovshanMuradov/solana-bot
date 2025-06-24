@@ -239,15 +239,8 @@ func CreatePrettyLoggerWithBuffer(debug bool, buffer *LogBuffer) (*zap.Logger, e
 		level = zap.DebugLevel
 	}
 
-	consoleCore := zapcore.NewCore(
-		zapcore.NewConsoleEncoder(encoderConfig),
-		zapcore.AddSync(zapcore.Lock(os.Stdout)),
-		level,
-	)
-
 	// Create buffer core if buffer is provided
 	var cores []zapcore.Core
-	cores = append(cores, &FieldFilterCore{core: consoleCore})
 
 	if buffer != nil {
 		// Create JSON encoder for buffer (structured logs)
@@ -258,9 +251,52 @@ func CreatePrettyLoggerWithBuffer(debug bool, buffer *LogBuffer) (*zap.Logger, e
 			level,
 		)
 		cores = append(cores, bufferCore)
+	} else {
+		// Fallback to console output only if no buffer provided
+		consoleCore := zapcore.NewCore(
+			zapcore.NewConsoleEncoder(encoderConfig),
+			zapcore.AddSync(zapcore.Lock(os.Stdout)),
+			level,
+		)
+		cores = append(cores, &FieldFilterCore{core: consoleCore})
 	}
 
 	// Combine cores
 	multiCore := zapcore.NewTee(cores...)
 	return zap.New(multiCore), nil
+}
+
+// CreateTUILoggerWithBuffer creates a TUI-compatible logger that only writes to buffer
+func CreateTUILoggerWithBuffer(debug bool, buffer *LogBuffer) (*zap.Logger, error) {
+	if buffer == nil {
+		return nil, fmt.Errorf("buffer is required for TUI logger")
+	}
+
+	level := zap.InfoLevel
+	if debug {
+		level = zap.DebugLevel
+	}
+
+	// Create clean encoder for buffer logs
+	encoderConfig := zapcore.EncoderConfig{
+		MessageKey:     "msg",
+		LevelKey:       "level",
+		TimeKey:        "time",
+		CallerKey:      "",
+		StacktraceKey:  "",
+		LineEnding:     zapcore.DefaultLineEnding,
+		EncodeLevel:    zapcore.LowercaseLevelEncoder,
+		EncodeTime:     zapcore.ISO8601TimeEncoder,
+		EncodeDuration: zapcore.StringDurationEncoder,
+	}
+
+	// Only use buffer core - NO console output to avoid breaking TUI
+	jsonEncoder := zapcore.NewJSONEncoder(encoderConfig)
+	bufferCore := zapcore.NewCore(
+		jsonEncoder,
+		zapcore.AddSync(buffer),
+		level,
+	)
+
+	return zap.New(bufferCore), nil
 }

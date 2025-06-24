@@ -10,6 +10,7 @@ import (
 	"github.com/rovshanmuradov/solana-bot/internal/task"
 	"github.com/rovshanmuradov/solana-bot/internal/ui"
 	"github.com/rovshanmuradov/solana-bot/internal/ui/router"
+	"github.com/rovshanmuradov/solana-bot/internal/ui/types"
 	"go.uber.org/zap"
 )
 
@@ -24,7 +25,7 @@ type RealModeMonitorScreen struct {
 	*MonitorScreen
 	serviceProvider ui.ServiceProvider
 	realMode        bool
-	positionMap     map[string]*MonitoredPosition // tokenMint -> position for quick updates
+	positionMap     map[string]*types.MonitoredPosition // tokenMint -> position for quick updates
 }
 
 // NewRealModeMonitorScreen creates a monitor screen with real services
@@ -34,7 +35,7 @@ func NewRealModeMonitorScreen(serviceProvider ui.ServiceProvider) *RealModeMonit
 		MonitorScreen:   base,
 		serviceProvider: serviceProvider,
 		realMode:        true,
-		positionMap:     make(map[string]*MonitoredPosition),
+		positionMap:     make(map[string]*types.MonitoredPosition),
 	}
 
 	// Load real positions instead of mock data
@@ -49,8 +50,8 @@ func NewRealModeMonitorScreen(serviceProvider ui.ServiceProvider) *RealModeMonit
 // loadRealPositions sends command to load positions from trading service
 func (s *RealModeMonitorScreen) loadRealPositions() {
 	// Clear existing positions
-	s.positions = make([]MonitoredPosition, 0)
-	s.positionMap = make(map[string]*MonitoredPosition)
+	s.positions = make([]types.MonitoredPosition, 0)
+	s.positionMap = make(map[string]*types.MonitoredPosition)
 
 	// Send load positions command
 	s.sendLoadPositionsCommand()
@@ -109,7 +110,7 @@ func (s *RealModeMonitorScreen) Update(msg tea.Msg) (router.Screen, tea.Cmd) {
 }
 
 // sendSellCommand sends a sell position command
-func (s *RealModeMonitorScreen) sendSellCommand(position MonitoredPosition, percentage float64) tea.Cmd {
+func (s *RealModeMonitorScreen) sendSellCommand(position types.MonitoredPosition, percentage float64) tea.Cmd {
 	return func() tea.Msg {
 		commandBus := s.serviceProvider.GetCommandBus()
 		logger := s.serviceProvider.GetLogger()
@@ -238,11 +239,11 @@ func (s *RealModeMonitorScreen) handleSessionStoppedEvent(event bot.MonitoringSe
 // handlePositionsLoadedEvent handles positions loaded events
 func (s *RealModeMonitorScreen) handlePositionsLoadedEvent(event bot.PositionsLoadedEvent) {
 	// Convert UIPosition to MonitoredPosition
-	s.positions = make([]MonitoredPosition, len(event.Positions))
-	s.positionMap = make(map[string]*MonitoredPosition)
+	s.positions = make([]types.MonitoredPosition, len(event.Positions))
+	s.positionMap = make(map[string]*types.MonitoredPosition)
 
 	for i, uiPos := range event.Positions {
-		position := MonitoredPosition{
+		position := types.MonitoredPosition{
 			ID:           uiPos.ID,
 			TaskName:     uiPos.TaskName,
 			TokenMint:    uiPos.TokenMint,

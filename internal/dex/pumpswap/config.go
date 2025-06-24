@@ -33,7 +33,10 @@ func GetDefaultConfig() *Config {
 		PumpSwapProgramID,
 	)
 	if err != nil {
-		fmt.Printf("Failed to derive event authority: %v\n", err)
+		// Use structured logging instead of direct console output
+		logger, _ := zap.NewDevelopment()
+		defer logger.Sync()
+		logger.Error("Failed to derive event authority", zap.Error(err))
 		eventAuthority = solana.PublicKey{}
 	}
 
