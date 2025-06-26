@@ -12,10 +12,10 @@ import (
 
 // PriceUpdate представляет обновление цены токена
 type PriceUpdate struct {
-	Current  float64 // Текущая цена токена
-	Initial  float64 // Начальная цена токена
-	Percent  float64 // Процентное изменение цены
-	Tokens   float64 // Количество токенов
+	Current float64 // Текущая цена токена
+	Initial float64 // Начальная цена токена
+	Percent float64 // Процентное изменение цены
+	Tokens  float64 // Количество токенов
 }
 
 // PriceUpdateCallback - функция обратного вызова, вызываемая при обновлении цены токена.

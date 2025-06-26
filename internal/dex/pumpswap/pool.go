@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"golang.org/x/sync/errgroup"
 	"sync"
 	"time"
@@ -15,14 +16,9 @@ import (
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 	"go.uber.org/zap"
-
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
 )
 
 const (
-	MinimumLiquidity         uint64 = 1000
-	TokenAccountMintOffset   uint64 = 0
-	TokenAccountOwnerOffset  uint64 = 32
 	TokenAccountAmountOffset uint64 = 64
 	TokenAccountAmountSize   uint64 = 8
 )
@@ -41,7 +37,7 @@ type PoolManagerInterface interface {
 
 // PoolManager отвечает за операции с пулами PumpSwap.
 type PoolManager struct {
-	client     *solbc.Client
+	client     *blockchain.Client
 	logger     *zap.Logger
 	programID  solana.PublicKey
 	maxRetries int
@@ -70,7 +66,7 @@ func DefaultPoolManagerOptions() PoolManagerOptions {
 }
 
 // NewPoolManager создаёт новый PoolManager с заданными опциями.
-func NewPoolManager(client *solbc.Client, logger *zap.Logger, opts ...PoolManagerOptions) *PoolManager {
+func NewPoolManager(client *blockchain.Client, logger *zap.Logger, opts ...PoolManagerOptions) *PoolManager {
 	var options PoolManagerOptions
 	if len(opts) > 0 {
 		options = opts[0]
@@ -286,6 +282,7 @@ func (pm *PoolManager) findPoolByProgramAccounts(ctx context.Context, baseMint, 
 			LPMint:                pool.LPMint,
 			PoolBaseTokenAccount:  pool.PoolBaseTokenAccount,
 			PoolQuoteTokenAccount: pool.PoolQuoteTokenAccount,
+			CoinCreator:           pool.CoinCreator,
 		}, nil
 	}
 
@@ -333,6 +330,7 @@ func (pm *PoolManager) FetchPoolInfo(ctx context.Context, poolAddress solana.Pub
 		LPMint:                pool.LPMint,
 		PoolBaseTokenAccount:  pool.PoolBaseTokenAccount,
 		PoolQuoteTokenAccount: pool.PoolQuoteTokenAccount,
+		CoinCreator:           pool.CoinCreator,
 	}, nil
 }
 
@@ -390,7 +388,6 @@ func (pm *PoolManager) CalculateSwapQuote(pool *PoolInfo, inputAmount uint64, is
 
 // FindPoolWithRetry ищет пул для пары токенов с повторными попытками.
 func (pm *PoolManager) FindPoolWithRetry(ctx context.Context, baseMint, quoteMint solana.PublicKey, maxRetries int, retryDelay time.Duration) (*PoolInfo, error) {
-
 	// Используем значения по умолчанию, если параметры не заданы
 	if maxRetries <= 0 {
 		maxRetries = pm.maxRetries
@@ -411,8 +408,13 @@ func (pm *PoolManager) FindPoolWithRetry(ctx context.Context, baseMint, quoteMin
 		pool, err := pm.FindPool(ctx, baseMint, quoteMint)
 		return pool, err
 	}
-
-	maxTries := uint(maxRetries)
+	// Converting safely to avoid potential integer overflow
+	var maxTries uint
+	if maxRetries > 0 {
+		maxTries = uint(maxRetries)
+	} else {
+		maxTries = 1 // Default to at least one try
+	}
 	pool, err := backoff.Retry(ctx, operation,
 		backoff.WithBackOff(backoffPolicy),
 		backoff.WithMaxTries(maxTries),
@@ -494,5 +496,12 @@ func ParsePool(data []byte) (*Pool, error) {
 	pos += 32
 
 	pool.LPSupply = binary.LittleEndian.Uint64(data[pos : pos+8])
+	pos += 8
+
+	// Парсим CoinCreator, если есть
+	if len(data) >= pos+32 {
+		pool.CoinCreator = solana.PublicKeyFromBytes(data[pos : pos+32])
+	}
+
 	return pool, nil
 }

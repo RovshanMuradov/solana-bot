@@ -13,42 +13,72 @@ import (
 )
 
 // prepareBuyTransaction подготавливает транзакцию для покупки токенов на Pump.fun.
-func (d *DEX) prepareBuyTransaction(ctx context.Context, solAmountLamports uint64, priorityFeeSol string, computeUnits uint32) ([]solana.Instruction, error) {
-	// Шаг 1: Подготавливаем базовые инструкции (установка приоритета и создание ATA)
+// Упрощено в соответствии с Python SDK.
+func (d *DEX) prepareBuyTransaction(
+	ctx context.Context,
+	solAmountLamports uint64,
+	priorityFeeSol string,
+	computeUnits uint32,
+) ([]solana.Instruction, error) {
+	// 1) Базовые инструкции для приоритета и compute_unit_price
 	baseInstructions, userATA, err := d.prepareBaseInstructions(ctx, priorityFeeSol, computeUnits)
 	if err != nil {
 		return nil, err
 	}
 
-	// Шаг 2: Получаем адреса аккаунтов bonding curve для токена
-	bondingCurve, associatedBondingCurve, err := d.deriveBondingCurveAccounts(ctx)
+	// 2) Получаем все необходимые PDA и данные одновременно
+	bcData, bcAddr, associatedBC, err := d.fetchBondingCurveAndDerivePDAs(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to prepare bonding curve data: %w", err)
 	}
 
-	// Шаг 3: Создаем инструкцию покупки с точным количеством SOL
+	// 3) Проверяем, нужно ли добавить extend_account
+	info, err := d.client.GetAccountInfo(ctx, bcAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get bonding curve info: %w", err)
+	}
+
+	if len(info.Value.Data.GetBinary()) < 150 {
+		d.logger.Info("Adding extend_account instruction to transaction")
+		extIx := createExtendAccountInstruction(
+			bcAddr,
+			d.wallet.PublicKey,
+			d.config.EventAuthority,
+			d.config.ContractAddress,
+		)
+		baseInstructions = append(baseInstructions, extIx)
+	}
+
+	// 4) Получаем creator vault, который зависит от Creator в bonding curve
+	creatorVault, _, err := DeriveCreatorVaultPDA(d.config.ContractAddress, bcData.Creator)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive creator vault: %w", err)
+	}
+	d.logger.Info("Using creator vault", zap.String("vault", creatorVault.String()),
+		zap.String("creator", bcData.Creator.String()))
+
+	// 5) Формируем основную инструкцию buy
 	buyIx := createBuyExactSolInstruction(
 		d.config.Global,
 		d.config.FeeRecipient,
 		d.config.Mint,
-		bondingCurve,
-		associatedBondingCurve,
+		bcAddr,
+		associatedBC,
 		userATA,
 		d.wallet.PublicKey,
+		creatorVault,
 		d.config.EventAuthority,
+		d.config.ContractAddress,
 		solAmountLamports,
 	)
 
-	// Шаг 4: Добавляем инструкцию покупки к базовым инструкциям
-	baseInstructions = append(baseInstructions, buyIx)
-	return baseInstructions, nil
+	// 6) Собираем и возвращаем все инструкции
+	txIxs := append(baseInstructions, buyIx)
+	return txIxs, nil
 }
 
 // prepareSellTransaction подготавливает транзакцию для продажи токенов на Pump.fun.
-//
-// Метод формирует полный набор инструкций для транзакции продажи токенов.
-// Он выполняет проверку состояния bonding curve, рассчитывает минимальный ожидаемый выход SOL
-// с учетом проскальзывания, и создает инструкцию продажи.
+// Упрощено в соответствии с Python SDK.
 func (d *DEX) prepareSellTransaction(
 	ctx context.Context,
 	tokenAmount uint64,
@@ -56,29 +86,47 @@ func (d *DEX) prepareSellTransaction(
 	priorityFeeSol string,
 	computeUnits uint32,
 ) ([]solana.Instruction, error) {
-
-	// базовые инструкции
-	baseIx, userATA, err := d.prepareBaseInstructions(ctx, priorityFeeSol, computeUnits)
+	// 1) Базовые инструкции для приоритета и compute_unit_price
+	baseIxs, userATA, err := d.prepareBaseInstructions(ctx, priorityFeeSol, computeUnits)
 	if err != nil {
 		return nil, err
 	}
 
-	// адреса
-	bondingCurve, associatedBC, err := d.deriveBondingCurveAccounts(ctx)
+	// 2) Получаем все необходимые PDA и данные одновременно
+	bcData, bondingCurve, associatedBC, err := d.fetchBondingCurveAndDerivePDAs(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to prepare bonding curve data: %w", err)
 	}
 
-	// ----- берём данные Bonding‑Curve через кеш -----
-	bcData, _, err := d.getBondingCurveData(ctx)
+	// 3) Проверяем, нужно ли добавить extend_account
+	info, err := d.client.GetAccountInfo(ctx, bondingCurve)
 	if err != nil {
-		d.logger.Warn("Failed to fetch bonding curve data", zap.Error(err))
+		return nil, fmt.Errorf("failed to get bonding curve info: %w", err)
 	}
 
-	// расчёт minSol
+	if len(info.Value.Data.GetBinary()) < 150 {
+		d.logger.Info("Adding extend_account instruction to sell transaction")
+		extIx := createExtendAccountInstruction(
+			bondingCurve,
+			d.wallet.PublicKey,
+			d.config.EventAuthority,
+			d.config.ContractAddress,
+		)
+		baseIxs = append(baseIxs, extIx)
+	}
+
+	// 4) Получаем creator vault, который зависит от Creator в bonding curve
+	creatorVault, _, err := DeriveCreatorVaultPDA(d.config.ContractAddress, bcData.Creator)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive creator vault: %w", err)
+	}
+	d.logger.Info("Using creator vault for sell", zap.String("vault", creatorVault.String()),
+		zap.String("creator", bcData.Creator.String()))
+
+	// 5) Рассчитываем минимальный выход SOL с учётом слиппэджа
 	minSolOutput := d.calculateMinSolOutput(tokenAmount, bcData, slippagePercent)
 
-	// формируем sell‑инструкцию
+	// 6) Формируем sell-инструкцию
 	sellIx := createSellInstruction(
 		d.config.ContractAddress,
 		d.config.Global,
@@ -88,44 +136,70 @@ func (d *DEX) prepareSellTransaction(
 		associatedBC,
 		userATA,
 		d.wallet.PublicKey,
+		creatorVault,
 		d.config.EventAuthority,
 		tokenAmount,
 		minSolOutput,
 	)
 
-	return append(baseIx, sellIx), nil
+	// 7) Собираем и возвращаем все инструкции
+	return append(baseIxs, sellIx), nil
 }
 
-// calculateMinSolOutput вычисляет минимальный ожидаемый выход SOL при продаже токенов
-// с учетом заданного допустимого проскальзывания.
-func (d *DEX) calculateMinSolOutput(tokenAmount uint64, bondingCurveData *BondingCurve, slippagePercent float64) uint64 {
-	// Вычисляем ожидаемый выход SOL на основе пропорции резервов в bonding curve
-	// Формула: (токены * виртуальные резервы SOL) / виртуальные резервы токенов
-	expectedSolValueLamports := (tokenAmount * bondingCurveData.VirtualSolReserves) / bondingCurveData.VirtualTokenReserves // TODO:  work with virtual balance
+// fetchBondingCurveAndDerivePDAs получает Bonding Curve данные и все необходимые PDA за один вызов.
+// Также проверяет необходимость extend_account.
+func (d *DEX) fetchBondingCurveAndDerivePDAs(ctx context.Context) (*BondingCurve, solana.PublicKey, solana.PublicKey, error) {
+	// 1) Деривируем PDA bonding curve и associated token account
+	bcAddr, associatedBC, err := d.deriveBondingCurveAccounts(ctx)
+	if err != nil {
+		return nil, solana.PublicKey{}, solana.PublicKey{}, err
+	}
 
-	// Применяем допустимое проскальзывание к ожидаемому выходу
-	// Например, при проскальзывании 1% получим 99% от ожидаемого значения
-	return uint64(float64(expectedSolValueLamports) * (1.0 - slippagePercent/100.0))
+	// 2) Проверяем размер данных, при необходимости extend_account
+	info, err := d.client.GetAccountInfo(ctx, bcAddr)
+	if err != nil {
+		return nil, solana.PublicKey{}, solana.PublicKey{}, err
+	}
+
+	// Проверяем размер - если данные слишком маленькие (старая версия аккаунта)
+	// Необходимо выполнить extend_account
+	if len(info.Value.Data.GetBinary()) < 150 {
+		d.logger.Warn("Bonding curve account needs extension",
+			zap.String("bonding_curve", bcAddr.String()),
+			zap.Int("current_size", len(info.Value.Data.GetBinary())),
+			zap.Int("required_size", 150))
+
+		// Возвращаем информацию, чтобы вызывающий код мог добавить инструкцию
+		// extend_account в транзакцию buy/sell вместо отдельной транзакции
+	}
+
+	// 3) Получаем данные bonding curve
+	bcData, _, err := d.getBondingCurveData(ctx)
+	if err != nil {
+		return nil, solana.PublicKey{}, solana.PublicKey{}, err
+	}
+
+	return bcData, bcAddr, associatedBC, nil
 }
 
-// TODO: рассмотреть удаление или изменение метода
-// handleSellError обрабатывает специальные ошибки, возникающие при продаже токенов.
+// handleSellError обрабатывает ошибки, возникающие при продаже токенов.
+// Упрощено в соответствии с подходом Python SDK.
 func (d *DEX) handleSellError(err error) error {
-	// Проверяем специфические коды ошибок или строки, которые указывают на то,
-	// что bonding curve завершена или токен переехал на другой DEX
+	// Базовое сообщение об ошибке
+	errMsg := fmt.Sprintf("Ошибка при продаже токена %s: %s",
+		d.config.Mint.String(), err.Error())
+
+	// Логируем ошибку
+	d.logger.Error("Sell transaction failed",
+		zap.String("token_mint", d.config.Mint.String()),
+		zap.Error(err))
+
+	// Проверяем наличие специфических сообщений об ошибках
 	if strings.Contains(err.Error(), "BondingCurveComplete") ||
 		strings.Contains(err.Error(), "0x1775") ||
 		strings.Contains(err.Error(), "6005") {
-		// Логируем детали ошибки
-		d.logger.Error("Невозможно продать токен через Pump.fun",
-			zap.String("token_mint", d.config.Mint.String()),
-			zap.String("reason", "Токен перенесен на Raydium"))
-
-		// Возвращаем понятное сообщение об ошибке с объяснением
-		return fmt.Errorf("токен %s перенесен на Raydium и не может быть продан через Pump.fun",
-			d.config.Mint.String())
+		return fmt.Errorf("%s. Токен перенесен на Raydium", errMsg)
 	}
 
-	// Если это не специфическая ошибка, добавляем общее сообщение
-	return fmt.Errorf("failed to send transaction: %w", err)
+	return fmt.Errorf("%s. Попробуйте изменить параметры транзакции", errMsg)
 }

@@ -9,5 +9,11 @@
 /configs/
 .idea/
 solana-bot
+/pump-fun-bot-main
+/bin/  # Директория для локальных бинарных файлов, включая golangci-lint
+/distribution
+/logs
 
 **/.claude/settings.local.json
+
+

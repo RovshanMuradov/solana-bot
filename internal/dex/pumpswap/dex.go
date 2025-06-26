@@ -7,16 +7,16 @@ import (
 	"context"
 	"fmt"
 	"github.com/gagliardetto/solana-go"
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
-	"github.com/rovshanmuradov/solana-bot/internal/wallet"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+	"github.com/rovshanmuradov/solana-bot/internal/task"
 	"go.uber.org/zap"
 	"time"
 )
 
 // NewDEX создаёт новый экземпляр DEX для PumpSwap с кешированием и отложенным логированием RPC.
 func NewDEX(
-	client *solbc.Client,
-	w *wallet.Wallet,
+	client *blockchain.Client,
+	w *task.Wallet,
 	logger *zap.Logger,
 	config *Config,
 	poolManager PoolManagerInterface,
@@ -54,7 +54,7 @@ func (d *DEX) ExecuteSwap(ctx context.Context, params SwapParams) error {
 	}
 
 	// Вычисляем параметры для свапа
-	amounts := d.calculateSwapAmounts(pool, params.IsBuy, params.Amount, params.SlippagePercent)
+	amounts := d.calculateSwapAmounts(pool, params.IsBuy, params.Amount)
 
 	// Подготавливаем инструкции для транзакции
 	instructions, err := d.prepareSwapInstructions(pool, accounts, params, amounts)
@@ -77,18 +77,18 @@ func (d *DEX) ExecuteSwap(ctx context.Context, params SwapParams) error {
 // prepareSwapInstructions подготавливает инструкции для выполнения операции свапа.
 func (d *DEX) prepareSwapInstructions(pool *PoolInfo, accounts *PreparedTokenAccounts,
 	params SwapParams, amounts *SwapAmounts) ([]solana.Instruction, error) {
-
 	priorityInstructions, err := d.preparePriorityInstructions(params.ComputeUnits, params.PriorityFeeSol)
 	if err != nil {
 		return nil, err
 	}
 
 	return d.buildSwapTransaction(pool, accounts, params.IsBuy, amounts.BaseAmount,
-		amounts.QuoteAmount, priorityInstructions), nil
+		amounts.QuoteAmount, params.SlippagePercent, priorityInstructions), nil
 }
 
-// ExecuteSell выполняет операцию продажи токена за WSOL.
-func (d *DEX) ExecuteSell(ctx context.Context, tokenAmount uint64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
+// executeSell выполняет операцию продажи токена за WSOL.
+// Это приватная функция, которая используется внутри SellPercentTokens.
+func (d *DEX) executeSell(ctx context.Context, tokenAmount uint64, slippagePercent float64, priorityFeeSol string, computeUnits uint32) error {
 	params := SwapParams{
 		IsBuy:           false,
 		Amount:          tokenAmount,

@@ -6,11 +6,12 @@ package pumpfun
 import (
 	"context"
 	"fmt"
+	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
-	"go.uber.org/zap"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 )
 
 // prepareTransactionContext создает контекст с таймаутом для операции.
@@ -20,29 +21,36 @@ func (d *DEX) prepareTransactionContext(ctx context.Context, timeout time.Durati
 
 // prepareBaseInstructions подготавливает базовые инструкции для транзакции.
 func (d *DEX) prepareBaseInstructions(_ context.Context, priorityFeeSol string, computeUnits uint32) ([]solana.Instruction, solana.PublicKey, error) {
-	// Шаг 1: Создаем инструкции для установки приоритета транзакции
-	// Эти инструкции позволяют указать, сколько SOL валидаторы получат за обработку транзакции
-	// и лимит вычислительных единиц (computeUnits), которые транзакция может использовать
-	priorityInstructions, err := d.priorityManager.CreatePriorityInstructions(priorityFeeSol, computeUnits) // TODO: чекнуть работу CreatePriorityInstructions
-	if err != nil {
-		return nil, solana.PublicKey{}, fmt.Errorf("failed to create priority instructions: %w", err)
+	var instructions []solana.Instruction
+
+	// Set compute unit limit
+	if computeUnits == 0 {
+		computeUnits = 200_000 // Default compute units
+	}
+	instructions = append(instructions, computebudget.NewSetComputeUnitLimitInstruction(computeUnits).Build())
+
+	// Handle priority fee
+	var priorityFee uint64
+	if priorityFeeSol == "default" {
+		priorityFee = 5_000 // Default priority fee (5000 micro-lamports)
+	} else {
+		var solValue float64
+		if _, err := fmt.Sscanf(priorityFeeSol, "%f", &solValue); err != nil {
+			return nil, solana.PublicKey{}, fmt.Errorf("invalid priority fee format: %w", err)
+		}
+		priorityFee = uint64(solValue * 1_000_000_000_000) // SOL to micro-lamports
 	}
 
-	// Шаг 2: Вычисляем адрес ассоциированного токен-аккаунта (ATA) пользователя
-	// ATA - это детерминированный адрес, который вычисляется на основе адреса кошелька пользователя и минта токена
+	instructions = append(instructions, computebudget.NewSetComputeUnitPriceInstruction(priorityFee).Build())
+
+	// Create ATA instruction
 	userATA, _, err := solana.FindAssociatedTokenAddress(d.wallet.PublicKey, d.config.Mint)
 	if err != nil {
 		return nil, solana.PublicKey{}, fmt.Errorf("failed to derive associated token account: %w", err)
 	}
 
-	// Шаг 3: Создаем инструкцию для проверки существования ATA и создания его при необходимости
-	// Idempotent-инструкция не выдаст ошибку, если аккаунт уже существует
 	ataInstruction := d.wallet.CreateAssociatedTokenAccountIdempotentInstruction(
 		d.wallet.PublicKey, d.wallet.PublicKey, d.config.Mint)
-
-	// Шаг 4: Объединяем все инструкции в единый массив
-	var instructions []solana.Instruction
-	instructions = append(instructions, priorityInstructions...)
 	instructions = append(instructions, ataInstruction)
 
 	return instructions, userATA, nil
@@ -73,27 +81,23 @@ func (d *DEX) sendAndConfirmTransaction(ctx context.Context, instructions []sola
 		return solana.Signature{}, fmt.Errorf("sign transaction: %w", err)
 	}
 
-	// 4) симуляция (оставляем ваш код)
-	simResult, simErr := d.client.SimulateTransaction(ctx, tx)
-	if simErr != nil || (simResult != nil && simResult.Err != nil) {
-		d.logger.Warn("Transaction simulation failed", zap.Error(simErr), zap.Any("sim_error", simResult != nil && simResult.Err != nil))
-	} else {
-		d.logger.Info("Transaction simulation successful", zap.Uint64("compute_units", simResult.UnitsConsumed))
+	// 4) отправка с опциями для ускорения обработки
+	txOpts := blockchain.TransactionOptions{
+		SkipPreflight:       true,
+		PreflightCommitment: rpc.CommitmentProcessed,
 	}
-
-	// 5) отправка
-	sig, err := d.client.SendTransaction(ctx, tx)
+	sig, err := d.client.SendTransactionWithOpts(ctx, tx, txOpts)
 	if err != nil {
 		return solana.Signature{}, fmt.Errorf("send transaction: %w", err)
 	}
-	d.logger.Info("Transaction sent", zap.String("signature", sig.String()))
+	d.logger.Info("📤 Transaction sent: " + sig.String()[:8] + "...")
 
-	// 6) ожидание подтверждения
-	if err := d.client.WaitForTransactionConfirmation(ctx, sig, rpc.CommitmentConfirmed); err != nil {
-		d.logger.Warn("Confirm failed", zap.String("signature", sig.String()), zap.Error(err))
+	// 5) ожидание подтверждения (используем CommitmentProcessed для быстрого подтверждения)
+	if err := d.client.WaitForTransactionConfirmation(ctx, sig, rpc.CommitmentProcessed); err != nil {
+		d.logger.Warn("⚠️  Confirmation failed for " + sig.String()[:8] + "...: " + err.Error())
 		return sig, fmt.Errorf("confirmation failed: %w", err)
 	}
-	d.logger.Info("Transaction confirmed", zap.String("signature", sig.String()))
+	d.logger.Info("✅ Transaction confirmed: " + sig.String()[:8] + "...")
 
 	return sig, nil
 }

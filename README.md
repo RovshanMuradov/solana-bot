@@ -200,6 +200,149 @@ make clean        # Очистка сборок
 }
 ```
 
+### Функции мониторинга
+- Подробное логирование всех операций
+- Метрики производительности и статистика
+- WebSocket уведомления о важных событиях
+- Автоматическое восстановление при сбоях
+
+### Пример вывода мониторинга
+
+При запуске снайпинга с автоматическим мониторингом, бот будет отображать информацию о текущей цене, изменении цены, теоретической стоимости и P&L с дискретным расчетом (для Pump.fun):
+
+```
+make run
+Building and running application...
+go build -o solana-bot ./cmd/bot/main.go
+./solana-bot
+21:38:11	[INFO]	🌐 Configured RPC endpoints: 1
+21:38:11	[INFO]	🎯 Primary RPC: https://mainnet.helius-rpc.com/?api-key=premium
+21:38:11	[INFO]	✅ License validated (basic mode)
+21:38:11	[INFO]	📋 Loaded 1 trading tasks
+21:38:11	[INFO]	📋 Loaded 1 trading tasks
+21:38:11	[INFO]	🚀 Starting execution with 1 workers
+21:38:11	[INFO]	🚀 Trading worker started
+21:38:11	[INFO]	⚡ Executing swap on Smart DEX for Dmig...pump
+21:38:11	[INFO]	📊 Starting monitored trade for Dmig...pump
+21:38:11	[INFO]	PumpFun configuration prepared	{"program_id": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "global_account": "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf", "token_mint": "DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump", "event_authority": "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1"}
+21:38:11	[INFO]	🏗️  Creating PumpFun DEX for Dmig...pump
+21:38:11	[INFO]	📧 Updated fee recipient: 62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV
+21:38:11	[INFO]	🎯 Smart DEX selected: Pump.fun (bonding curve active)	{"token": "Dmig...pump"}
+21:38:11	[INFO]	🎯 Pump.fun snipe: 0.000 SOL for Dmig...pump
+21:38:11	[INFO]	💰 Starting Pump.fun buy: 0.000 SOL (20.0% slippage)
+21:38:11	[INFO]	📊 Using exact SOL amount: 0.000010000 SOL
+21:38:12	[INFO]	Using creator vault	{"vault": "9EPR5fRnTGhtyL5rcCUvf4iVtE9aL2CBmGZBXK7tmGQh", "creator": "7hGZjLKxMdkk5mykGKkeYYBdaaJA1zzziiRQgKuNYxb6"}
+21:38:12	[INFO]	📤 Transaction sent: 5B6MSsKs...
+21:38:12	[INFO]	⏳ Waiting for confirmation: 5B6MSsKs...
+21:38:12	[INFO]	✅ Transaction confirmed: 5B6MSsKs...
+21:38:12	[INFO]	✅ Transaction confirmed: 5B6MSsKs...
+21:38:12	[INFO]	🎉 Trade executed successfully: swap
+21:38:13	[INFO]	💰 Tokens received: 849815101
+21:38:13	[INFO]	📊 Preparing monitoring for Dmig...pump (0.000 SOL)
+21:38:13	[INFO]	🚀 Monitor started: 1203.904399 tokens @ $0.00000001 each
+
+Monitoring started. Press Enter to sell tokens or 'q' to exit.
+21:38:13	[INFO]	PriceMonitor: start	{"token": "DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump"}
+
+╔════════════════ TOKEN MONITOR ════════════════╗
+║ Token: DmigFW…74pump                          ║
+╟───────────────────────────────────────────────╢
+║ Current Price:       0.00000003           SOL ║
+║ Initial Price:       0.00000001           SOL ║
+║ Price Change:        +236.60%                 ║
+║ Tokens Owned:        1203.904399              ║
+╟───────────────────────────────────────────────╢
+║ Sold (Estimate):     0.00003332           SOL ║
+║ Invested:            0.00000990           SOL ║
+║ P&L:                 +0.00002342 SOL (236.60%) ║
+╚═══════════════════════════════════════════════╝
+Press Enter to sell tokens, 'q' to exit without selling
+
+╔════════════════ TOKEN MONITOR ════════════════╗
+║ Token: DmigFW…74pump                          ║
+╟───────────────────────────────────────────────╢
+║ Current Price:       0.00000003           SOL ║
+║ Initial Price:       0.00000001           SOL ║
+║ Price Change:        +236.60%                 ║
+║ Tokens Owned:        1203.904399              ║
+╟───────────────────────────────────────────────╢
+║ Sold (Estimate):     0.00003332           SOL ║
+║ Invested:            0.00000990           SOL ║
+║ P&L:                 +0.00002342 SOL (236.60%) ║
+╚═══════════════════════════════════════════════╝
+Press Enter to sell tokens, 'q' to exit without selling
+
+21:38:14	[INFO]	💰 Sell requested by user
+
+Preparing to sell tokens...
+21:38:14	[INFO]	💱 Processing sell request for: DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump
+Selling tokens now...
+21:38:14	[INFO]	PriceMonitor: context done, exiting loop
+21:38:14	[INFO]	💱 Starting token sell: DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump (100.0% at 20.0% slippage)
+21:38:15	[INFO]	Selling tokens	{"token_mint": "DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump", "total_balance": 1203904399, "percent": 100, "tokens_to_sell": 1203904399}
+21:38:15	[INFO]	💱 Starting Pump.fun sell: 1203904399 tokens (20.0% slippage)
+21:38:15	[INFO]	Using creator vault for sell	{"vault": "9EPR5fRnTGhtyL5rcCUvf4iVtE9aL2CBmGZBXK7tmGQh", "creator": "7hGZjLKxMdkk5mykGKkeYYBdaaJA1zzziiRQgKuNYxb6"}
+21:38:15	[INFO]	📤 Transaction sent: hxQYXoEV...
+21:38:15	[INFO]	⏳ Waiting for confirmation: hxQYXoEV...
+21:38:18	[INFO]	✅ Transaction confirmed: hxQYXoEV...
+21:38:18	[INFO]	✅ Transaction confirmed: hxQYXoEV...
+21:38:18	[INFO]	✅ Token sell completed successfully
+21:38:18	[INFO]	✅ Tokens sold successfully!
+Tokens sold successfully!
+21:38:18	[INFO]	✅ All tasks completed
+^Z
+[29]  + 44706 suspended  make run
+```
+
+### Workflow для разработки
+
+```bash
+# Создание тестовой ветки
+git checkout -b feature/your-feature-name
+
+# Запуск с режимом отладки
+go run cmd/bot/main.go -debug
+
+# Запуск тестов
+go test ./...
+
+# Форматирование кода
+go fmt ./...
+```
+
+### Makefile команды
+
+```bash
+# Локальный запуск
+make run
+
+# Полная пересборка проекта
+make rebuild
+
+# Запуск линтера локально
+make lint
+
+# Запуск линтера с автоисправлениями
+make lint-fix
+
+# Показать все доступные команды
+make help
+```
+
+### Линтинг кода
+
+Проект использует локальную установку golangci-lint для обеспечения качества кода. Первый запуск команды `make lint` установит необходимую версию линтера локально в директорию проекта.
+
+```bash
+# Запустить линтер
+make lint
+
+# Запустить линтер с автоматическим исправлением проблем
+make lint-fix
+```
+
+Конфигурация линтера находится в файле `.golangci.yml`. Pre-commit хук автоматически запускает линтер перед каждым коммитом для проверки измененных файлов.
+
 ### Метрики производительности
 - Время выполнения транзакций
 - Успешность операций
@@ -249,6 +392,20 @@ go test ./... -race
 - Новый терминальный пользовательский интерфейс
 - Интерактивный мониторинг в реальном времени
 - Улучшенный UX для управления торговлей
+
+### Линтинг кода
+
+Проект использует локальную установку golangci-lint для обеспечения качества кода. Первый запуск команды `make lint` установит необходимую версию линтера локально в директорию проекта.
+
+```bash
+# Запустить линтер
+make lint
+
+# Запустить линтер с автоматическим исправлением проблем
+make lint-fix
+```
+
+Конфигурация линтера находится в файле `.golangci.yml`. Pre-commit хук автоматически запускает линтер перед каждым коммитом для проверки измененных файлов.
 
 ## 📄 Лицензия
 

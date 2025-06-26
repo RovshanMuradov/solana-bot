@@ -1,18 +1,20 @@
+// Package dex
+// File: internal/dex/factory.go
 package dex
 
 import (
 	"context"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+	"github.com/rovshanmuradov/solana-bot/internal/task"
 	"sync"
 
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
-	"github.com/rovshanmuradov/solana-bot/internal/wallet"
 	"go.uber.org/zap"
 )
 
 // baseDEXAdapter содержит общую логику для всех адаптеров DEX
 type baseDEXAdapter struct {
-	client *solbc.Client
-	wallet *wallet.Wallet
+	client *blockchain.Client
+	wallet *task.Wallet
 	logger *zap.Logger
 	name   string
 

@@ -1,0 +1,58 @@
+version: "2"  # Обязательное поле для версии 2.x
+
+run:
+  timeout: 5m
+  go: "1.23.2"
+  concurrency: 4
+  skip-dirs:
+    - vendor
+
+linters:
+  enable:
+    # Базовые линтеры
+    - govet        # анализатор от Go
+    - staticcheck  # комплексный статический анализатор
+    - unused       # проверка неиспользуемых констант, переменных, функций, типов
+    - ineffassign  # проверка неэффективного присваивания
+    
+    # Дополнительные линтеры
+    - errcheck     # проверка обработки ошибок
+    - gosec        # проверка безопасности
+    - misspell     # проверка орфографии в комментариях
+    - prealloc     # проверка возможности предварительного выделения памяти для слайсов
+    - bodyclose    # проверяет, что HTTP-ответы правильно закрываются
+    - whitespace   # проверка правильного использования пробелов
+    - nilerr       # проверка возврата nil вместо ошибки
+
+formatters:
+  enable:
+    - gofmt        # форматирование кода по стилю Go
+
+issues:
+  max-issues-per-linter: 30
+  max-same-issues: 100
+  
+  exclude-rules:
+    # Игнорировать ошибки в тестовых файлах
+    - path: "_test\\.go"
+      linters:
+        - errcheck
+    
+    # Отключить проверки безопасности для тестовых файлов
+    - path: "_test\\.go"
+      linters:
+        - gosec
+
+linters-settings:
+  govet:
+    check-shadowing: true
+  
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+  
+  gofmt:
+    simplify: true
+    rewrite-rules:
+      - pattern: 'interface{}'
+        replacement: 'any'

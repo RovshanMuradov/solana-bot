@@ -4,6 +4,7 @@ package monitor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"sync"
 	"time"
@@ -52,36 +53,43 @@ func NewMonitoringSession(parentCtx context.Context, config *SessionConfig) *Mon
 func (ms *MonitoringSession) Start() error {
 	t := ms.config.Task // 👈 просто для краткости
 
-	ms.logger.Info("Preparing monitoring session",
-		zap.String("token", t.TokenMint),
-		zap.Float64("initial_investment_sol", t.AmountSol))
+	ms.logger.Info(fmt.Sprintf("📊 Preparing monitoring for %s...%s (%.3f SOL)",
+		t.TokenMint[:4],
+		t.TokenMint[len(t.TokenMint)-4:],
+		t.AmountSol))
 
 	initialPrice := ms.config.InitialPrice
-	initialTokens := t.AutosellAmount
 
-	if initialPrice == 0 {
-		ctx, cancel := context.WithTimeout(ms.ctx, 5*time.Second)
-		initialPrice, _ = ms.config.DEX.GetTokenPrice(ctx, t.TokenMint)
-		cancel()
-	}
-	if initialTokens == 0 && ms.config.TokenBalance == 0 {
-		ctx, cancel := context.WithTimeout(ms.ctx, 5*time.Second)
-		bal, err := ms.config.DEX.GetTokenBalance(ctx, t.TokenMint)
-		cancel()
-		if err == nil {
-			ms.config.TokenBalance = bal
-			initialTokens = float64(bal) / 1e6
-		}
+	// 1. Get token balance through the DEX adapter
+	ctx, cancel := context.WithTimeout(ms.ctx, 5*time.Second)
+	raw, err := ms.config.DEX.GetTokenBalance(ctx, t.TokenMint)
+	if err != nil {
+		ms.logger.Error("❌ Failed to fetch token balance: " + err.Error())
+	} else {
+		ms.config.TokenBalance = raw
 	}
 
-	ms.logger.Info("Monitor start",
-		zap.String("token", t.TokenMint),
-		zap.Float64("initial_price", initialPrice),
-		zap.Float64("initial_tokens", initialTokens),
-		zap.Uint64("initial_tokens_raw", ms.config.TokenBalance))
+	var minTokenDecimals uint8 = 6 // DefaultTokenDecimals
+
+	// 2. Calculate actual token amount with correct decimals through DEX
+	initialTokens := 0.0
+	if ms.config.TokenBalance > 0 {
+		// Convert the raw balance to a float with the default decimals
+		// In a future update this could be enhanced to query token metadata
+		initialTokens = float64(ms.config.TokenBalance) / math.Pow10(int(minTokenDecimals))
+		ms.logger.Debug(fmt.Sprintf("🔢 Using default token decimals: %d", minTokenDecimals))
+	}
+	cancel()
+
+	// 3. Calculate real purchase price from SOL spent / tokens received
+	if initialTokens > 0 {
+		initialPrice = t.AmountSol / initialTokens
+	}
+
+	ms.logger.Info(fmt.Sprintf("🚀 Monitor started: %.6f tokens @ $%.8f each", initialTokens, initialPrice))
 
 	ms.config.InitialPrice = initialPrice
-	t.AutosellAmount = initialTokens
+
 
 	// Создаем монитор цен
 	ms.priceMonitor = NewPriceMonitor(
@@ -190,7 +198,7 @@ func (ms *MonitoringSession) onPriceUpdate(update PriceUpdate) {
 			case <-ms.ctx.Done():
 				ms.logger.Debug("Context canceled while trying to send error")
 			default:
-				ms.logger.Warn("Error channel blocked, dropping error", zap.Error(err))
+				ms.logger.Warn("⚠️  Error channel blocked, dropping error: " + err.Error())
 			}
 		}
 		return
@@ -225,18 +233,20 @@ func (ms *MonitoringSession) updateTokenBalance(ctx context.Context, currentAmou
 	// Пробуем получить актуальный баланс токена
 	tokenBalanceRaw, err := ms.config.DEX.GetTokenBalance(ctx, t.TokenMint)
 	if err != nil {
-		ms.logger.Error("Failed to get token balance", zap.Error(err))
+		ms.logger.Error("❌ Failed to get token balance: " + err.Error())
 		return currentAmount, err
 	}
 
 	// Если получили — обновим локальную переменную
 	updatedBalance := currentAmount
 	if tokenBalanceRaw > 0 {
-		newBalance := float64(tokenBalanceRaw) / 1e6
+		// Using default decimals - in a real implementation this should
+		// ideally come from token metadata
+		var defaultDecimals uint8 = 6
+		newBalance := float64(tokenBalanceRaw) / math.Pow10(int(defaultDecimals))
+
 		if math.Abs(newBalance-currentAmount) > 0.000001 && newBalance > 0 {
-			ms.logger.Debug("Token balance changed",
-				zap.Float64("old_balance", currentAmount),
-				zap.Float64("new_balance", newBalance))
+			ms.logger.Debug(fmt.Sprintf("🔄 Token balance changed: %.6f → %.6f", currentAmount, newBalance))
 			ms.config.TokenBalance = tokenBalanceRaw
 			updatedBalance = newBalance
 		}

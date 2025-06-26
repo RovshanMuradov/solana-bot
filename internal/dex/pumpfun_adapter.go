@@ -4,13 +4,9 @@ package dex
 import (
 	"context"
 	"fmt"
-	"github.com/rovshanmuradov/solana-bot/internal/task"
-
-	"github.com/gagliardetto/solana-go/rpc"
-	"go.uber.org/zap"
-
 	"github.com/rovshanmuradov/solana-bot/internal/dex/model"
 	"github.com/rovshanmuradov/solana-bot/internal/dex/pumpfun"
+	"github.com/rovshanmuradov/solana-bot/internal/task"
 )
 
 // pumpfunDEXAdapter адаптирует Pump.fun к нашему DEX-интерфейсу.
@@ -31,17 +27,14 @@ func (d *pumpfunDEXAdapter) Execute(ctx context.Context, t *task.Task) error {
 
 	switch t.Operation {
 	case task.OperationSnipe:
-		d.logger.Info("Pump.fun snipe",
-			zap.String("mint", t.TokenMint),
-			zap.Float64("sol", t.AmountSol),
-			zap.Float64("slippage", t.SlippagePercent),
-			zap.String("fee", t.PriorityFeeSol),
-			zap.Uint32("cu", t.ComputeUnits),
-		)
+		d.logger.Info(fmt.Sprintf("🎯 Pump.fun snipe: %.3f SOL for %s...%s",
+			t.AmountSol,
+			t.TokenMint[:4],
+			t.TokenMint[len(t.TokenMint)-4:]))
 		return d.inner.ExecuteSnipe(ctx, t.AmountSol, t.SlippagePercent, t.PriorityFeeSol, t.ComputeUnits)
 
-	case t.Operation:
-		bal, err := d.inner.GetTokenBalance(ctx, rpc.CommitmentConfirmed)
+	case task.OperationSell:
+		bal, err := d.inner.GetTokenBalance(ctx, t.TokenMint)
 		if err != nil {
 			return fmt.Errorf("get balance: %w", err)
 		}
@@ -69,7 +62,7 @@ func (d *pumpfunDEXAdapter) GetTokenBalance(ctx context.Context, tokenMint strin
 	if err := d.init(ctx, tokenMint, d.makeInitPumpFun(tokenMint)); err != nil {
 		return 0, err
 	}
-	return d.inner.GetTokenBalance(ctx)
+	return d.inner.GetTokenBalance(ctx, tokenMint)
 }
 
 // SellPercentTokens продаёт процент, гарантируя init.
@@ -77,7 +70,7 @@ func (d *pumpfunDEXAdapter) SellPercentTokens(ctx context.Context, tokenMint str
 	if err := d.init(ctx, tokenMint, d.makeInitPumpFun(tokenMint)); err != nil {
 		return err
 	}
-	return d.inner.SellPercentTokens(ctx, pct, slip, fee, cu)
+	return d.inner.SellPercentTokens(ctx, tokenMint, pct, slip, fee, cu)
 }
 
 // CalculatePnL считает PnL, гарантируя init.

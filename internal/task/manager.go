@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -26,13 +27,18 @@ func NewManager(logger *zap.Logger) *Manager {
 
 // LoadTasks reads tasks from CSV at path. Returns parsed Task slice.
 func (m *Manager) LoadTasks(path string) ([]*Task, error) {
-	file, err := os.Open(path)
+	// Validate file path to prevent path traversal
+	if filepath.IsAbs(path) {
+		m.logger.Warn("⚠️  Using absolute path for tasks file: " + path)
+	}
+
+	file, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("open tasks file: %w", err)
 	}
 	defer func() {
 		if err := file.Close(); err != nil {
-			m.logger.Error("failed to close tasks file", zap.Error(err))
+			m.logger.Error("❌ Failed to close tasks file: " + err.Error())
 		}
 	}()
 
@@ -56,19 +62,19 @@ func (m *Manager) LoadTasks(path string) ([]*Task, error) {
 			break
 		}
 		if err != nil {
-			m.logger.Warn("Skipping malformed CSV row", zap.Int("line", line), zap.Error(err))
+			m.logger.Warn(fmt.Sprintf("⚠️  Skipping malformed CSV row at line %d: %v", line, err))
 			continue
 		}
 
 		task, err := m.parseRow(rw, indexes, line)
 		if err != nil {
-			m.logger.Warn("Skipping invalid task row", zap.Int("line", line), zap.Error(err))
+			m.logger.Warn(fmt.Sprintf("⚠️  Skipping invalid task at line %d: %v", line, err))
 			continue
 		}
 		tasks = append(tasks, task)
 	}
 
-	m.logger.Info("Loaded tasks", zap.Int("count", len(tasks)))
+	m.logger.Info(fmt.Sprintf("📋 Loaded %d trading tasks", len(tasks)))
 	return tasks, nil
 }
 
@@ -103,7 +109,7 @@ func (m *Manager) parseRow(fields []string, indexes map[string]int, line int) (*
 
 	computeUnits, err := parseUint32FieldStr(get("compute_units"))
 	if err != nil {
-		m.logger.Warn("Invalid compute_units, using default", zap.Error(err))
+		m.logger.Warn("⚠️  Invalid compute_units, using default: " + err.Error())
 	}
 
 	autoSell := 99.0
@@ -111,7 +117,7 @@ func (m *Manager) parseRow(fields []string, indexes map[string]int, line int) (*
 		if f, err := strconv.ParseFloat(s, 64); err == nil && f >= 1 && f <= 99 {
 			autoSell = f
 		} else {
-			m.logger.Warn("Invalid percent_to_sell, defaulting to 99%", zap.String("value", s), zap.Error(err))
+			m.logger.Warn(fmt.Sprintf("⚠️  Invalid percent_to_sell '%s', defaulting to 99%%: %v", s, err))
 		}
 	}
 

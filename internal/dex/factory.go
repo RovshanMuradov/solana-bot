@@ -5,14 +5,14 @@ package dex
 
 import (
 	"fmt"
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
-	"github.com/rovshanmuradov/solana-bot/internal/wallet"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+	"github.com/rovshanmuradov/solana-bot/internal/task"
 	"go.uber.org/zap"
 	"strings"
 )
 
 // GetDEXByName создаёт адаптер для DEX по имени биржи.
-func GetDEXByName(name string, client *solbc.Client, w *wallet.Wallet, logger *zap.Logger) (DEX, error) {
+func GetDEXByName(name string, client *blockchain.Client, w *task.Wallet, logger *zap.Logger) (DEX, error) {
 	if client == nil {
 		return nil, fmt.Errorf("client cannot be nil")
 	}
@@ -42,6 +42,16 @@ func GetDEXByName(name string, client *solbc.Client, w *wallet.Wallet, logger *z
 				wallet: w,
 				logger: logger,
 				name:   "Pump.Swap",
+			},
+		}, nil
+
+	case "snipe":
+		return &smartDEXAdapter{
+			baseDEXAdapter: baseDEXAdapter{
+				client: client,
+				wallet: w,
+				logger: logger.Named("smart_dex"),
+				name:   "Smart DEX",
 			},
 		}, nil
 

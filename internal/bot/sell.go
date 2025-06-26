@@ -36,11 +36,7 @@ func SellTokens(
 	go func() {
 		defer close(errChan)
 
-		logger.Info("Starting token sell operation",
-			zap.String("token_mint", tokenMint),
-			zap.Float64("percent", percent),
-			zap.Float64("slippage", slippagePercent),
-			zap.String("priority_fee", priorityFee))
+		logger.Info(fmt.Sprintf("💱 Starting token sell: %s (%.1f%% at %.1f%% slippage)", tokenMint, percent, slippagePercent))
 
 		// Создаем отдельный контекст с таймаутом для операции продажи
 		sellCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -57,12 +53,12 @@ func SellTokens(
 		)
 
 		if err != nil {
-			logger.Error("Token sell failed", zap.Error(err))
+			logger.Error("❌ Token sell failed: " + err.Error())
 			errChan <- fmt.Errorf("failed to sell tokens: %w", err)
 			return
 		}
 
-		logger.Info("Token sell completed successfully")
+		logger.Info("✅ Token sell completed successfully")
 	}()
 
 	return errChan, nil

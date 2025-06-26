@@ -10,7 +10,7 @@ import (
 	"github.com/gagliardetto/solana-go"
 	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
 	"github.com/gagliardetto/solana-go/rpc"
-	"strconv"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
 	"strings"
 	"time"
 )
@@ -69,8 +69,14 @@ func (d *DEX) createSignedTransaction(ctx context.Context, instructions []solana
 // (SlippageExceeded) и постоянные. Для временных ошибок возможен повторный запуск,
 // для постоянных - операция прерывается.
 func (d *DEX) submitAndConfirmTransaction(ctx context.Context, tx *solana.Transaction) (solana.Signature, error) {
-	sig, err := d.client.SendTransaction(ctx, tx)
+	// Отправляем транзакцию с опциями для ускорения обработки
+	txOpts := blockchain.TransactionOptions{
+		SkipPreflight:       true,
+		PreflightCommitment: rpc.CommitmentProcessed,
+	}
+	sig, err := d.client.SendTransactionWithOpts(ctx, tx, txOpts)
 	if err != nil {
+		// Проверяем на специфичные временные ошибки
 		if strings.Contains(err.Error(), "BlockhashNotFound") {
 			return solana.Signature{}, err // Временная ошибка для retry
 		}
@@ -86,11 +92,16 @@ func (d *DEX) submitAndConfirmTransaction(ctx context.Context, tx *solana.Transa
 		return solana.Signature{}, backoff.Permanent(fmt.Errorf("transaction failed: %w", err))
 	}
 
-	err = d.client.WaitForTransactionConfirmation(ctx, sig, rpc.CommitmentConfirmed)
+	d.logger.Info("📤 Transaction sent: " + sig.String()[:8] + "...")
+
+	// Используем CommitmentProcessed для быстрого подтверждения транзакции при продаже
+	err = d.client.WaitForTransactionConfirmation(ctx, sig, rpc.CommitmentProcessed)
 	if err != nil {
+		d.logger.Warn("⚠️  Confirmation failed for " + sig.String()[:8] + "...: " + err.Error())
 		return sig, fmt.Errorf("transaction confirmed but with error: %w", err)
 	}
 
+	d.logger.Info("✅ Transaction confirmed: " + sig.String()[:8] + "...")
 	return sig, nil
 }
 
@@ -98,25 +109,37 @@ func (d *DEX) submitAndConfirmTransaction(ctx context.Context, tx *solana.Transa
 //
 // Метод создает инструкции для управления вычислительными ресурсами транзакции:
 // установка лимита вычислительных единиц и их стоимости (приоритетная комиссия).
-// Приоритетная комиссия преобразуется из SOL в лампорты (1 SOL = 1e9 лампортов).
+// Приоритетная комиссия преобразуется из SOL в микро-лампорты (1 SOL = 1e12 микро-лампортов).
 func (d *DEX) preparePriorityInstructions(computeUnits uint32, priorityFeeSol string) ([]solana.Instruction, error) {
 	var instructions []solana.Instruction
-	if computeUnits > 0 {
-		instructions = append(instructions,
-			computebudget.NewSetComputeUnitLimitInstruction(computeUnits).Build())
+
+	// Set compute unit limit, использовать значение по умолчанию если не указано
+	if computeUnits == 0 {
+		computeUnits = 200_000 // Default compute units (как в pumpfun)
 	}
-	if priorityFeeSol != "" {
-		fee, err := strconv.ParseFloat(priorityFeeSol, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid priority fee: %w", err)
+	instructions = append(instructions,
+		computebudget.NewSetComputeUnitLimitInstruction(computeUnits).Build())
+
+	// Handle priority fee
+	var priorityFee uint64
+	if priorityFeeSol == "default" || priorityFeeSol == "" {
+		priorityFee = 5_000 // Default priority fee (5000 micro-lamports)
+		d.logger.Debug(fmt.Sprintf("Using default priority fee: %.6f SOL", float64(priorityFee)/1_000_000_000_000))
+	} else {
+		var solValue float64
+		// Используем fmt.Sscanf вместо strconv.ParseFloat
+		if _, err := fmt.Sscanf(priorityFeeSol, "%f", &solValue); err != nil {
+			return nil, fmt.Errorf("invalid priority fee format: %w", err)
 		}
-		// Перевод SOL в лампорты (1 SOL = 1e9 лампортов)
-		feeLamports := uint64(fee * 1e9)
-		if feeLamports > 0 {
-			instructions = append(instructions,
-				computebudget.NewSetComputeUnitPriceInstruction(feeLamports).Build())
-		}
+
+		// ИСПРАВЛЕНИЕ: используем правильный множитель для микро-лампортов
+		priorityFee = uint64(solValue * 1_000_000_000_000) // SOL to micro-lamports (1e12)
+		d.logger.Debug(fmt.Sprintf("Custom priority fee: %.6f SOL", solValue))
 	}
+
+	instructions = append(instructions,
+		computebudget.NewSetComputeUnitPriceInstruction(priorityFee).Build())
+
 	return instructions, nil
 }
 
@@ -150,6 +173,8 @@ func (d *DEX) prepareSwapParams(
 		QuoteTokenProgram:                TokenProgramID,
 		EventAuthority:                   d.config.EventAuthority,
 		ProgramID:                        d.config.ProgramID,
+		CoinCreatorVaultATA:              accounts.CoinCreatorVaultATA,
+		CoinCreatorVaultAuthority:        accounts.CoinCreatorVaultAuthority,
 		Amount1:                          baseAmount,
 		Amount2:                          quoteAmount,
 	}
@@ -167,17 +192,39 @@ func (d *DEX) buildSwapTransaction(
 	accounts *PreparedTokenAccounts,
 	isBuy bool,
 	baseAmount, quoteAmount uint64,
+	slippagePercent float64,
 	priorityInstructions []solana.Instruction,
 ) []solana.Instruction {
-	var instructions []solana.Instruction
-	instructions = append(instructions, priorityInstructions...)
-	instructions = append(instructions, accounts.CreateBaseATAIx, accounts.CreateQuoteATAIx)
+	instructions := append(priorityInstructions,
+		accounts.CreateBaseATAIx,
+		accounts.CreateQuoteATAIx,
+	)
 
+	// Сохраняем оригинальные значения для логирования
+	origBaseAmount := baseAmount
+	origQuoteAmount := quoteAmount
+
+	// Скорректированные под slippage amounts:
+	if isBuy {
+		// Для buy: quoteAmount — это сколько мы платим → делаем буфер сверху
+		maxQuoteIn := uint64(float64(quoteAmount) * (1 + slippagePercent/100.0))
+		quoteAmount = maxQuoteIn
+		// baseAmount (ожидаемый выход) оставляем как есть
+	} else {
+		// Для sell: quoteAmount — это ожидаемый выход → убираем буфер снизу
+		minQuoteOut := uint64(float64(quoteAmount) * (1 - slippagePercent/100.0))
+		quoteAmount = minQuoteOut
+		// baseAmount (сколько мы отдаем) оставляем как есть
+	}
+
+	d.logger.Debug(fmt.Sprintf("Swap with %.1f%% slippage: %d->%d base, %d->%d quote",
+		slippagePercent, origBaseAmount, baseAmount, origQuoteAmount, quoteAmount))
+
+	// Собираем параметры так, чтобы в instruction ушли скорректированные суммы
 	swapParams := d.prepareSwapParams(pool, accounts, isBuy, baseAmount, quoteAmount)
 	swapIx := createSwapInstruction(swapParams)
-	instructions = append(instructions, swapIx)
 
-	return instructions
+	return append(instructions, swapIx)
 }
 
 // prepareTokenAccounts подготавливает ATA пользователя и инструкции для их создания.
@@ -220,12 +267,35 @@ func (d *DEX) prepareTokenAccounts(ctx context.Context, pool *PoolInfo) (*Prepar
 		return nil, err
 	}
 
+	// Вычисляем адрес авторитета хранилища создателя монеты (creator_vault PDA)
+	coinCreatorSeed := [][]byte{[]byte("creator_vault"), pool.CoinCreator.Bytes()}
+
+	// Находим PDA для авторитета хранилища создателя
+	coinCreatorVaultAuthority, _, err := solana.FindProgramAddress(
+		coinCreatorSeed,
+		d.config.ProgramID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Находим ATA этого авторитета для квотного токена
+	coinCreatorVaultATA, _, err := solana.FindAssociatedTokenAddress(
+		coinCreatorVaultAuthority,
+		pool.QuoteMint,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	return &PreparedTokenAccounts{
-		UserBaseATA:             userBaseATA,
-		UserQuoteATA:            userQuoteATA,
-		ProtocolFeeRecipientATA: protocolFeeRecipientATA,
-		ProtocolFeeRecipient:    protocolFeeRecipient,
-		CreateBaseATAIx:         createBaseATAIx,
-		CreateQuoteATAIx:        createQuoteATAIx,
+		UserBaseATA:               userBaseATA,
+		UserQuoteATA:              userQuoteATA,
+		ProtocolFeeRecipientATA:   protocolFeeRecipientATA,
+		ProtocolFeeRecipient:      protocolFeeRecipient,
+		CoinCreatorVaultATA:       coinCreatorVaultATA,
+		CoinCreatorVaultAuthority: coinCreatorVaultAuthority,
+		CreateBaseATAIx:           createBaseATAIx,
+		CreateQuoteATAIx:          createQuoteATAIx,
 	}, nil
 }

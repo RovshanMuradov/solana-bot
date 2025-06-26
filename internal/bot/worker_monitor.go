@@ -20,13 +20,15 @@ type SellFunc func(ctx context.Context, percent float64) error
 
 // MonitorWorker представляет рабочий процесс мониторинга
 type MonitorWorker struct {
-	ctx      context.Context
-	logger   *zap.Logger
-	task     *task.Task
-	dex      dex.DEX
-	session  *monitor.MonitoringSession
-	uiHandle *ui.Handler
-	sellFn   SellFunc
+	ctx             context.Context
+	logger          *zap.Logger
+	task            *task.Task
+	config          *task.Config
+	dex             dex.DEX
+	session         *monitor.MonitoringSession
+	uiHandle        *ui.Handler
+	sellFn          SellFunc
+	monitorInterval time.Duration
 }
 
 // NewMonitorWorker создает новый экземпляр рабочего процесса мониторинга
@@ -46,6 +48,8 @@ func NewMonitorWorker(
 		task:   t,
 		dex:    dexAdapter,
 		sellFn: sellFn,
+		// Store the monitor interval for later use
+		monitorInterval: monitorInterval,
 	}
 }
 
@@ -58,7 +62,7 @@ func (mw *MonitorWorker) Start() error {
 		InitialPrice:    0,
 		DEX:             mw.dex,
 		Logger:          mw.logger.Named("session"),
-		MonitorInterval: 1 * time.Second, // Используем стандартный интервал
+		MonitorInterval: mw.monitorInterval,
 	}
 
 	// Создаем пользовательский интерфейс
@@ -95,7 +99,7 @@ func (mw *MonitorWorker) Start() error {
 
 	// Ожидаем завершения всех горутин
 	if err := g.Wait(); err != nil {
-		mw.logger.Error("Monitor worker failed", zap.Error(err))
+		mw.logger.Error("❌ Monitor worker failed: " + err.Error())
 		return err
 	}
 
@@ -126,28 +130,36 @@ func (mw *MonitorWorker) handleUIEvents(ctx context.Context) error {
 
 			switch event.Type {
 			case ui.SellRequested:
-				mw.logger.Info("Sell requested by user")
-				// Immediately stop UI updates and price monitoring
+				mw.logger.Info("💰 Sell requested by user")
+
+				fmt.Println("\nPreparing to sell tokens...")
+
+				// Создаем контекст, привязанный к родительскому контексту
+				sellCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+				defer cancel()
+
+				// RPC-имплементация уже ждет CommitmentProcessed
+				mw.logger.Info("💱 Processing sell request for: " + mw.task.TokenMint)
+
+				fmt.Println("Selling tokens now...")
+
+				// Stop UI updates and price monitoring AFTER preparing the sell request
+				// but BEFORE executing the sell operation
 				mw.Stop()
 
-				// Launch token sale independently of monitoring context
-				go func() {
-					sellCtx, cancel := context.WithCancel(context.Background())
-					defer cancel()
+				// Выполняем продажу синхронно, чтобы дождаться результата
+				if err := mw.sellFn(sellCtx, mw.task.AutosellAmount); err != nil {
+					mw.logger.Error("❌ Failed to sell tokens: " + err.Error())
+					fmt.Printf("Error selling tokens: %v\n", err)
+					return err // Возвращаем ошибку наверх, чтобы она попала в errgroup
+				}
 
-					fmt.Println("\nSelling tokens...")
-
-					if err := mw.sellFn(sellCtx, 100.0); err != nil { // TODO: percent hard coded
-						mw.logger.Error("Failed to sell tokens", zap.Error(err))
-						fmt.Printf("Error selling tokens: %v\n", err)
-					} else {
-						fmt.Println("Tokens sold successfully!")
-					}
-				}()
+				mw.logger.Info("✅ Tokens sold successfully!")
+				fmt.Println("Tokens sold successfully!")
 				return nil
 
 			case ui.ExitRequested:
-				mw.logger.Info("Exit requested by user")
+				mw.logger.Info("🚪 Exit requested by user")
 				fmt.Println("\nExiting monitor mode without selling tokens.")
 				mw.Stop()
 				return nil
@@ -170,7 +182,7 @@ func (mw *MonitorWorker) handlePriceUpdates(ctx context.Context) error {
 			// Расчет PnL
 			pnlData, err := mw.calculatePnL(ctx, update)
 			if err != nil {
-				mw.logger.Error("Failed to calculate PnL", zap.Error(err))
+				mw.logger.Error("❌ Failed to calculate PnL: " + err.Error())
 				continue
 			}
 
@@ -190,7 +202,7 @@ func (mw *MonitorWorker) handleSessionErrors(ctx context.Context) error {
 			if !ok {
 				return nil // Канал закрыт
 			}
-			mw.logger.Error("Session error", zap.Error(err))
+			mw.logger.Error("❌ Session error: " + err.Error())
 			return err // Возвращаем ошибку, чтобы завершить группу
 		}
 	}

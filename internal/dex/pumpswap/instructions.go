@@ -35,6 +35,8 @@ type SwapInstructionParams struct {
 	QuoteTokenProgram                solana.PublicKey
 	EventAuthority                   solana.PublicKey
 	ProgramID                        solana.PublicKey
+	CoinCreatorVaultATA              solana.PublicKey
+	CoinCreatorVaultAuthority        solana.PublicKey
 
 	// Operation-specific parameters
 	// For buy: Amount1 = baseAmountOut, Amount2 = maxQuoteAmountIn
@@ -78,6 +80,8 @@ func createSwapInstruction(params *SwapInstructionParams) solana.Instruction {
 		solana.NewAccountMeta(AssociatedTokenProgramID, false, false),
 		solana.NewAccountMeta(params.EventAuthority, false, false),
 		solana.NewAccountMeta(params.ProgramID, false, false),
+		solana.NewAccountMeta(params.CoinCreatorVaultATA, true, false),
+		solana.NewAccountMeta(params.CoinCreatorVaultAuthority, false, false),
 	}
 
 	return solana.NewInstruction(params.ProgramID, accountMetas, data)

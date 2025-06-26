@@ -21,7 +21,7 @@ type SimulationResult struct {
 	UnitsConsumed uint64
 }
 
-type Client interface {
+type Rpc interface {
 	// Получить последний blockhash.
 	GetRecentBlockhash(ctx context.Context) (solana.Hash, error)
 

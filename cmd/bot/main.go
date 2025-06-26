@@ -11,8 +11,8 @@ import (
 	"syscall"
 
 	"github.com/rovshanmuradov/solana-bot/internal/bot"
+	"github.com/rovshanmuradov/solana-bot/internal/logger"
 	"github.com/rovshanmuradov/solana-bot/internal/task"
-	"go.uber.org/zap"
 )
 
 func main() {
@@ -31,25 +31,17 @@ func main() {
 	}
 
 	// Логгер
-	logger, err := newLogger(cfg.DebugLogging)
+	appLogger, err := logger.CreatePrettyLogger(cfg.DebugLogging)
 	if err != nil {
 		log.Fatalf("Failed to init logger: %v", err)
 	}
 	defer func() {
-		_ = logger.Sync()
+		_ = appLogger.Sync()
 	}()
 
 	// Runner
-	runner := bot.NewRunner(cfg, logger)
+	runner := bot.NewRunner(cfg, appLogger)
 	if err := runner.Run(rootCtx); err != nil && rootCtx.Err() == nil {
-		logger.Fatal("Runner failed", zap.Error(err))
+		log.Fatalf("💥 Application failed to start: %v", err)
 	}
-}
-func newLogger(debug bool) (*zap.Logger, error) {
-	cfg := zap.NewProductionConfig()
-	if debug {
-		cfg = zap.NewDevelopmentConfig()
-	}
-	cfg.OutputPaths = []string{"stdout"}
-	return cfg.Build()
 }

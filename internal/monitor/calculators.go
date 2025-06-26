@@ -43,4 +43,8 @@ func init() {
 	RegisterCalculator("Pump.Swap", func(d dex.DEX, logger *zap.Logger) PnLCalculator {
 		return &pumpSwapCalculator{dex: d, logger: logger}
 	})
+
+	RegisterCalculator("Smart DEX", func(d dex.DEX, logger *zap.Logger) PnLCalculator {
+		return &smartDEXCalculator{dex: d, logger: logger}
+	})
 }

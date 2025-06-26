@@ -4,8 +4,8 @@
 package pumpswap
 
 import (
-	"github.com/rovshanmuradov/solana-bot/internal/blockchain/solbc"
-	"github.com/rovshanmuradov/solana-bot/internal/wallet"
+	"github.com/rovshanmuradov/solana-bot/internal/blockchain"
+	"github.com/rovshanmuradov/solana-bot/internal/task"
 	"time"
 
 	"go.uber.org/zap"
@@ -53,6 +53,7 @@ type Pool struct {
 	PoolBaseTokenAccount  solana.PublicKey
 	PoolQuoteTokenAccount solana.PublicKey
 	LPSupply              uint64
+	CoinCreator           solana.PublicKey
 }
 
 type PoolInfo struct {
@@ -67,21 +68,24 @@ type PoolInfo struct {
 	LPMint                solana.PublicKey
 	PoolBaseTokenAccount  solana.PublicKey
 	PoolQuoteTokenAccount solana.PublicKey
+	CoinCreator           solana.PublicKey
 }
 
 type PreparedTokenAccounts struct {
-	UserBaseATA             solana.PublicKey
-	UserQuoteATA            solana.PublicKey
-	ProtocolFeeRecipientATA solana.PublicKey
-	ProtocolFeeRecipient    solana.PublicKey
-	CreateBaseATAIx         solana.Instruction
-	CreateQuoteATAIx        solana.Instruction
+	UserBaseATA               solana.PublicKey
+	UserQuoteATA              solana.PublicKey
+	ProtocolFeeRecipientATA   solana.PublicKey
+	ProtocolFeeRecipient      solana.PublicKey
+	CoinCreatorVaultATA       solana.PublicKey
+	CoinCreatorVaultAuthority solana.PublicKey
+	CreateBaseATAIx           solana.Instruction
+	CreateQuoteATAIx          solana.Instruction
 }
 
 // DEX реализует операции для PumpSwap.
 type DEX struct {
-	client       *solbc.Client
-	wallet       *wallet.Wallet
+	client       *blockchain.Client
+	wallet       *task.Wallet
 	logger       *zap.Logger
 	config       *Config
 	poolManager  PoolManagerInterface
