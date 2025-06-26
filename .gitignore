@@ -1,9 +1,9 @@
 # Игнорировать конкретные файлы
 .env
-CLAUDE.md
-.golangci.yml
-TT.md
 
+# Игнорировать все .md файлы кроме README.md
+*.md
+!README.md
 
 # Игнорировать всю директорию configs и все её содержимое
 /configs/

@@ -1,0 +1,218 @@
+{"timestamp":"2025-06-19T07:04:01.554742+04:00","level":"info","message":"🚀 Initializing BotService","fields":{"logger":"bot_service","ts":1750302241.554631}}
+{"timestamp":"2025-06-19T07:04:01.554941+04:00","level":"info","message":"✅ Loaded wallets","fields":{"logger":"bot_service","ts":1750302241.5549319,"wallet_count":1}}
+{"timestamp":"2025-06-19T07:04:01.554948+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"execute_task","handler":"*bot.TaskExecutionHandler","logger":"bot_service.command_bus","ts":1750302241.554942}}
+{"timestamp":"2025-06-19T07:04:01.554956+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"sell_position","handler":"*bot.SellPositionHandler","logger":"bot_service.command_bus","ts":1750302241.554948}}
+{"timestamp":"2025-06-19T07:04:01.554962+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"refresh_data","handler":"*bot.RefreshDataHandler","logger":"bot_service.command_bus","ts":1750302241.554956}}
+{"timestamp":"2025-06-19T07:04:01.554967+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"load_positions","handler":"*bot.LoadPositionsHandler","logger":"bot_service.command_bus","ts":1750302241.554962}}
+{"timestamp":"2025-06-19T07:04:01.554971+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"load_tasks","handler":"*bot.LoadTasksHandler","logger":"bot_service.command_bus","ts":1750302241.554967}}
+{"timestamp":"2025-06-19T07:04:01.554976+04:00","level":"info","message":"TradingService initialized successfully","fields":{"logger":"bot_service.trading_service","ts":1750302241.554972}}
+{"timestamp":"2025-06-19T07:04:01.554981+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"execute_task","handler":"*bot.TaskExecutionHandler","logger":"bot_service.command_bus","ts":1750302241.554977}}
+{"timestamp":"2025-06-19T07:04:01.554986+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"sell_position","handler":"*bot.SellPositionHandler","logger":"bot_service.command_bus","ts":1750302241.5549812}}
+{"timestamp":"2025-06-19T07:04:01.55499+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"refresh_data","handler":"*bot.RefreshDataHandler","logger":"bot_service.command_bus","ts":1750302241.554986}}
+{"timestamp":"2025-06-19T07:04:01.554998+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"load_positions","handler":"*bot.LoadPositionsHandler","logger":"bot_service.command_bus","ts":1750302241.554991}}
+{"timestamp":"2025-06-19T07:04:01.555006+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"load_tasks","handler":"*bot.LoadTasksHandler","logger":"bot_service.command_bus","ts":1750302241.554999}}
+{"timestamp":"2025-06-19T07:04:01.555011+04:00","level":"info","message":"TradingService initialized successfully","fields":{"logger":"bot_service.trading_service","ts":1750302241.555006}}
+{"timestamp":"2025-06-19T07:04:01.555014+04:00","level":"info","message":"✅ BotService initialized successfully","fields":{"logger":"bot_service","ts":1750302241.555011}}
+{"timestamp":"2025-06-19T07:04:01.555021+04:00","level":"info","message":"🚀 Starting BotService","fields":{"logger":"bot_service","ts":1750302241.555017}}
+{"timestamp":"2025-06-19T07:04:01.555174+04:00","level":"info","message":"📋 Loaded 1 trading tasks","fields":{"logger":"bot_service","ts":1750302241.555169}}
+{"timestamp":"2025-06-19T07:04:01.555182+04:00","level":"info","message":"📋 Tasks loaded for validation","fields":{"logger":"bot_service","task_count":1,"ts":1750302241.5551748}}
+{"timestamp":"2025-06-19T07:04:01.555187+04:00","level":"info","message":"🌐 Validating RPC connectivity","fields":{"logger":"bot_service","ts":1750302241.5551832}}
+{"timestamp":"2025-06-19T07:04:01.555191+04:00","level":"info","message":"✅ RPC connectivity validated","fields":{"logger":"bot_service","primary_rpc":"https://ma***35d6ce4","total_rpcs":1,"ts":1750302241.555187}}
+{"timestamp":"2025-06-19T07:04:01.555195+04:00","level":"info","message":"✅ BotService started successfully","fields":{"logger":"bot_service","ts":1750302241.555191}}
+{"timestamp":"2025-06-19T07:04:01.555198+04:00","level":"info","message":"🚀 Bot service started with enhanced safety features","fields":{"ts":1750302241.5551949}}
+{"timestamp":"2025-06-19T07:04:01.555224+04:00","level":"info","message":"🌐 Configured RPC endpoints: 1","fields":{"ts":1750302241.55522}}
+{"timestamp":"2025-06-19T07:04:01.555228+04:00","level":"info","message":"🎯 Primary RPC: https://mainnet.helius-rpc.com/?api-key=premium","fields":{"ts":1750302241.5552251}}
+{"timestamp":"2025-06-19T07:04:01.555426+04:00","level":"info","message":"✅ License validated (basic mode)","fields":{"ts":1750302241.5552971}}
+{"timestamp":"2025-06-19T07:04:01.55545+04:00","level":"info","message":"📋 Loaded 1 trading tasks","fields":{"ts":1750302241.555445}}
+{"timestamp":"2025-06-19T07:04:01.555456+04:00","level":"info","message":"📋 Loaded 1 trading tasks","fields":{"ts":1750302241.5554519}}
+{"timestamp":"2025-06-19T07:04:01.555459+04:00","level":"info","message":"🚀 Starting execution with 1 workers","fields":{"ts":1750302241.555456}}
+{"timestamp":"2025-06-19T07:04:01.555514+04:00","level":"info","message":"🚀 Trading worker started","fields":{"logger":"worker-1","ts":1750302241.555506}}
+{"timestamp":"2025-06-19T07:04:01.555531+04:00","level":"info","message":"⚡ Executing swap on Smart DEX for Dmig...pump","fields":{"logger":"worker-1","ts":1750302241.555527}}
+{"timestamp":"2025-06-19T07:04:01.555535+04:00","level":"info","message":"📊 Starting monitored trade for Dmig...pump","fields":{"logger":"worker-1","ts":1750302241.555532}}
+{"timestamp":"2025-06-19T07:04:01.555562+04:00","level":"info","message":"PumpFun configuration prepared","fields":{"event_authority":"Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1","global_account":"4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf","logger":"worker-1.smart_dex.pumpfun","program_id":"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P","token_mint":"DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump","ts":1750302241.555551}}
+{"timestamp":"2025-06-19T07:04:01.555573+04:00","level":"info","message":"🏗️  Creating PumpFun DEX for Dmig...pump","fields":{"logger":"worker-1.smart_dex.pumpfun","ts":1750302241.555567}}
+{"timestamp":"2025-06-19T07:04:01.905844+04:00","level":"info","message":"📧 Updated fee recipient: 62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV","fields":{"logger":"worker-1.smart_dex.pumpfun","ts":1750302241.9057999}}
+{"timestamp":"2025-06-19T07:04:02.007052+04:00","level":"info","message":"🎯 Smart DEX selected: Pump.fun (bonding curve active)","fields":{"logger":"worker-1.smart_dex","token":"Dmig...pump","ts":1750302242.006967}}
+{"timestamp":"2025-06-19T07:04:02.007087+04:00","level":"info","message":"🎯 Pump.fun snipe: 0.000 SOL for Dmig...pump","fields":{"logger":"worker-1.smart_dex.pumpfun","ts":1750302242.00706}}
+{"timestamp":"2025-06-19T07:04:02.007114+04:00","level":"info","message":"💰 Starting Pump.fun buy: 0.000 SOL (20.0% slippage)","fields":{"logger":"worker-1.smart_dex.pumpfun.pumpfun","ts":1750302242.007092}}
+{"timestamp":"2025-06-19T07:04:02.007147+04:00","level":"info","message":"📊 Using exact SOL amount: 0.000010000 SOL","fields":{"logger":"worker-1.smart_dex.pumpfun.pumpfun","ts":1750302242.007125}}
+{"timestamp":"2025-06-19T07:04:02.221127+04:00","level":"info","message":"Using creator vault","fields":{"creator":"7hGZjLKxMdkk5mykGKkeYYBdaaJA1zzziiRQgKuNYxb6","logger":"worker-1.smart_dex.pumpfun.pumpfun","ts":1750302242.221087,"vault":"9EPR5fRnTGhtyL5rcCUvf4iVtE9aL2CBmGZBXK7tmGQh"}}
+{"timestamp":"2025-06-19T07:04:02.631968+04:00","level":"info","message":"📤 Transaction sent: 26jmBk9u...","fields":{"logger":"worker-1.smart_dex.pumpfun.pumpfun","ts":1750302242.631901}}
+{"timestamp":"2025-06-19T07:04:02.632+04:00","level":"info","message":"⏳ Waiting for confirmation: 26jmBk9u...","fields":{"logger":"solbc-client","ts":1750302242.631989}}
+{"timestamp":"2025-06-19T07:04:02.950125+04:00","level":"info","message":"✅ Transaction confirmed: 26jmBk9u...","fields":{"logger":"solbc-client","ts":1750302242.9500558}}
+{"timestamp":"2025-06-19T07:04:02.950146+04:00","level":"info","message":"✅ Transaction confirmed: 26jmBk9u...","fields":{"logger":"worker-1.smart_dex.pumpfun.pumpfun","ts":1750302242.9501371}}
+{"timestamp":"2025-06-19T07:04:02.950161+04:00","level":"info","message":"🎉 Trade executed successfully: swap","fields":{"logger":"worker-1","ts":1750302242.9501498}}
+{"timestamp":"2025-06-19T07:04:03.053427+04:00","level":"info","message":"💰 Tokens received: 351741114","fields":{"logger":"worker-1","ts":1750302243.0533278}}
+{"timestamp":"2025-06-19T07:04:03.053466+04:00","level":"info","message":"📊 Preparing monitoring for Dmig...pump (0.000 SOL)","fields":{"logger":"worker-1.monitor_worker.session","ts":1750302243.0534499}}
+{"timestamp":"2025-06-19T07:04:03.15978+04:00","level":"info","message":"🚀 Monitor started: 351.741114 tokens @ $0.00000003 each","fields":{"logger":"worker-1.monitor_worker.session","ts":1750302243.159662}}
+{"timestamp":"2025-06-19T07:04:03.159941+04:00","level":"info","message":"PriceMonitor: start","fields":{"logger":"worker-1.monitor_worker.session.price","token":"DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump","ts":1750302243.159903}}
+{"timestamp":"2025-06-19T07:04:03.16015+04:00","level":"warn","message":"Stdin closed or detached, exiting UI handler","fields":{"logger":"worker-1.monitor_worker.ui","ts":1750302243.16011}}
+{"timestamp":"2025-06-19T07:04:03.160184+04:00","level":"info","message":"🚪 Exit requested by user","fields":{"logger":"worker-1.monitor_worker","ts":1750302243.16016}}
+{"timestamp":"2025-06-19T07:04:03.160308+04:00","level":"error","message":"GetTokenPrice error","fields":{"error":"failed to get bonding curve data: rpc call getMultipleAccounts() on https://mainnet.helius-rpc.com/?api-key=767f42d9-06c2-46f8-8031-9869035d6ce4: Post \"https://mainnet.helius-rpc.com/?api-key=767f42d9-06c2-46f8-8031-9869035d6ce4\": context canceled","logger":"worker-1.monitor_worker.session.price","ts":1750302243.160278}}
+{"timestamp":"2025-06-19T07:04:03.160322+04:00","level":"info","message":"PriceMonitor: context done, exiting loop","fields":{"logger":"worker-1.monitor_worker.session.price","ts":1750302243.160309}}
+{"timestamp":"2025-06-19T07:04:03.160462+04:00","level":"info","message":"✅ All tasks completed","fields":{"logger":"worker-1","ts":1750302243.160444}}
+{"timestamp":"2025-06-19T07:04:11.287089+04:00","level":"info","message":"OS shutdown signal received","fields":{"signal":"terminated","ts":1750302251.2869718}}
+{"timestamp":"2025-06-19T07:04:11.287123+04:00","level":"info","message":"Shutdown signal received","fields":{"ts":1750302251.2871091}}
+{"timestamp":"2025-06-19T07:04:11.287128+04:00","level":"info","message":"📡 Signal received: terminated","fields":{"ts":1750302251.2869701}}
+{"timestamp":"2025-06-19T07:04:11.287155+04:00","level":"info","message":"Starting graceful shutdown","fields":{"services":3,"ts":1750302251.287143}}
+{"timestamp":"2025-06-19T07:04:11.287193+04:00","level":"info","message":"Shutting down service","fields":{"service":"logBuffer","ts":1750302251.287175}}
+{"timestamp":"2025-06-19T09:51:26.17037+04:00","level":"info","message":"🚀 Initializing BotService"}
+{"timestamp":"2025-06-19T09:51:26.170735+04:00","level":"info","message":"✅ Loaded wallets","fields":{"wallet_count":1}}
+{"timestamp":"2025-06-19T09:51:26.170764+04:00","level":"info","message":"PriceThrottler initialized","fields":{"interval":"150ms"}}
+{"timestamp":"2025-06-19T09:51:26.170772+04:00","level":"info","message":"AlertManager initialized","fields":{"loss_limit":20,"price_drop_threshold":10,"profit_target":50,"volume_threshold":10}}
+{"timestamp":"2025-06-19T09:51:26.170776+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"execute_task","handler":"*bot.TaskExecutionHandler"}}
+{"timestamp":"2025-06-19T09:51:26.170779+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"sell_position","handler":"*bot.SellPositionHandler"}}
+{"timestamp":"2025-06-19T09:51:26.170782+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"refresh_data","handler":"*bot.RefreshDataHandler"}}
+{"timestamp":"2025-06-19T09:51:26.170785+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"load_positions","handler":"*bot.LoadPositionsHandler"}}
+{"timestamp":"2025-06-19T09:51:26.170788+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"load_tasks","handler":"*bot.LoadTasksHandler"}}
+{"timestamp":"2025-06-19T09:51:26.17079+04:00","level":"info","message":"TradingService initialized successfully"}
+{"timestamp":"2025-06-19T09:51:26.170794+04:00","level":"info","message":"PriceThrottler initialized","fields":{"interval":"150ms"}}
+{"timestamp":"2025-06-19T09:51:26.170802+04:00","level":"info","message":"AlertManager initialized","fields":{"loss_limit":20,"price_drop_threshold":10,"profit_target":50,"volume_threshold":10}}
+{"timestamp":"2025-06-19T09:51:26.170806+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"execute_task","handler":"*bot.TaskExecutionHandler"}}
+{"timestamp":"2025-06-19T09:51:26.170808+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"sell_position","handler":"*bot.SellPositionHandler"}}
+{"timestamp":"2025-06-19T09:51:26.170811+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"refresh_data","handler":"*bot.RefreshDataHandler"}}
+{"timestamp":"2025-06-19T09:51:26.170814+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"load_positions","handler":"*bot.LoadPositionsHandler"}}
+{"timestamp":"2025-06-19T09:51:26.170816+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"load_tasks","handler":"*bot.LoadTasksHandler"}}
+{"timestamp":"2025-06-19T09:51:26.170818+04:00","level":"info","message":"TradingService initialized successfully"}
+{"timestamp":"2025-06-19T09:51:26.17082+04:00","level":"info","message":"✅ BotService initialized successfully"}
+{"timestamp":"2025-06-19T09:51:26.170822+04:00","level":"info","message":"🚀 Starting BotService"}
+{"timestamp":"2025-06-19T09:51:26.170989+04:00","level":"info","message":"📋 Loaded 1 trading tasks"}
+{"timestamp":"2025-06-19T09:51:26.170995+04:00","level":"info","message":"📋 Tasks loaded for validation","fields":{"task_count":1}}
+{"timestamp":"2025-06-19T09:51:26.170997+04:00","level":"info","message":"🌐 Validating RPC connectivity"}
+{"timestamp":"2025-06-19T09:51:26.171+04:00","level":"info","message":"✅ RPC connectivity validated","fields":{"primary_rpc":"https://ma***35d6ce4","total_rpcs":1}}
+{"timestamp":"2025-06-19T09:51:26.171002+04:00","level":"info","message":"✅ BotService started successfully"}
+{"timestamp":"2025-06-19T09:51:26.171004+04:00","level":"info","message":"🚀 Bot service started with enhanced safety features"}
+{"timestamp":"2025-06-19T09:51:26.17103+04:00","level":"info","message":"🌐 Configured RPC endpoints: 1"}
+{"timestamp":"2025-06-19T09:51:26.171032+04:00","level":"info","message":"🎯 Primary RPC: https://mainnet.helius-rpc.com/?api-key=premium"}
+{"timestamp":"2025-06-19T09:51:26.171212+04:00","level":"info","message":"✅ License validated (basic mode)"}
+{"timestamp":"2025-06-19T09:51:26.171234+04:00","level":"info","message":"📋 Loaded 1 trading tasks"}
+{"timestamp":"2025-06-19T09:51:26.17124+04:00","level":"info","message":"📋 Loaded 1 trading tasks"}
+{"timestamp":"2025-06-19T09:51:26.171243+04:00","level":"info","message":"🚀 Starting execution with 1 workers"}
+{"timestamp":"2025-06-19T09:51:26.171467+04:00","level":"info","message":"Trade history initialized","fields":{"csv_file":"logs/trades/trades_20250619_095126.csv","max_memory_trades":1000}}
+{"timestamp":"2025-06-19T09:51:26.17147+04:00","level":"info","message":"TradeHistory initialized","fields":{"log_dir":"./logs","max_memory_trades":1000}}
+{"timestamp":"2025-06-19T09:51:26.171506+04:00","level":"info","message":"🚀 Trading worker started"}
+{"timestamp":"2025-06-19T09:51:26.171521+04:00","level":"info","message":"⚡ Executing swap on Smart DEX for Dmig...pump"}
+{"timestamp":"2025-06-19T09:51:26.171523+04:00","level":"info","message":"📊 Starting monitored trade for Dmig...pump"}
+{"timestamp":"2025-06-19T09:51:26.171543+04:00","level":"info","message":"PumpFun configuration prepared","fields":{"event_authority":"Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1","global_account":"4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf","program_id":"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P","token_mint":"DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump"}}
+{"timestamp":"2025-06-19T09:51:26.17155+04:00","level":"info","message":"🏗️  Creating PumpFun DEX for Dmig...pump"}
+{"timestamp":"2025-06-19T09:51:26.573305+04:00","level":"info","message":"📧 Updated fee recipient: 62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV"}
+{"timestamp":"2025-06-19T09:51:26.697324+04:00","level":"info","message":"🎯 Smart DEX selected: Pump.fun (bonding curve active)","fields":{"token":"Dmig...pump"}}
+{"timestamp":"2025-06-19T09:51:26.697358+04:00","level":"info","message":"🎯 Pump.fun snipe: 0.000 SOL for Dmig...pump"}
+{"timestamp":"2025-06-19T09:51:26.697377+04:00","level":"info","message":"💰 Starting Pump.fun buy: 0.000 SOL (20.0% slippage)"}
+{"timestamp":"2025-06-19T09:51:26.6974+04:00","level":"info","message":"📊 Using exact SOL amount: 0.000010000 SOL"}
+{"timestamp":"2025-06-19T09:51:26.927328+04:00","level":"info","message":"Using creator vault","fields":{"creator":"7hGZjLKxMdkk5mykGKkeYYBdaaJA1zzziiRQgKuNYxb6","vault":"9EPR5fRnTGhtyL5rcCUvf4iVtE9aL2CBmGZBXK7tmGQh"}}
+{"timestamp":"2025-06-19T09:51:27.361452+04:00","level":"info","message":"📤 Transaction sent: 4xj213Ft..."}
+{"timestamp":"2025-06-19T09:51:27.361567+04:00","level":"info","message":"⏳ Waiting for confirmation: 4xj213Ft..."}
+{"timestamp":"2025-06-19T09:51:27.95651+04:00","level":"info","message":"✅ Transaction confirmed: 4xj213Ft..."}
+{"timestamp":"2025-06-19T09:51:27.956563+04:00","level":"info","message":"✅ Transaction confirmed: 4xj213Ft..."}
+{"timestamp":"2025-06-19T09:51:27.956587+04:00","level":"info","message":"🎉 Trade executed successfully: swap"}
+{"timestamp":"2025-06-19T09:51:27.956772+04:00","level":"info","message":"Trade logged","fields":{"action":"buy","amount_sol":0.00001,"id":"buy_1_1750312287","success":true,"token":"Dmig...pump"}}
+{"timestamp":"2025-06-19T09:51:28.068142+04:00","level":"info","message":"💰 Tokens received: 615546776"}
+{"timestamp":"2025-06-19T09:51:28.06825+04:00","level":"info","message":"📊 Preparing monitoring for Dmig...pump (0.000 SOL)"}
+{"timestamp":"2025-06-19T09:51:28.280263+04:00","level":"info","message":"🚀 Monitor started: 615.546776 tokens @ $0.00000002 each"}
+{"timestamp":"2025-06-19T09:51:28.280284+04:00","level":"info","message":"📊 Monitoring started - Press Enter to sell tokens or 'q' to exit"}
+{"timestamp":"2025-06-19T09:51:28.280351+04:00","level":"info","message":"PriceMonitor: start","fields":{"token":"DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump"}}
+{"timestamp":"2025-06-19T09:51:36.137634+04:00","level":"info","message":"💰 Sell requested by user"}
+{"timestamp":"2025-06-19T09:51:36.137654+04:00","level":"info","message":"🔄 Preparing to sell tokens","fields":{"token":"DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump"}}
+{"timestamp":"2025-06-19T09:51:36.137681+04:00","level":"info","message":"💱 Processing sell request","fields":{"token":"DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump"}}
+{"timestamp":"2025-06-19T09:51:36.137702+04:00","level":"info","message":"💸 Initiating token sale","fields":{"percentage":20}}
+{"timestamp":"2025-06-19T09:51:36.137737+04:00","level":"info","message":"PriceMonitor: context done, exiting loop"}
+{"timestamp":"2025-06-19T09:51:36.137854+04:00","level":"info","message":"💱 Starting token sell: DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump (20.0% at 20.0% slippage)"}
+{"timestamp":"2025-06-19T09:51:36.286971+04:00","level":"info","message":"Selling tokens","fields":{"percent":20,"token_mint":"DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump","tokens_to_sell":123109355,"total_balance":615546776}}
+{"timestamp":"2025-06-19T09:51:36.286994+04:00","level":"info","message":"💱 Starting Pump.fun sell: 123109355 tokens (20.0% slippage)"}
+{"timestamp":"2025-06-19T09:51:36.630132+04:00","level":"info","message":"Using creator vault for sell","fields":{"creator":"7hGZjLKxMdkk5mykGKkeYYBdaaJA1zzziiRQgKuNYxb6","vault":"9EPR5fRnTGhtyL5rcCUvf4iVtE9aL2CBmGZBXK7tmGQh"}}
+{"timestamp":"2025-06-19T09:51:36.874001+04:00","level":"info","message":"📤 Transaction sent: 27oS8gGe..."}
+{"timestamp":"2025-06-19T09:51:36.874045+04:00","level":"info","message":"⏳ Waiting for confirmation: 27oS8gGe..."}
+{"timestamp":"2025-06-19T09:51:37.591204+04:00","level":"info","message":"✅ Transaction confirmed: 27oS8gGe..."}
+{"timestamp":"2025-06-19T09:51:37.591256+04:00","level":"info","message":"✅ Transaction confirmed: 27oS8gGe..."}
+{"timestamp":"2025-06-19T09:51:37.591282+04:00","level":"info","message":"✅ Token sell completed successfully"}
+{"timestamp":"2025-06-19T09:51:37.59134+04:00","level":"info","message":"✅ Tokens sold successfully!","fields":{"token":"DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump"}}
+{"timestamp":"2025-06-19T09:51:37.591426+04:00","level":"info","message":"✅ All tasks completed"}
+{"timestamp":"2025-06-19T09:51:40.296613+04:00","level":"warn","message":"⚠️ Unknown command received","fields":{"command":"1"}}
+{"timestamp":"2025-06-19T09:51:40.296623+04:00","level":"info","message":"💡 Use Enter to sell tokens or 'q' to exit"}
+{"timestamp":"2025-06-19T09:52:31.786509+04:00","level":"info","message":"OS shutdown signal received","fields":{"signal":"interrupt"}}
+{"timestamp":"2025-06-19T09:52:31.786516+04:00","level":"info","message":"Shutdown signal received"}
+{"timestamp":"2025-06-19T09:52:31.786523+04:00","level":"info","message":"Starting graceful shutdown","fields":{"services":5}}
+{"timestamp":"2025-06-19T09:52:31.786569+04:00","level":"info","message":"Shutting down service","fields":{"service":"logger"}}
+{"timestamp":"2025-06-19T09:52:31.786577+04:00","level":"info","message":"Service shutdown complete","fields":{"service":"logger"}}
+{"timestamp":"2025-06-19T09:52:31.786581+04:00","level":"info","message":"📡 Signal received: interrupt"}
+{"timestamp":"2025-06-19T09:52:31.786584+04:00","level":"info","message":"Shutting down service","fields":{"service":"logBuffer"}}
+{"timestamp":"2025-06-19T09:53:01.930986+04:00","level":"info","message":"🚀 Initializing BotService"}
+{"timestamp":"2025-06-19T09:53:01.932259+04:00","level":"info","message":"✅ Loaded wallets","fields":{"wallet_count":1}}
+{"timestamp":"2025-06-19T09:53:01.932291+04:00","level":"info","message":"PriceThrottler initialized","fields":{"interval":"150ms"}}
+{"timestamp":"2025-06-19T09:53:01.932301+04:00","level":"info","message":"AlertManager initialized","fields":{"loss_limit":20,"price_drop_threshold":10,"profit_target":50,"volume_threshold":10}}
+{"timestamp":"2025-06-19T09:53:01.932311+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"execute_task","handler":"*bot.TaskExecutionHandler"}}
+{"timestamp":"2025-06-19T09:53:01.932315+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"sell_position","handler":"*bot.SellPositionHandler"}}
+{"timestamp":"2025-06-19T09:53:01.932318+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"refresh_data","handler":"*bot.RefreshDataHandler"}}
+{"timestamp":"2025-06-19T09:53:01.932321+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"load_positions","handler":"*bot.LoadPositionsHandler"}}
+{"timestamp":"2025-06-19T09:53:01.932324+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"load_tasks","handler":"*bot.LoadTasksHandler"}}
+{"timestamp":"2025-06-19T09:53:01.932326+04:00","level":"info","message":"TradingService initialized successfully"}
+{"timestamp":"2025-06-19T09:53:01.932333+04:00","level":"info","message":"PriceThrottler initialized","fields":{"interval":"150ms"}}
+{"timestamp":"2025-06-19T09:53:01.932337+04:00","level":"info","message":"AlertManager initialized","fields":{"loss_limit":20,"price_drop_threshold":10,"profit_target":50,"volume_threshold":10}}
+{"timestamp":"2025-06-19T09:53:01.93234+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"execute_task","handler":"*bot.TaskExecutionHandler"}}
+{"timestamp":"2025-06-19T09:53:01.932343+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"sell_position","handler":"*bot.SellPositionHandler"}}
+{"timestamp":"2025-06-19T09:53:01.93235+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"refresh_data","handler":"*bot.RefreshDataHandler"}}
+{"timestamp":"2025-06-19T09:53:01.932353+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"load_positions","handler":"*bot.LoadPositionsHandler"}}
+{"timestamp":"2025-06-19T09:53:01.932355+04:00","level":"info","message":"Command handler registered","fields":{"command_type":"load_tasks","handler":"*bot.LoadTasksHandler"}}
+{"timestamp":"2025-06-19T09:53:01.932357+04:00","level":"info","message":"TradingService initialized successfully"}
+{"timestamp":"2025-06-19T09:53:01.932359+04:00","level":"info","message":"✅ BotService initialized successfully"}
+{"timestamp":"2025-06-19T09:53:01.932362+04:00","level":"info","message":"🚀 Starting BotService"}
+{"timestamp":"2025-06-19T09:53:01.932535+04:00","level":"info","message":"📋 Loaded 1 trading tasks"}
+{"timestamp":"2025-06-19T09:53:01.932542+04:00","level":"info","message":"📋 Tasks loaded for validation","fields":{"task_count":1}}
+{"timestamp":"2025-06-19T09:53:01.932544+04:00","level":"info","message":"🌐 Validating RPC connectivity"}
+{"timestamp":"2025-06-19T09:53:01.932556+04:00","level":"info","message":"✅ RPC connectivity validated","fields":{"primary_rpc":"https://ma***35d6ce4","total_rpcs":1}}
+{"timestamp":"2025-06-19T09:53:01.932558+04:00","level":"info","message":"✅ BotService started successfully"}
+{"timestamp":"2025-06-19T09:53:01.93257+04:00","level":"info","message":"🚀 Bot service started with enhanced safety features"}
+{"timestamp":"2025-06-19T09:53:01.932606+04:00","level":"info","message":"🌐 Configured RPC endpoints: 1"}
+{"timestamp":"2025-06-19T09:53:01.932608+04:00","level":"info","message":"🎯 Primary RPC: https://mainnet.helius-rpc.com/?api-key=premium"}
+{"timestamp":"2025-06-19T09:53:01.932805+04:00","level":"info","message":"✅ License validated (basic mode)"}
+{"timestamp":"2025-06-19T09:53:01.932825+04:00","level":"info","message":"📋 Loaded 1 trading tasks"}
+{"timestamp":"2025-06-19T09:53:01.932828+04:00","level":"info","message":"📋 Loaded 1 trading tasks"}
+{"timestamp":"2025-06-19T09:53:01.932831+04:00","level":"info","message":"🚀 Starting execution with 1 workers"}
+{"timestamp":"2025-06-19T09:53:01.93311+04:00","level":"info","message":"Trade history initialized","fields":{"csv_file":"logs/trades/trades_20250619_095301.csv","max_memory_trades":1000}}
+{"timestamp":"2025-06-19T09:53:01.933114+04:00","level":"info","message":"TradeHistory initialized","fields":{"log_dir":"./logs","max_memory_trades":1000}}
+{"timestamp":"2025-06-19T09:53:01.93315+04:00","level":"info","message":"🚀 Trading worker started"}
+{"timestamp":"2025-06-19T09:53:01.933167+04:00","level":"info","message":"⚡ Executing swap on Smart DEX for Dmig...pump"}
+{"timestamp":"2025-06-19T09:53:01.933169+04:00","level":"info","message":"📊 Starting monitored trade for Dmig...pump"}
+{"timestamp":"2025-06-19T09:53:01.933212+04:00","level":"info","message":"PumpFun configuration prepared","fields":{"event_authority":"Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1","global_account":"4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf","program_id":"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P","token_mint":"DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump"}}
+{"timestamp":"2025-06-19T09:53:01.933219+04:00","level":"info","message":"🏗️  Creating PumpFun DEX for Dmig...pump"}
+{"timestamp":"2025-06-19T09:53:02.217456+04:00","level":"info","message":"📧 Updated fee recipient: 62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV"}
+{"timestamp":"2025-06-19T09:53:02.36124+04:00","level":"info","message":"🎯 Smart DEX selected: Pump.fun (bonding curve active)","fields":{"token":"Dmig...pump"}}
+{"timestamp":"2025-06-19T09:53:02.361265+04:00","level":"info","message":"🎯 Pump.fun snipe: 0.000 SOL for Dmig...pump"}
+{"timestamp":"2025-06-19T09:53:02.36128+04:00","level":"info","message":"💰 Starting Pump.fun buy: 0.000 SOL (20.0% slippage)"}
+{"timestamp":"2025-06-19T09:53:02.361303+04:00","level":"info","message":"📊 Using exact SOL amount: 0.000010000 SOL"}
+{"timestamp":"2025-06-19T09:53:02.590038+04:00","level":"info","message":"Using creator vault","fields":{"creator":"7hGZjLKxMdkk5mykGKkeYYBdaaJA1zzziiRQgKuNYxb6","vault":"9EPR5fRnTGhtyL5rcCUvf4iVtE9aL2CBmGZBXK7tmGQh"}}
+{"timestamp":"2025-06-19T09:53:03.06814+04:00","level":"info","message":"📤 Transaction sent: 2AvsQoTh..."}
+{"timestamp":"2025-06-19T09:53:03.068181+04:00","level":"info","message":"⏳ Waiting for confirmation: 2AvsQoTh..."}
+{"timestamp":"2025-06-19T09:53:03.614141+04:00","level":"info","message":"✅ Transaction confirmed: 2AvsQoTh..."}
+{"timestamp":"2025-06-19T09:53:03.61417+04:00","level":"info","message":"✅ Transaction confirmed: 2AvsQoTh..."}
+{"timestamp":"2025-06-19T09:53:03.61418+04:00","level":"info","message":"🎉 Trade executed successfully: swap"}
+{"timestamp":"2025-06-19T09:53:03.6143+04:00","level":"info","message":"Trade logged","fields":{"action":"buy","amount_sol":0.00001,"id":"buy_1_1750312383","success":true,"token":"Dmig...pump"}}
+{"timestamp":"2025-06-19T09:53:03.734367+04:00","level":"info","message":"💰 Tokens received: 844178211"}
+{"timestamp":"2025-06-19T09:53:03.73441+04:00","level":"info","message":"📊 Preparing monitoring for Dmig...pump (0.000 SOL)"}
+{"timestamp":"2025-06-19T09:53:03.85318+04:00","level":"info","message":"🚀 Monitor started: 844.178211 tokens @ $0.00000001 each"}
+{"timestamp":"2025-06-19T09:53:03.853204+04:00","level":"info","message":"📊 Monitoring started - Press Enter to sell tokens or 'q' to exit"}
+{"timestamp":"2025-06-19T09:53:03.85327+04:00","level":"info","message":"PriceMonitor: start","fields":{"token":"DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump"}}
+{"timestamp":"2025-06-19T09:53:12.417057+04:00","level":"info","message":"💰 Sell requested by user"}
+{"timestamp":"2025-06-19T09:53:12.417073+04:00","level":"info","message":"🔄 Preparing to sell tokens","fields":{"token":"DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump"}}
+{"timestamp":"2025-06-19T09:53:12.417081+04:00","level":"info","message":"💱 Processing sell request","fields":{"token":"DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump"}}
+{"timestamp":"2025-06-19T09:53:12.417087+04:00","level":"info","message":"💸 Initiating token sale","fields":{"percentage":20}}
+{"timestamp":"2025-06-19T09:53:12.41711+04:00","level":"info","message":"PriceMonitor: context done, exiting loop"}
+{"timestamp":"2025-06-19T09:53:12.417155+04:00","level":"info","message":"💱 Starting token sell: DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump (20.0% at 20.0% slippage)"}
+{"timestamp":"2025-06-19T09:53:12.538923+04:00","level":"info","message":"Selling tokens","fields":{"percent":20,"token_mint":"DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump","tokens_to_sell":168835642,"total_balance":844178211}}
+{"timestamp":"2025-06-19T09:53:12.538946+04:00","level":"info","message":"💱 Starting Pump.fun sell: 168835642 tokens (20.0% slippage)"}
+{"timestamp":"2025-06-19T09:53:12.876289+04:00","level":"info","message":"Using creator vault for sell","fields":{"creator":"7hGZjLKxMdkk5mykGKkeYYBdaaJA1zzziiRQgKuNYxb6","vault":"9EPR5fRnTGhtyL5rcCUvf4iVtE9aL2CBmGZBXK7tmGQh"}}
+{"timestamp":"2025-06-19T09:53:13.112555+04:00","level":"info","message":"📤 Transaction sent: 31eUioP4..."}
+{"timestamp":"2025-06-19T09:53:13.112679+04:00","level":"info","message":"⏳ Waiting for confirmation: 31eUioP4..."}
+{"timestamp":"2025-06-19T09:53:13.860296+04:00","level":"info","message":"✅ Transaction confirmed: 31eUioP4..."}
+{"timestamp":"2025-06-19T09:53:13.860316+04:00","level":"info","message":"✅ Transaction confirmed: 31eUioP4..."}
+{"timestamp":"2025-06-19T09:53:13.860324+04:00","level":"info","message":"✅ Token sell completed successfully"}
+{"timestamp":"2025-06-19T09:53:13.860342+04:00","level":"info","message":"✅ Tokens sold successfully!","fields":{"token":"DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump"}}
+{"timestamp":"2025-06-19T09:53:13.860446+04:00","level":"info","message":"✅ All tasks completed"}
+{"timestamp":"2025-06-19T09:53:18.934124+04:00","level":"info","message":"📡 Signal received: interrupt"}
+{"timestamp":"2025-06-19T09:53:18.934136+04:00","level":"info","message":"OS shutdown signal received","fields":{"signal":"interrupt"}}
+{"timestamp":"2025-06-19T09:53:18.93415+04:00","level":"info","message":"Shutdown signal received"}
+{"timestamp":"2025-06-19T09:53:18.934161+04:00","level":"info","message":"Starting graceful shutdown","fields":{"services":5}}
+{"timestamp":"2025-06-19T09:53:18.934188+04:00","level":"info","message":"Shutting down service","fields":{"service":"globalCache"}}
+{"timestamp":"2025-06-19T09:53:18.934204+04:00","level":"info","message":"Service shutdown complete","fields":{"service":"globalCache"}}
+{"timestamp":"2025-06-19T09:53:18.93421+04:00","level":"info","message":"Shutting down service","fields":{"service":"logBuffer"}}

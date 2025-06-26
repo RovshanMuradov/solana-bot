@@ -1,0 +1,3 @@
+timestamp,wallet,token,action,amount,price,pnl,signature
+id,timestamp,wallet_addr,token_mint,token_symbol,action,amount_sol,amount_token,price,tx_signature,entry_price,exit_price,pnl,pnl_percent,hold_time,dex,slippage_bps,gas_used,success,error_msg
+buy_1_1750312287,2025-06-19T09:51:27+04:00,U6iVUupcQbb4jmcKyyi8VsvJfcZd7FkyM841Hr82Dzu,DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump,Dmig...pump,buy,0.000010,,,,,,,,,snipe,,,true,
