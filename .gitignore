@@ -7,6 +7,8 @@ main
 merged_output_selected_folders.txt
 arch.md
 TODO.md
+API.md
+REAL_PROFILING_RESULTS.md
 
 
 # Игнорировать всю директорию configs и все её содержимое
