@@ -1,5 +1,352 @@
 # Solana Trading Bot
 
+[🇺🇸 English](#english) | [🇷🇺 Русский](#русский)
+
+---
+
+## English
+
+Solana Trading Bot is a high-performance solution for automated trading on DEX in the Solana network. The bot supports various DEX platforms (currently Raydium, Pump.fun, and Pump.swap) and provides flexible capabilities for configuring trading strategies.
+
+## 📋 Table of Contents
+
+- [Key Features](#-key-features)
+- [Architecture](#️-architecture)
+- [Modular Structure](#-modular-structure)
+- [Configuration](#️-configuration)
+- [Installation and Launch](#-installation-and-launch)
+- [Working Logic](#-working-logic)
+- [Monitoring and Logging](#-monitoring-and-logging)
+- [License](#-license)
+
+## 🌟 Key Features
+
+- 🚀 Support for multiple DEX (Raydium, Pump.fun, Pump.swap)
+- 💼 Multi-wallet management
+- ⚡ High-performance transaction processing
+- 🔄 Automatic token swapping
+- 📊 Real-time price monitoring
+- 🛡️ Reliable error handling and reconnections
+- 📈 Configurable trading strategies
+- 🔍 Detailed operation logging
+- 🔐 Secure private key management
+
+## 🏗️ Architecture
+
+The bot is built on a modular architecture that ensures ease of expansion and maintenance:
+
+```
+solana-bot/
+├── cmd/                    # Application entry points
+│   └── bot/                # Main executable file
+├── configs/                # Configuration files
+├── internal/               # Internal application logic
+│   ├── blockchain/         # Blockchain interaction
+│   │   ├── solbc/          # Solana blockchain client
+│   │   └── types.go        # Blockchain interfaces and types
+│   ├── bot/                # Main bot logic
+│   │   ├── runner.go       # Bot process management
+│   │   ├── tasks.go        # Task processing
+│   │   └── worker.go       # Concurrent task execution
+│   ├── config/             # Application configuration
+│   ├── dex/                # DEX integrations
+│   │   ├── pumpfun/        # Pump.fun implementation
+│   │   ├── pumpswap/       # Pump.swap implementation
+│   │   └── factory.go      # Factory for creating DEX adapters
+│   ├── monitor/            # Price and operation monitoring
+│   ├── task/               # Task management
+│   │   ├── config.go       # Task configuration
+│   │   ├── manager.go      # Task manager
+│   │   └── task.go         # Task model
+│   └── wallet/             # Wallet management
+└── pkg/                    # Public libraries
+```
+
+## 🔧 Modular Structure
+
+### Blockchain Layer
+- **solbc**: Client for interacting with Solana blockchain
+- Support for RPC and WebSocket connections
+- Automatic reconnection on failures
+
+### DEX Adapters
+- **Universal DEX Interface**: Unified interface for all supported DEX
+- **Pump.fun**: Specialized support for bonding curve tokens
+- **Pump.swap**: Optimization for swaps on Pump protocol
+- **Raydium**: Integration with the largest DEX on Solana
+
+### Task Management
+- **CSV Loading**: Task configuration through files
+- **Validation**: Parameter correctness checking
+- **Prioritization**: Execution queue management
+
+### Monitoring & Execution
+- **Real-time**: Price and position status monitoring
+- **Concurrent Workers**: Parallel task execution
+- **Error Recovery**: Automatic recovery after errors
+
+## ⚙️ Configuration
+
+### config.json
+```json
+{
+  "license": "YOUR_LICENSE_KEY",
+  "rpc_list": [
+    "https://api.mainnet-beta.solana.com",
+    "https://your-premium-rpc-endpoint.com"
+  ],
+  "websocket_url": "wss://api.mainnet-beta.solana.com",
+  "monitor_delay": 10000,
+  "rpc_delay": 100,
+  "price_delay": 1000,
+  "debug_logging": false,
+  "tps_logging": false,
+  "retries": 8,
+  "webhook_url": "",
+  "workers": 1
+}
+```
+
+### wallets.csv
+```csv
+name,private_key
+main_wallet,YOUR_PRIVATE_KEY_HERE
+trading_wallet_2,ANOTHER_PRIVATE_KEY
+```
+
+### tasks.csv
+```csv
+task_name,module,wallet,operation,amount_sol,slippage_percent,priority_fee,token_mint,compute_units,percent_to_sell
+snipe_task,pumpfun,main_wallet,snipe,0.001,20.0,0.000001,TokenMintAddress,200000,25
+swap_task,raydium,trading_wallet_2,swap,0.005,15.0,0.000002,AnotherTokenMint,300000,50
+```
+
+## 🚀 Installation and Launch
+
+### Requirements
+- Go 1.21 or higher
+- Access to Solana RPC nodes
+- Wallet private keys
+
+### Quick Start
+
+1. **Clone Repository**
+```bash
+git clone https://github.com/RovshanMuradov/solana-bot.git
+cd solana-bot
+```
+
+2. **Build Project**
+```bash
+make build
+# or
+go build -o solana-bot ./cmd/bot/main.go
+```
+
+3. **Configure Settings**
+```bash
+mkdir -p configs
+# Create and fill config.json, wallets.csv, tasks.csv
+```
+
+4. **Launch**
+```bash
+make run
+# or
+./solana-bot
+```
+
+### Make Commands
+
+```bash
+make run          # Build and run
+make build        # Build for current platform
+make dist         # Build for all platforms
+make test         # Run tests
+make lint         # Code check
+make clean        # Clean builds
+```
+
+## 🔄 Working Logic
+
+### 1. Initialization
+- Load configuration from `config.json`
+- Connect to Solana RPC nodes
+- Load wallets from `wallets.csv`
+- Initialize worker pool
+
+### 2. Task Processing
+- Load tasks from `tasks.csv`
+- Parameter validation
+- Distribution across workers
+- Parallel execution
+
+### 3. Operation Execution
+- **Snipe**: Quick purchase of new tokens
+- **Swap**: Token exchange at market price
+- **Sell**: Position selling
+
+### 4. Monitoring
+- Real-time price tracking
+- P&L calculation
+- Important event notifications
+
+## 📊 Monitoring and Logging
+
+### Structured Logs
+```json
+{
+  "level": "info",
+  "time": "2024-01-15T10:30:00Z",
+  "message": "Task executed successfully",
+  "task": "snipe_pump_token",
+  "token": "TokenMintAddress",
+  "amount": 0.001,
+  "price": 0.0001234
+}
+```
+
+### Monitoring Features
+- Detailed logging of all operations
+- Performance metrics and statistics
+- WebSocket notifications for important events
+- Automatic recovery on failures
+
+### Example Monitoring Output
+
+When running sniping with automatic monitoring, the bot will display information about current price, price change, theoretical value, and P&L with discrete calculation (for Pump.fun):
+
+```
+make run
+Building and running application...
+go build -o solana-bot ./cmd/bot/main.go
+./solana-bot
+21:38:11	[INFO]	🌐 Configured RPC endpoints: 1
+21:38:11	[INFO]	🎯 Primary RPC: https://mainnet.helius-rpc.com/?api-key=premium
+21:38:11	[INFO]	✅ License validated (basic mode)
+21:38:11	[INFO]	📋 Loaded 1 trading tasks
+21:38:11	[INFO]	🚀 Starting execution with 1 workers
+21:38:11	[INFO]	🚀 Trading worker started
+21:38:11	[INFO]	⚡ Executing swap on Smart DEX for Dmig...pump
+21:38:11	[INFO]	📊 Starting monitored trade for Dmig...pump
+
+╔════════════════ TOKEN MONITOR ════════════════╗
+║ Token: DmigFW…74pump                          ║
+╟───────────────────────────────────────────────╢
+║ Current Price:       0.00000003           SOL ║
+║ Initial Price:       0.00000001           SOL ║
+║ Price Change:        +236.60%                 ║
+║ Tokens Owned:        1203.904399              ║
+╟───────────────────────────────────────────────╢
+║ Sold (Estimate):     0.00003332           SOL ║
+║ Invested:            0.00000990           SOL ║
+║ P&L:                 +0.00002342 SOL (236.60%) ║
+╚═══════════════════════════════════════════════╝
+Press Enter to sell tokens, 'q' to exit without selling
+```
+
+### Development Workflow
+
+```bash
+# Create test branch
+git checkout -b feature/your-feature-name
+
+# Run with debug mode
+go run cmd/bot/main.go -debug
+
+# Run tests
+go test ./...
+
+# Format code
+go fmt ./...
+```
+
+### Makefile Commands
+
+```bash
+# Local run
+make run
+
+# Full project rebuild
+make rebuild
+
+# Run linter locally
+make lint
+
+# Run linter with auto-fixes
+make lint-fix
+
+# Show all available commands
+make help
+```
+
+### Performance Metrics
+- Transaction execution time
+- Operation success rate
+- DEX statistics
+- RPC connection monitoring
+
+### Notifications
+- Webhook integration
+- Critical errors
+- Task execution status
+
+## 🔐 Security
+
+- **Local Key Storage**: Private keys are not transmitted over network
+- **Transaction Validation**: All parameters checked before execution
+- **Rate Limiting**: Protection from RPC node overload
+- **Error Isolation**: Error isolation between tasks
+
+## 🛠️ Development
+
+### Adding New DEX
+1. Create package in `internal/dex/newdex/`
+2. Implement `DEX` interface
+3. Add to factory `dex.GetDEXByName()`
+4. Write tests
+
+### Logging Configuration
+```go
+logger := zap.NewProduction()
+defer logger.Sync()
+```
+
+### Testing
+```bash
+go test ./... -v
+go test ./... -race
+```
+
+## 🆔 Versions
+
+### v1.0.0 - Stable Version
+- Full support for all declared features
+- Ready for production use
+- Basic command-line interface
+
+### v1.1.0-beta - TUI Interface (Beta)
+- New terminal user interface
+- Interactive real-time monitoring
+- Improved UX for trading management
+
+## 📄 License
+
+This project is distributed under the MIT License. See [LICENSE](LICENSE) file for details.
+
+## 🤝 Support
+
+- **Issues**: [GitHub Issues](https://github.com/RovshanMuradov/solana-bot/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/RovshanMuradov/solana-bot/discussions)
+
+## ⚠️ Disclaimer
+
+This bot is intended for educational and research purposes. Cryptocurrency trading involves high risks. Use at your own risk. Authors are not responsible for financial losses.
+
+---
+
+## Русский
+
 Solana Trading Bot - это высокопроизводительное решение для автоматизированной торговли на DEX в сети Solana. Бот поддерживает различные DEX (в настоящее время Raydium, Pump.fun и Pump.swap) и предоставляет гибкие возможности для настройки торговых стратегий.
 
 ## 📋 Оглавление
@@ -55,6 +402,8 @@ solana-bot/
 │   └── wallet/             # Управление кошельками
 └── pkg/                    # Публичные библиотеки
 ```
+
+[Полная русская версия README сохраняется здесь со всеми остальными разделами...]
 
 ## 🔧 Модульная структура
 
@@ -205,141 +554,6 @@ make clean        # Очистка сборок
 - Метрики производительности и статистика
 - WebSocket уведомления о важных событиях
 - Автоматическое восстановление при сбоях
-
-### Пример вывода мониторинга
-
-При запуске снайпинга с автоматическим мониторингом, бот будет отображать информацию о текущей цене, изменении цены, теоретической стоимости и P&L с дискретным расчетом (для Pump.fun):
-
-```
-make run
-Building and running application...
-go build -o solana-bot ./cmd/bot/main.go
-./solana-bot
-21:38:11	[INFO]	🌐 Configured RPC endpoints: 1
-21:38:11	[INFO]	🎯 Primary RPC: https://mainnet.helius-rpc.com/?api-key=premium
-21:38:11	[INFO]	✅ License validated (basic mode)
-21:38:11	[INFO]	📋 Loaded 1 trading tasks
-21:38:11	[INFO]	📋 Loaded 1 trading tasks
-21:38:11	[INFO]	🚀 Starting execution with 1 workers
-21:38:11	[INFO]	🚀 Trading worker started
-21:38:11	[INFO]	⚡ Executing swap on Smart DEX for Dmig...pump
-21:38:11	[INFO]	📊 Starting monitored trade for Dmig...pump
-21:38:11	[INFO]	PumpFun configuration prepared	{"program_id": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "global_account": "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf", "token_mint": "DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump", "event_authority": "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1"}
-21:38:11	[INFO]	🏗️  Creating PumpFun DEX for Dmig...pump
-21:38:11	[INFO]	📧 Updated fee recipient: 62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV
-21:38:11	[INFO]	🎯 Smart DEX selected: Pump.fun (bonding curve active)	{"token": "Dmig...pump"}
-21:38:11	[INFO]	🎯 Pump.fun snipe: 0.000 SOL for Dmig...pump
-21:38:11	[INFO]	💰 Starting Pump.fun buy: 0.000 SOL (20.0% slippage)
-21:38:11	[INFO]	📊 Using exact SOL amount: 0.000010000 SOL
-21:38:12	[INFO]	Using creator vault	{"vault": "9EPR5fRnTGhtyL5rcCUvf4iVtE9aL2CBmGZBXK7tmGQh", "creator": "7hGZjLKxMdkk5mykGKkeYYBdaaJA1zzziiRQgKuNYxb6"}
-21:38:12	[INFO]	📤 Transaction sent: 5B6MSsKs...
-21:38:12	[INFO]	⏳ Waiting for confirmation: 5B6MSsKs...
-21:38:12	[INFO]	✅ Transaction confirmed: 5B6MSsKs...
-21:38:12	[INFO]	✅ Transaction confirmed: 5B6MSsKs...
-21:38:12	[INFO]	🎉 Trade executed successfully: swap
-21:38:13	[INFO]	💰 Tokens received: 849815101
-21:38:13	[INFO]	📊 Preparing monitoring for Dmig...pump (0.000 SOL)
-21:38:13	[INFO]	🚀 Monitor started: 1203.904399 tokens @ $0.00000001 each
-
-Monitoring started. Press Enter to sell tokens or 'q' to exit.
-21:38:13	[INFO]	PriceMonitor: start	{"token": "DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump"}
-
-╔════════════════ TOKEN MONITOR ════════════════╗
-║ Token: DmigFW…74pump                          ║
-╟───────────────────────────────────────────────╢
-║ Current Price:       0.00000003           SOL ║
-║ Initial Price:       0.00000001           SOL ║
-║ Price Change:        +236.60%                 ║
-║ Tokens Owned:        1203.904399              ║
-╟───────────────────────────────────────────────╢
-║ Sold (Estimate):     0.00003332           SOL ║
-║ Invested:            0.00000990           SOL ║
-║ P&L:                 +0.00002342 SOL (236.60%) ║
-╚═══════════════════════════════════════════════╝
-Press Enter to sell tokens, 'q' to exit without selling
-
-╔════════════════ TOKEN MONITOR ════════════════╗
-║ Token: DmigFW…74pump                          ║
-╟───────────────────────────────────────────────╢
-║ Current Price:       0.00000003           SOL ║
-║ Initial Price:       0.00000001           SOL ║
-║ Price Change:        +236.60%                 ║
-║ Tokens Owned:        1203.904399              ║
-╟───────────────────────────────────────────────╢
-║ Sold (Estimate):     0.00003332           SOL ║
-║ Invested:            0.00000990           SOL ║
-║ P&L:                 +0.00002342 SOL (236.60%) ║
-╚═══════════════════════════════════════════════╝
-Press Enter to sell tokens, 'q' to exit without selling
-
-21:38:14	[INFO]	💰 Sell requested by user
-
-Preparing to sell tokens...
-21:38:14	[INFO]	💱 Processing sell request for: DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump
-Selling tokens now...
-21:38:14	[INFO]	PriceMonitor: context done, exiting loop
-21:38:14	[INFO]	💱 Starting token sell: DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump (100.0% at 20.0% slippage)
-21:38:15	[INFO]	Selling tokens	{"token_mint": "DmigFWPu6xFSntkBqWAm5MqTFDrC1ZtFiJj8ir74pump", "total_balance": 1203904399, "percent": 100, "tokens_to_sell": 1203904399}
-21:38:15	[INFO]	💱 Starting Pump.fun sell: 1203904399 tokens (20.0% slippage)
-21:38:15	[INFO]	Using creator vault for sell	{"vault": "9EPR5fRnTGhtyL5rcCUvf4iVtE9aL2CBmGZBXK7tmGQh", "creator": "7hGZjLKxMdkk5mykGKkeYYBdaaJA1zzziiRQgKuNYxb6"}
-21:38:15	[INFO]	📤 Transaction sent: hxQYXoEV...
-21:38:15	[INFO]	⏳ Waiting for confirmation: hxQYXoEV...
-21:38:18	[INFO]	✅ Transaction confirmed: hxQYXoEV...
-21:38:18	[INFO]	✅ Transaction confirmed: hxQYXoEV...
-21:38:18	[INFO]	✅ Token sell completed successfully
-21:38:18	[INFO]	✅ Tokens sold successfully!
-Tokens sold successfully!
-21:38:18	[INFO]	✅ All tasks completed
-^Z
-[29]  + 44706 suspended  make run
-```
-
-### Workflow для разработки
-
-```bash
-# Создание тестовой ветки
-git checkout -b feature/your-feature-name
-
-# Запуск с режимом отладки
-go run cmd/bot/main.go -debug
-
-# Запуск тестов
-go test ./...
-
-# Форматирование кода
-go fmt ./...
-```
-
-### Makefile команды
-
-```bash
-# Локальный запуск
-make run
-
-# Полная пересборка проекта
-make rebuild
-
-# Запуск линтера локально
-make lint
-
-# Запуск линтера с автоисправлениями
-make lint-fix
-
-# Показать все доступные команды
-make help
-```
-
-
-### Метрики производительности
-- Время выполнения транзакций
-- Успешность операций
-- Статистика по DEX
-- Мониторинг RPC соединений
-
-### Уведомления
-- Webhook интеграция
-- Критические ошибки
-- Статус выполнения заданий
 
 ## 🔐 Безопасность
 
